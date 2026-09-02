@@ -1,0 +1,238 @@
+[
+  {
+    "id": "easd_default_minutes",
+    "name": "EASD Meeting Minutes (Official Template)",
+    "description": "Standard 4-topic discussion table (Followup, Action items, Task Assignments, Decisions) with 21-member attendance sheet.",
+    "category": "Meeting Minutes",
+    "is_default": true,
+    "is_builtin": true,
+    "docx_filename": "EASD Meeting minutes - Template-DDMonthYY.docx",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Meeting Title",
+        "type": "text",
+        "default": "Weekly Strategic, Programmatic and Presentation Review Meeting"
+      },
+      {
+        "key": "location",
+        "label": "Venue / Location",
+        "type": "text",
+        "default": "Eminence, Mohakhali, DOHS"
+      },
+      {
+        "key": "date",
+        "label": "Meeting Date",
+        "type": "text",
+        "default": "29 August, 2026"
+      },
+      {
+        "key": "time",
+        "label": "Meeting Time",
+        "type": "text",
+        "default": "11:00 AM - 01:00 PM"
+      }
+    ],
+    "sections": [
+      {
+        "id": "agendas",
+        "title": "Meeting Agenda (4-5 points)",
+        "type": "list",
+        "prompt": "4 to 5 strategic agenda points reflecting the meeting focus."
+      },
+      {
+        "id": "decisions",
+        "title": "Major Strategic Decisions",
+        "type": "bullets",
+        "prompt": "Formally approved decisions, locked deadlines, and institutional directives."
+      }
+    ],
+    "tables": [
+      {
+        "id": "discussions",
+        "title": "Discussions & Action Framework",
+        "fixed_rows": [
+          {
+            "sn": "1",
+            "topic": "Followup from previous meeting"
+          },
+          {
+            "sn": "2",
+            "topic": "Action items"
+          },
+          {
+            "sn": "3",
+            "topic": "Task Assignments"
+          },
+          {
+            "sn": "4",
+            "topic": "Meeting Decisions"
+          }
+        ],
+        "columns": [
+          "S.N",
+          "Topic",
+          "Discussion Details"
+        ]
+      },
+      {
+        "id": "attendance",
+        "title": "Attendance Checklist",
+        "columns": [
+          "Serial",
+          "Name",
+          "Participation"
+        ]
+      }
+    ],
+    "ai_system_prompt": "You are an expert bilingual Chief Executive Rapporteur for EASD. Analyze the input transcript/audio and map into the standard 4-topic meeting minutes format."
+  },
+  {
+    "id": "executive_project_status",
+    "name": "Executive Project Status & Milestone Brief",
+    "description": "High-impact programmatic review covering Project Overview, Key Milestones, Identified Risks, and Immediate Next Steps.",
+    "category": "Project Reports",
+    "is_default": false,
+    "is_builtin": true,
+    "docx_filename": "",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Project / Workstream Title",
+        "type": "text",
+        "default": "Programmatic Milestone & Delivery Review"
+      },
+      {
+        "key": "project_lead",
+        "label": "Project Lead / Manager",
+        "type": "text",
+        "default": "Program Director"
+      },
+      {
+        "key": "date",
+        "label": "Review Date",
+        "type": "text",
+        "default": "2026-09-01"
+      },
+      {
+        "key": "reporting_period",
+        "label": "Reporting Period",
+        "type": "text",
+        "default": "Current Operational Quarter"
+      }
+    ],
+    "sections": [
+      {
+        "id": "executive_summary",
+        "title": "1. Executive Summary",
+        "type": "text",
+        "prompt": "High-level synthesis of overall project progress, key successes, and strategic priorities."
+      },
+      {
+        "id": "key_achievements",
+        "title": "2. Key Achievements & Milestones",
+        "type": "bullets",
+        "prompt": "Concrete deliverables and milestones achieved during this cycle with quantifiable impact."
+      },
+      {
+        "id": "challenges_risks",
+        "title": "3. Bottlenecks, Risks & Mitigation",
+        "type": "bullets",
+        "prompt": "Identified operational bottlenecks, resource constraints, and corrective actions taken."
+      },
+      {
+        "id": "next_steps",
+        "title": "4. Next Steps & Priority Directives",
+        "type": "bullets",
+        "prompt": "Critical path action items, delivery deadlines, and responsible owners for the next sprint."
+      }
+    ],
+    "tables": [
+      {
+        "id": "deliverables_table",
+        "title": "Deliverables & Ownership Matrix",
+        "columns": [
+          "Milestone / Deliverable",
+          "Accountable Lead",
+          "Target Deadline",
+          "Status"
+        ]
+      }
+    ],
+    "ai_system_prompt": "You are a Senior Project Management Director. Analyze the input conversation/audio and organize the updates into an Executive Project Status Report with clear milestones, risks, and deliverables."
+  },
+  {
+    "id": "field_survey_investigation",
+    "name": "Field Survey & Investigation Assessment",
+    "description": "Fieldwork evaluation format covering Survey Scope, Methodological Observations, Findings, and Recommendations.",
+    "category": "Field Reports",
+    "is_default": false,
+    "is_builtin": true,
+    "docx_filename": "",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Survey Title",
+        "type": "text",
+        "default": "Field Assessment & Community Survey Report"
+      },
+      {
+        "key": "location",
+        "label": "Field Region / District",
+        "type": "text",
+        "default": "Selected Program Area"
+      },
+      {
+        "key": "date",
+        "label": "Field Date",
+        "type": "text",
+        "default": "2026-09-01"
+      },
+      {
+        "key": "survey_team",
+        "label": "Field Investigators",
+        "type": "text",
+        "default": "Field Operations Team"
+      }
+    ],
+    "sections": [
+      {
+        "id": "survey_background",
+        "title": "1. Survey Background & Objectives",
+        "type": "text",
+        "prompt": "Core purpose, community demographics, and field context."
+      },
+      {
+        "id": "field_observations",
+        "title": "2. Primary Field Observations",
+        "type": "bullets",
+        "prompt": "Direct factual observations and feedback recorded during site visits."
+      },
+      {
+        "id": "data_insights",
+        "title": "3. Key Data Insights & Programmatic Findings",
+        "type": "bullets",
+        "prompt": "Critical findings, service delivery gaps, and qualitative takeaways."
+      },
+      {
+        "id": "recommendations",
+        "title": "4. Recommendations & Action Plan",
+        "type": "bullets",
+        "prompt": "Immediate policy or operational interventions recommended by the survey team."
+      }
+    ],
+    "tables": [
+      {
+        "id": "findings_summary",
+        "title": "Indicator Assessment Summary",
+        "columns": [
+          "Indicator / Focus Area",
+          "Observed Status",
+          "Impact Level",
+          "Recommended Action"
+        ]
+      }
+    ],
+    "ai_system_prompt": "You are an expert Public Health and Social Research Lead. Analyze the spoken field notes/audio and format into a structured Field Survey & Assessment Report."
+  }
+]

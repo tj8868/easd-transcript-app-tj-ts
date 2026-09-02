@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+dist/
+build/
+*.egg-info/
+
+# Temporary files & Local outputs
+temp_outputs/
+test_output.docx
+*.log
+Test Input .txt
+
+# Media Recordings (Keep repo lightweight and private)
+*.mp3
+*.wav
+*.m4a
+*.mp4
+*.mov
+*.mkv
+*.webm
+
+# Sensitive Keys & Certificates
+*.pem
+.env
+.env.local
+GroqAPI.txt
+
+# OS Generated
+.DS_Store
+Thumbs.db
+desktop.ini
