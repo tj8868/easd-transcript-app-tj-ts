@@ -10,11 +10,13 @@
   "portsAttributes": {
     "5173": {
       "label": "EASD App Frontend (Vite)",
-      "onAutoForward": "openPreview"
+      "onAutoForward": "openBrowser",
+      "visibility": "public"
     },
     "8000": {
       "label": "EASD Backend API (FastAPI)",
-      "onAutoForward": "silent"
+      "onAutoForward": "silent",
+      "visibility": "public"
     }
   },
   "postCreateCommand": "sudo apt-get update && sudo apt-get install -y ffmpeg && pip install -r requirements.txt && cd frontend && npm install && npm run build",

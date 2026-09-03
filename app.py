@@ -621,11 +621,13 @@ def open_browser_after_delay(url: str, delay: float = 1.0):
 if __name__ == "__main__":
     import uvicorn
     port = find_available_port(8000)
-    server_host = os.getenv("HOST", "0.0.0.0" if (os.getenv("CODESPACES") == "true" or os.getenv("DEVCONTAINER") == "true") else "127.0.0.1")
+    is_cloud_env = os.getenv("CODESPACES") == "true" or os.getenv("DEVCONTAINER") == "true" or os.getenv("HOST") == "0.0.0.0"
+    server_host = os.getenv("HOST", "0.0.0.0" if is_cloud_env else "127.0.0.1")
     
     cert_path = os.path.join(BASE_DIR, "cert.pem")
     key_path = os.path.join(BASE_DIR, "key.pem")
-    use_https = ensure_ssl_certificates(cert_path, key_path)
+    # In cloud/Codespaces environments, the platform terminates SSL at the edge, so uvicorn must run HTTP internally
+    use_https = False if is_cloud_env else ensure_ssl_certificates(cert_path, key_path)
     
     proto = "https" if use_https else "http"
     url = f"{proto}://localhost:{port}/"

@@ -10,6 +10,7 @@ echo "=========================================================="
 
 export HOST="0.0.0.0"
 export PORT="8000"
+export CODESPACES="true"
 
 # Install backend dependencies if not present
 if ! python3 -c "import fastapi" &> /dev/null; then
