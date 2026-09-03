@@ -1,0 +1,19 @@
+{
+  "$schema": "https://codesandbox.io/schemas/tasks.json",
+  "setupTasks": [
+    {
+      "name": "Install Python & Frontend Dependencies",
+      "command": "sudo apt-get update && sudo apt-get install -y ffmpeg && pip install -r requirements.txt && cd frontend && npm install && npm run build"
+    }
+  ],
+  "tasks": {
+    "start": {
+      "name": "Start EASD AI Hub",
+      "command": "python app.py",
+      "runAtStart": true,
+      "preview": {
+        "port": 8000
+      }
+    }
+  }
+}
