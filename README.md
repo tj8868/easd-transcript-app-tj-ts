@@ -33,6 +33,17 @@ An enterprise-grade, privacy-first AI speech transcription and multi-document ge
 
 ---
 
+## 📖 Complete Build & Platform Deployment Guides
+For full step-by-step instructions on building, compiling, and deploying across all platforms, see the dedicated **[Build Guide (BUILD_GUIDE.md)](./BUILD_GUIDE.md)**:
+- 💻 **[Source Build (Local Development)](./BUILD_GUIDE.md#2-building-the-app-from-source-local-machine)**
+- 🪟 **[Windows Standalone Executable (.exe)](./BUILD_GUIDE.md#3-building-the-windows-standalone-executable-exe)** (`dist/EASD_Meeting_Minutes/EASD_Meeting_Minutes.exe`)
+- 🐳 **[Docker & Docker Compose Container](./BUILD_GUIDE.md#4-building-and-running-with-docker)** (`docker compose up --build`)
+- ☁️ **[GitHub Codespaces Cloud Environment](./BUILD_GUIDE.md#5-running-in-github-codespaces)** (`bash launch_codespaces.sh`)
+- 📱 **[Android Installation (PWA & APK)](./BUILD_GUIDE.md#6-building-and-installing-on-android-apk--pwa)**
+- 🐧 **[Linux Server & macOS Daemon](./BUILD_GUIDE.md#7-deploying-on-linux-server--macos)**
+
+---
+
 ## 🚀 Quick Start Guide (Windows)
 
 ### Option 1: Instant Zero-Install Launch (Recommended)

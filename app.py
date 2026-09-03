@@ -45,20 +45,22 @@ MAX_UPLOAD_SIZE = 1024 * 1024 * 1024  # 1024 MB (1 GB) for high-resolution HEVC/
 
 app = FastAPI(
     title="EASD Meeting Minutes AI Security Hub",
-    description="High-Speed & Secure Cross-Platform Meeting Assistant"
+    description="High-Speed & Secure Cross-Platform Meeting Assistant",
+    version="2.0.0"
 )
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https: ws: wss:; "
-        "upgrade-insecure-requests; object-src 'none'; frame-ancestors 'none';"
+        "upgrade-insecure-requests; object-src 'none'; "
+        "frame-ancestors 'self' https://*.github.dev https://*.app.github.dev;"
     )
     return response
 
@@ -128,6 +130,7 @@ class SaveTemplatePayload(BaseModel):
     sections: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     tables: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
     ai_system_prompt: Optional[str] = ""
+    save_as_new: Optional[bool] = False
     model_config = ConfigDict(extra="ignore")
 
 @app.get("/api/default_config")
@@ -194,7 +197,9 @@ async def generalize_template_endpoint(
 async def save_template_endpoint(payload: SaveTemplatePayload):
     """Saves or updates a custom template schema with strict validation."""
     try:
-        saved = save_custom_template(payload.model_dump())
+        data = payload.model_dump()
+        save_as_new = data.pop("save_as_new", False)
+        saved = save_custom_template(data, save_as_new=save_as_new)
         return JSONResponse(content={"status": "success", "template": saved})
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -616,19 +621,22 @@ def open_browser_after_delay(url: str, delay: float = 1.0):
 if __name__ == "__main__":
     import uvicorn
     port = find_available_port(8000)
+    server_host = os.getenv("HOST", "0.0.0.0" if (os.getenv("CODESPACES") == "true" or os.getenv("DEVCONTAINER") == "true") else "127.0.0.1")
     
     cert_path = os.path.join(BASE_DIR, "cert.pem")
     key_path = os.path.join(BASE_DIR, "key.pem")
     use_https = ensure_ssl_certificates(cert_path, key_path)
     
     proto = "https" if use_https else "http"
-    url = f"{proto}://127.0.0.1:{port}/"
+    url = f"{proto}://localhost:{port}/"
     print("\n========================================================")
     print(f"  [ONLINE SECURE {proto.upper()}] EASD Meeting Assistant running at: {url}")
+    print(f"  [BIND HOST] {server_host}:{port}")
     print("========================================================\n")
-    open_browser_after_delay(url, delay=0.8)
+    if os.getenv("CODESPACES") != "true":
+        open_browser_after_delay(url, delay=0.8)
     
     if use_https:
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="info", ssl_certfile=cert_path, ssl_keyfile=key_path)
+        uvicorn.run(app, host=server_host, port=port, log_level="info", ssl_certfile=cert_path, ssl_keyfile=key_path)
     else:
-        uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
+        uvicorn.run(app, host=server_host, port=port, log_level="info")

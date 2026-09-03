@@ -20,7 +20,9 @@ import {
   Newspaper,
   Feather,
   Landmark,
-  X
+  X,
+  CopyPlus,
+  ShieldCheck
 } from 'lucide-react';
 import AiDirectivesEditor from './AiDirectivesEditor';
 
@@ -118,9 +120,55 @@ export default function TemplateGenerator({
     setShowEditor(true);
   };
 
-  // Save changes to custom template
+  // Save as a separate new custom template (NEVER overwrites existing template)
+  const handleSaveAsNewTemplate = async (sourceTemplate = null) => {
+    const target = sourceTemplate || editingTemplate;
+    if (!target) return;
+    
+    let suggestedName = target.name || 'New Template';
+    if (!suggestedName.toLowerCase().includes('custom') && !suggestedName.toLowerCase().includes('copy')) {
+      suggestedName = `${suggestedName} (Custom)`;
+    }
+    const newName = window.prompt('Enter name for the new template copy (will not overwrite):', suggestedName);
+    if (!newName || !newName.trim()) return;
+
+    try {
+      const payload = {
+        ...target,
+        name: newName.trim(),
+        save_as_new: true
+      };
+      delete payload.id; // Ensure brand new ID is generated
+      payload.is_builtin = false;
+      payload.is_default = false;
+      payload.category = payload.category || 'Custom Templates';
+
+      const res = await axios.post('/api/save_template', payload);
+      if (res.data?.status === 'success' && res.data.template) {
+        const createdTpl = res.data.template;
+        setSaveSuccess(true);
+        setTimeout(() => setSaveSuccess(false), 2000);
+        if (onTemplatesUpdated) {
+          await onTemplatesUpdated();
+        }
+        if (onSelectTemplate) {
+          onSelectTemplate(createdTpl.id);
+        }
+        setShowEditor(false);
+        alert(`Saved new template '${createdTpl.name}'! Existing templates remained untouched.`);
+      }
+    } catch (err) {
+      alert('Error saving as new template: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  // Save changes to custom template (protects built-in defaults)
   const handleSaveTemplate = async () => {
     if (!editingTemplate) return;
+    if (editingTemplate.is_builtin) {
+      // Built-in templates are read-only defaults: route to Save as New
+      return handleSaveAsNewTemplate(editingTemplate);
+    }
     try {
       const res = await axios.post('/api/save_template', editingTemplate);
       if (res.data?.status === 'success') {
@@ -321,13 +369,21 @@ export default function TemplateGenerator({
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
             <button
               className="btn btn-secondary btn-sm"
               onClick={() => handleOpenEditor(activeTemplate)}
               style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
             >
               <Edit3 size={14} /> Edit Directives & Schema
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => handleSaveAsNewTemplate(activeTemplate)}
+              title="Save current directives as a new custom template (preserves original)"
+              style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
+            >
+              <CopyPlus size={14} /> Save as New Template
             </button>
           </div>
         </div>
@@ -339,7 +395,8 @@ export default function TemplateGenerator({
           requirements={activeTemplate.requirements || ''}
           onChange={(newDirectives) => {
             const updated = { ...activeTemplate, ...newDirectives };
-            if (onTemplatesUpdated) {
+            // Only auto-save if this is a custom template, protecting official built-ins
+            if (!activeTemplate.is_builtin && onTemplatesUpdated) {
               axios.post('/api/save_template', updated).then(() => onTemplatesUpdated());
             }
           }}
@@ -474,11 +531,20 @@ export default function TemplateGenerator({
             {/* Modal Header */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid var(--border-color)', paddingBottom: '12px' }}>
               <div>
-                <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <Edit3 size={18} color="var(--accent-color)" /> Configure Template & AI Directives
-                </h3>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                  Customize Context, Rules, Requirements, and schema sections.
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <h3 style={{ fontSize: '1.2rem', fontWeight: 700, display: 'flex', gap: '8px', alignItems: 'center', margin: 0 }}>
+                    <Edit3 size={18} color="var(--accent-color)" /> Configure Template & AI Directives
+                  </h3>
+                  {editingTemplate.is_builtin && (
+                    <span style={{ padding: '2px 8px', borderRadius: '12px', background: 'rgba(234, 179, 8, 0.15)', color: '#eab308', border: '1px solid rgba(234, 179, 8, 0.3)', fontSize: '0.72rem', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                      <ShieldCheck size={12} /> Official Built-in (Protected)
+                    </span>
+                  )}
+                </div>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px', marginBottom: 0 }}>
+                  {editingTemplate.is_builtin
+                    ? 'Built-in official templates cannot be overwritten. Saving will create a new custom template.'
+                    : 'Customize Context, Rules, Requirements, and schema sections.'}
                 </p>
               </div>
               <button
@@ -648,23 +714,49 @@ export default function TemplateGenerator({
             </div>
 
             {/* Modal Actions */}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
-              <button
-                type="button"
-                className="btn btn-secondary"
-                onClick={() => setShowEditor(false)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleSaveTemplate}
-                style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700 }}
-              >
-                <Save size={16} />
-                {saveSuccess ? 'Saved!' : 'Save Template & Directives'}
-              </button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
+              <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                {editingTemplate.is_builtin ? (
+                  <span style={{ color: '#eab308', display: 'flex', alignItems: 'center', gap: '5px' }}>
+                    <ShieldCheck size={14} /> Official default template is protected from being overwritten.
+                  </span>
+                ) : (
+                  <span>Custom template: update it or create a new template copy.</span>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowEditor(false)}
+                >
+                  Cancel
+                </button>
+
+                {/* Dedicated Separate 'Save as New Template' Button */}
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => handleSaveAsNewTemplate(editingTemplate)}
+                  title="Save as a brand new template copy - will NOT overwrite any existing templates"
+                  style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, borderColor: 'var(--accent-color)', color: 'var(--accent-color)' }}
+                >
+                  <CopyPlus size={16} /> Save as New Template
+                </button>
+
+                {!editingTemplate.is_builtin && (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleSaveTemplate}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700 }}
+                  >
+                    <Save size={16} />
+                    {saveSuccess ? 'Saved!' : 'Update Template'}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>

@@ -58,6 +58,37 @@ export default function DocumentPreview({
     return DOMPurify.sanitize(cleaned.join('<br/>'));
   };
 
+  const handleDownloadTranscriptOnly = () => {
+    if (!banglaTranscript && !englishTranscript) {
+      alert('No transcripts available to download.');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const title = meta.title || 'Meeting';
+    const content = [
+      `============================================================`,
+      `  TRANSCRIPT EXPORT: ${title}`,
+      `  Date: ${meta.date || today} | Venue: ${meta.location || 'N/A'}`,
+      `============================================================\n`,
+      `--- BANGLA TRANSCRIPT (বাংলা ট্রান্সক্রিপ্ট) ---`,
+      banglaTranscript || '(No Bangla transcript generated)',
+      `\n------------------------------------------------------------\n`,
+      `--- ENGLISH TRANSCRIPT ---`,
+      englishTranscript || '(No English transcript generated)',
+      `\n============================================================`
+    ].join('\n');
+
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `Transcript_${title.replace(/[^a-zA-Z0-9_\-]/g, '_')}_${today}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="card" id="section-export" style={{ marginBottom: '40px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
@@ -69,7 +100,15 @@ export default function DocumentPreview({
             Current Output Format: <strong>{activeTemplate.name}</strong>. Reflects 100% of the exact template layout, typography, tables, and sections.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={handleDownloadTranscriptOnly}
+            title="Download transcript text only (.txt)"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
+          >
+            <FileText size={18} /> Download Transcript Only (.txt)
+          </button>
           <button className="btn btn-primary" onClick={onDownloadDocx} disabled={isGenerating}>
             <FileDown size={18} /> {isGenerating ? 'Generating Word .docx...' : 'Download Exact .docx'}
           </button>

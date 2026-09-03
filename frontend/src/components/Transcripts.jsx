@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Languages, Copy, Check, Sparkles, Wand2, RefreshCw } from 'lucide-react';
+import { Languages, Copy, Check, Sparkles, Wand2, RefreshCw, Download, FileText } from 'lucide-react';
 
 export default function Transcripts({
   banglaTranscript,
@@ -12,7 +12,20 @@ export default function Transcripts({
   const [copiedBangla, setCopiedBangla] = useState(false);
   const [copiedEnglish, setCopiedEnglish] = useState(false);
   const [copiedBoth, setCopiedBoth] = useState(false);
+  const [downloadedBoth, setDownloadedBoth] = useState(false);
   const [summarizeModel, setSummarizeModel] = useState('default');
+
+  const downloadTextFile = (filename, content) => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   const handleCopyBangla = () => {
     if (!banglaTranscript) {
@@ -41,6 +54,47 @@ export default function Transcripts({
     setTimeout(() => setCopiedBoth(false), 2000);
   };
 
+  const handleDownloadBoth = () => {
+    if (!banglaTranscript && !englishTranscript) {
+      alert('Transcripts are empty. Nothing to download.');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const content = [
+      `============================================================`,
+      `  EASD MEETING TRANSCRIPT - EXPORTED ON ${today}`,
+      `============================================================\n`,
+      `--- BANGLA TRANSCRIPT (বাংলা ট্রান্সক্রিপ্ট) ---`,
+      banglaTranscript || '(No Bangla transcript generated)',
+      `\n------------------------------------------------------------\n`,
+      `--- ENGLISH TRANSCRIPT ---`,
+      englishTranscript || '(No English transcript generated)',
+      `\n============================================================`
+    ].join('\n');
+
+    downloadTextFile(`EASD_Meeting_Transcripts_${today}.txt`, content);
+    setDownloadedBoth(true);
+    setTimeout(() => setDownloadedBoth(false), 2000);
+  };
+
+  const handleDownloadBangla = () => {
+    if (!banglaTranscript) {
+      alert('Bangla transcript is empty.');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`EASD_Bangla_Transcript_${today}.txt`, banglaTranscript);
+  };
+
+  const handleDownloadEnglish = () => {
+    if (!englishTranscript) {
+      alert('English transcript is empty.');
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`EASD_English_Transcript_${today}.txt`, englishTranscript);
+  };
+
   const handleTriggerSummarize = () => {
     const textToSummarize = englishTranscript.trim() || banglaTranscript.trim();
     if (!textToSummarize) {
@@ -62,8 +116,17 @@ export default function Transcripts({
           </p>
         </div>
 
-        {/* Copy All Action Button */}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        {/* Action Buttons: Download & Copy Transcripts */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={handleDownloadBoth}
+            title="Download full transcripts as a clean text file (.txt)"
+            style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
+          >
+            {downloadedBoth ? <Check size={14} /> : <Download size={14} />}
+            {downloadedBoth ? 'Downloaded Transcript!' : '📥 Download Transcript (.txt)'}
+          </button>
           <button
             className="btn btn-secondary btn-sm"
             onClick={handleCopyBoth}
@@ -82,14 +145,24 @@ export default function Transcripts({
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0, fontWeight: 700 }}>
               <span>🇧🇩</span> Bangla Transcript (বাংলা ট্রান্সক্রিপ্ট):
             </label>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={handleCopyBangla}
-              style={{ padding: '3px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-            >
-              {copiedBangla ? <Check size={12} color="var(--success-color)" /> : <Copy size={12} />}
-              {copiedBangla ? 'Copied Bangla!' : 'Copy Bangla'}
-            </button>
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleDownloadBangla}
+                title="Download Bangla transcript as .txt"
+                style={{ padding: '3px 8px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+              >
+                <Download size={12} /> .txt
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleCopyBangla}
+                style={{ padding: '3px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+              >
+                {copiedBangla ? <Check size={12} color="var(--success-color)" /> : <Copy size={12} />}
+                {copiedBangla ? 'Copied Bangla!' : 'Copy Bangla'}
+              </button>
+            </div>
           </div>
           <textarea
             className="form-control"
@@ -106,14 +179,24 @@ export default function Transcripts({
             <label style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0, fontWeight: 700 }}>
               <span>🇬🇧</span> English Transcript:
             </label>
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={handleCopyEnglish}
-              style={{ padding: '3px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-            >
-              {copiedEnglish ? <Check size={12} color="var(--success-color)" /> : <Copy size={12} />}
-              {copiedEnglish ? 'Copied English!' : 'Copy English'}
-            </button>
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleDownloadEnglish}
+                title="Download English transcript as .txt"
+                style={{ padding: '3px 8px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+              >
+                <Download size={12} /> .txt
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleCopyEnglish}
+                style={{ padding: '3px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
+              >
+                {copiedEnglish ? <Check size={12} color="var(--success-color)" /> : <Copy size={12} />}
+                {copiedEnglish ? 'Copied English!' : 'Copy English'}
+              </button>
+            </div>
           </div>
           <textarea
             className="form-control"

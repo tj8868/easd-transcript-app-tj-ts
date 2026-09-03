@@ -408,15 +408,36 @@ def analyze_and_generalize_docx(docx_bytes: bytes, filename: str, doc_type: str 
 
     return generalized_template
 
-def save_custom_template(template_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Saves or updates a template schema in the templates store."""
+def save_custom_template(template_data: Dict[str, Any], save_as_new: bool = False) -> Dict[str, Any]:
+    """Saves or updates a template schema in the templates store.
+    Built-in templates are strictly protected and will always be saved as a new custom template."""
     all_t = load_saved_templates()
-    t_id = template_data.get("id") or f"custom_tpl_{uuid.uuid4().hex[:8]}"
-    template_data["id"] = t_id
+    builtin_ids = {d["id"] for d in DEFAULT_TEMPLATES}
     
+    t_id = template_data.get("id")
+    is_target_builtin = t_id in builtin_ids or template_data.get("is_builtin", False)
+    
+    # If explicitly requesting Save as New OR attempting to overwrite a built-in template:
+    if save_as_new or is_target_builtin or not t_id:
+        new_id = f"custom_tpl_{uuid.uuid4().hex[:8]}"
+        template_data = copy.deepcopy(template_data)
+        template_data["id"] = new_id
+        template_data["is_builtin"] = False
+        template_data["is_default"] = False
+        if is_target_builtin and template_data.get("name") in [d["name"] for d in DEFAULT_TEMPLATES]:
+            template_data["name"] = f"{template_data['name']} (Custom)"
+        template_data["category"] = template_data.get("category") or "Custom Templates"
+        all_t.append(template_data)
+        save_templates_to_disk(all_t)
+        return template_data
+
+    template_data["id"] = t_id
     updated = False
     for idx, t in enumerate(all_t):
         if t.get("id") == t_id:
+            # Preserve original docx if not provided
+            if not template_data.get("docx_filename") and t.get("docx_filename"):
+                template_data["docx_filename"] = t["docx_filename"]
             all_t[idx] = template_data
             updated = True
             break

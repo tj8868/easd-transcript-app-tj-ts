@@ -15,6 +15,7 @@ import ArticleReportForm from './components/ArticleReportForm';
 import DocumentPreview from './components/DocumentPreview';
 import GDriveModal from './components/GDriveModal';
 import SettingsModal, { ACCENT_PALETTES } from './components/SettingsModal';
+import ResponsiveDeviceViewer from './components/ResponsiveDeviceViewer';
 
 const DEFAULT_AGENDAS = [
   'Review of previous meeting minutes & action items',
@@ -31,6 +32,8 @@ const DEFAULT_DISCUSSIONS = [
 ];
 
 export default function App() {
+  const isFrameView = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'frame';
+  const [isDeviceViewerOpen, setIsDeviceViewerOpen] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [activeSection, setActiveSection] = useState('section-input');
 
@@ -556,6 +559,8 @@ export default function App() {
         toggleTheme={toggleTheme}
         onOpenGDrive={() => setIsGDriveOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenDeviceViewer={() => setIsDeviceViewerOpen(true)}
+        isFrameView={isFrameView}
       />
       <NavTabs
         activeSection={activeSection}
@@ -706,6 +711,13 @@ export default function App() {
         settings={settings}
         setSettings={setSettings}
       />
+
+      {isDeviceViewerOpen && !isFrameView && (
+        <ResponsiveDeviceViewer
+          onClose={() => setIsDeviceViewerOpen(false)}
+          initialMode="all"
+        />
+      )}
     </div>
   );
 }

@@ -1,7 +1,14 @@
 import React from 'react';
-import { Moon, Sun, Cloud, Mic, Settings } from 'lucide-react';
+import { Moon, Sun, Cloud, Mic, Settings, LayoutGrid } from 'lucide-react';
 
-export default function Header({ theme, toggleTheme, onOpenGDrive, onOpenSettings }) {
+export default function Header({
+  theme,
+  toggleTheme,
+  onOpenGDrive,
+  onOpenSettings,
+  onOpenDeviceViewer,
+  isFrameView = false
+}) {
   return (
     <header className="app-header">
       <div className="brand">
@@ -31,21 +38,44 @@ export default function Header({ theme, toggleTheme, onOpenGDrive, onOpenSetting
           </p>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+        {/* Responsive 3-Device Visualizer Button */}
+        {!isFrameView && onOpenDeviceViewer && (
+          <button
+            className="btn btn-secondary"
+            onClick={onOpenDeviceViewer}
+            title="Visualize responsive layout in Mobile, Tablet, and Desktop components"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '8px 12px',
+              fontSize: '0.82rem',
+              fontWeight: 700,
+              border: '1px solid var(--accent-color)',
+              color: 'var(--accent-color)',
+              background: 'rgba(14, 165, 233, 0.08)'
+            }}
+          >
+            <LayoutGrid size={15} />
+            <span>📱 3-Device View</span>
+          </button>
+        )}
+
         {/* Quick Theme Toggle In Place */}
         <button
           className="btn btn-secondary"
           onClick={toggleTheme}
           title="Toggle Light / Dark Mode"
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 14px', fontSize: '0.85rem' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', fontSize: '0.85rem' }}
         >
           {theme === 'light' ? (
             <>
-              <Moon size={16} color="var(--eminence-blue)" /> <span>Dark Mode</span>
+              <Moon size={16} color="var(--eminence-blue)" /> <span>Dark</span>
             </>
           ) : (
             <>
-              <Sun size={16} color="#f59e0b" /> <span>Light Mode</span>
+              <Sun size={16} color="#f59e0b" /> <span>Light</span>
             </>
           )}
         </button>
@@ -55,7 +85,7 @@ export default function Header({ theme, toggleTheme, onOpenGDrive, onOpenSetting
           className="btn btn-secondary"
           onClick={onOpenSettings}
           title="Open Settings & Font Engine"
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 14px', fontSize: '0.85rem' }}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', fontSize: '0.85rem' }}
         >
           <Settings size={16} /> <span>Settings</span>
         </button>

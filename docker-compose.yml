@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  easd-minutes-hub:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: easd_minutes_hub
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+    volumes:
+      # Persistent directories for custom templates, saved skills, and generated outputs
+      - ./templates_store:/app/templates_store
+      - ./skills_store:/app/skills_store
+      - ./temp_outputs:/app/temp_outputs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/document_types"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
