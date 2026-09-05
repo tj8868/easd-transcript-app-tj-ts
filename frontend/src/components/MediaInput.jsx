@@ -1,6 +1,14 @@
 import React, { useState } from 'react';
 import axios from 'axios';
-import { UploadCloud, Eye, EyeOff, Sparkles, FolderOpen, ExternalLink, Key, CheckCircle, AlertTriangle, RefreshCw, Cpu, Mic } from 'lucide-react';
+import { UploadCloud, Eye, EyeOff, Sparkles, FolderOpen, ExternalLink, Key, CheckCircle, AlertTriangle, RefreshCw, Cpu, Mic, Clipboard, Copy, Zap } from 'lucide-react';
+import {
+  PROVIDERS,
+  detectProviderFromKey,
+  getSavedKeyForProvider,
+  saveKeyForProvider,
+  activateProvider,
+  getActiveApiDisplayName
+} from '../utils/apiKeyStorage';
 
 export const MODEL_OPTIONS_BY_PROVIDER = {
   gemini: {
@@ -92,10 +100,13 @@ export default function MediaInput({
   activeTemplateId,
   onSelectTemplate,
   onProcessAi,
-  isProcessing
+  isProcessing,
+  onOpenSettings
 }) {
   const [verifying, setVerifying] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [showKey, setShowKey] = useState(false);
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
@@ -103,63 +114,91 @@ export default function MediaInput({
     }
   };
 
+  const handlePasteClipboard = async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          handleKeyChange(text.trim());
+        }
+      } else {
+        alert('Please press Ctrl+V to paste your API key.');
+      }
+    } catch (err) {
+      console.warn('Clipboard read error:', err);
+      alert('Could not read from clipboard automatically. Please press Ctrl+V inside the API key input.');
+    }
+  };
+
+  // Clipboard paste listener for instant screenshots & whiteboard snapshots
+  React.useEffect(() => {
+    const handlePaste = (e) => {
+      if (e.clipboardData && e.clipboardData.items) {
+        for (let i = 0; i < e.clipboardData.items.length; i++) {
+          const item = e.clipboardData.items[i];
+          if (item.type.indexOf('image') !== -1) {
+            const blob = item.getAsFile();
+            if (blob) {
+              const pastedFile = new File([blob], `clipboard-scan-${Date.now()}.png`, { type: blob.type });
+              setSelectedFile(pastedFile);
+            }
+            break;
+          }
+        }
+      }
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [setSelectedFile]);
+
   const handleKeyChange = (keyVal) => {
     const val = keyVal.trim();
-    let newProvider = aiConfig.provider;
-    let newSTT = aiConfig.transcriptionModel;
-    let newLLM = aiConfig.summarizationModel;
-    let newBaseUrl = aiConfig.baseUrl;
+    const detected = detectProviderFromKey(val);
+    const targetProvider = detected || aiConfig.provider;
 
-    if (val.startsWith('gsk_')) {
-      newProvider = 'groq';
-      newBaseUrl = 'https://api.groq.com/openai/v1';
-      newSTT = 'whisper-large-v3-turbo';
-      newLLM = 'openai/gpt-oss-120b';
-    } else if (val.startsWith('AIzaSy') || val.startsWith('AQ.')) {
-      newProvider = 'gemini';
-      newSTT = 'gemini-3.5-flash-lite';
-      newLLM = 'gemini-3.5-flash-lite';
-    } else if (val.startsWith('sk-ant-')) {
-      newProvider = 'anthropic';
-      newLLM = 'claude-3-5-sonnet-20241022';
-      newSTT = 'gemini-3.5-flash-lite';
-    } else if (val.startsWith('sk-proj-') || (val.startsWith('sk-') && !val.startsWith('sk-ant-'))) {
-      newProvider = 'openai';
-      newSTT = 'whisper-1';
-      newLLM = 'gpt-4o';
+    saveKeyForProvider(targetProvider, val);
+
+    if (detected && detected !== aiConfig.provider) {
+      activateProvider(detected, setAiConfig);
+    } else {
+      setAiConfig((prev) => ({
+        ...prev,
+        apiKey: keyVal
+      }));
     }
-
     setVerifyStatus(null);
-    setAiConfig({
-      ...aiConfig,
-      apiKey: keyVal,
-      provider: newProvider,
-      transcriptionModel: newSTT,
-      summarizationModel: newLLM,
-      modelName: newLLM,
-      baseUrl: newBaseUrl
-    });
   };
 
   const handleVerifyKey = async () => {
-    if (!aiConfig.apiKey.trim()) {
-      setVerifyStatus({ valid: false, message: 'Please enter an API Key first.' });
-      return;
-    }
     setVerifying(true);
     setVerifyStatus(null);
 
     try {
+      const p = aiConfig.provider || 'gemini';
+      const k = aiConfig.apiKey?.trim() || getSavedKeyForProvider(p) || '';
+      const u = aiConfig.baseUrl || '';
       const res = await axios.post('/api/verify_key', {
-        provider: aiConfig.provider,
-        api_key: aiConfig.apiKey.trim(),
-        base_url: aiConfig.baseUrl.trim()
+        provider: p,
+        api_key: k,
+        base_url: u
       });
       setVerifying(false);
-      setVerifyStatus(res.data);
+      const isValid = Boolean(res.data?.valid || res.data?.success);
+      const lat = res.data?.latency_ms ? ` (${res.data.latency_ms}ms)` : '';
+      setVerifyStatus({
+        valid: isValid,
+        success: isValid,
+        message: (res.data?.message || (isValid ? 'API connected successfully!' : 'Verification failed.')) + lat
+      });
+      setTimeout(() => setVerifyStatus(null), 8000);
     } catch (err) {
       setVerifying(false);
-      setVerifyStatus({ valid: false, message: 'Key verification failed.' });
+      setVerifyStatus({
+        valid: false,
+        success: false,
+        message: err.response?.data?.detail || err.message || 'Key verification failed.'
+      });
+      setTimeout(() => setVerifyStatus(null), 8000);
     }
   };
 
@@ -199,6 +238,12 @@ export default function MediaInput({
     if (name.endsWith('.mp3') || name.endsWith('.wav') || name.endsWith('.ogg') || name.endsWith('.opus') || name.endsWith('.flac') || name.endsWith('.amr') || name.endsWith('.awb') || name.endsWith('.wma') || name.endsWith('.ac3') || name.endsWith('.pcm')) {
       return { label: 'Speech Audio Recording', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', border: 'rgba(16, 185, 129, 0.3)' };
     }
+    if (name.endsWith('.pdf')) {
+      return { label: '📄 PDF Document (Digital / Scanned OCR)', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)', border: 'rgba(239, 68, 68, 0.3)' };
+    }
+    if (name.endsWith('.png') || name.endsWith('.jpg') || name.endsWith('.jpeg') || name.endsWith('.webp') || name.endsWith('.bmp') || name.endsWith('.tiff') || name.endsWith('.tif') || name.endsWith('.heic')) {
+      return { label: '📸 Scanned Photo / Whiteboard / OCR Image', color: '#8b5cf6', bg: 'rgba(139, 92, 246, 0.15)', border: 'rgba(139, 92, 246, 0.3)' };
+    }
     if (name.endsWith('.docx') || name.endsWith('.doc')) {
       return { label: 'Word Document (DOCX)', color: '#2563eb', bg: 'rgba(37, 99, 235, 0.15)', border: 'rgba(37, 99, 235, 0.3)' };
     }
@@ -215,22 +260,56 @@ export default function MediaInput({
       {/* File Input Card */}
       <div className="card" style={{ marginBottom: 0 }}>
         <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '8px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <UploadCloud size={20} color="var(--accent-color)" /> 1. Universal Media & Document Input
+          <UploadCloud size={20} color="var(--accent-color)" /> 1. Universal Media, OCR & Document Input
         </h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '16px' }}>
-          Upload any Video (including <strong>HEVC / H.265</strong>, iPhone <strong>MOV / ProRes</strong>, MP4, MKV, TS), iPhone <strong>Voice Memos (M4A/AAC/ALAC)</strong>, Audio, or Document in Bangla + English.
+          Upload any Video (including <strong>HEVC/H.265</strong>, iPhone <strong>MOV/ProRes</strong>), Audio, <strong>Scanned Photos & Whiteboards (OCR)</strong>, or <strong>PDFs & Documents</strong> in Bangla + English.
         </p>
 
-        <div className="drop-zone" onClick={() => document.getElementById('fileInputReact').click()}>
-          <UploadCloud size={40} color="var(--accent-color)" />
+        <div
+          className={`drop-zone ${isDragging ? 'dragging' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDragging(true);
+          }}
+          onDragEnter={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDragging(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDragging(false);
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setIsDragging(false);
+            if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+              setSelectedFile(e.dataTransfer.files[0]);
+            }
+          }}
+          onClick={() => document.getElementById('fileInputReact').click()}
+          style={{
+            border: isDragging ? '2px dashed #10b981' : undefined,
+            background: isDragging ? 'rgba(16, 185, 129, 0.15)' : undefined,
+            boxShadow: isDragging ? '0 0 16px rgba(16, 185, 129, 0.35)' : undefined,
+            cursor: 'pointer',
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <UploadCloud size={40} color={isDragging ? 'var(--accent-color)' : 'var(--accent-color)'} />
           <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', margin: '6px 0 2px 0' }}>
-            Drag & Drop Any Video, iPhone Recording, Audio, or Document
+            {isDragging ? 'Drop file to upload & transcribe!' : 'Drag & Drop Any Video, Audio, Scanned Photo (OCR), or Document'}
           </p>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', justifyContent: 'center', margin: '6px 0 10px 0' }}>
-            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(139, 92, 246, 0.15)', color: '#a78bfa', fontWeight: 600, border: '1px solid rgba(139, 92, 246, 0.3)' }}>HEVC / H.265</span>
-            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(236, 72, 153, 0.15)', color: '#f472b6', fontWeight: 600, border: '1px solid rgba(236, 72, 153, 0.3)' }}>iPhone MOV / M4A / AAC</span>
-            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', fontWeight: 600, border: '1px solid rgba(59, 130, 246, 0.3)' }}>MP4 / MKV / TS / WebM</span>
-            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', fontWeight: 600, border: '1px solid rgba(16, 185, 129, 0.3)' }}>MP3 / WAV / FLAC / AMR</span>
+            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(139, 92, 246, 0.15)', color: '#a78bfa', fontWeight: 600, border: '1px solid rgba(139, 92, 246, 0.3)' }}>📸 Scanned Photos & OCR</span>
+            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', fontWeight: 600, border: '1px solid rgba(239, 68, 68, 0.3)' }}>📄 PDF Reports</span>
+            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(236, 72, 153, 0.15)', color: '#f472b6', fontWeight: 600, border: '1px solid rgba(236, 72, 153, 0.3)' }}>iPhone MOV / M4A</span>
+            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', fontWeight: 600, border: '1px solid rgba(59, 130, 246, 0.3)' }}>MP4 / MKV / WebM</span>
+            <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', fontWeight: 600, border: '1px solid rgba(16, 185, 129, 0.3)' }}>MP3 / WAV / FLAC</span>
             <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(245, 158, 11, 0.15)', color: '#fbbf24', fontWeight: 600, border: '1px solid rgba(245, 158, 11, 0.3)' }}>DOCX / SRT / VTT</span>
           </div>
 
@@ -238,10 +317,14 @@ export default function MediaInput({
             <FolderOpen size={16} /> Choose File
           </label>
 
+          <small style={{ display: 'block', marginTop: '8px', fontSize: '0.74rem', color: 'var(--accent-color)' }}>
+            💡 Tip: Press <strong>Ctrl+V</strong> anywhere to paste a screenshot or whiteboard photo for instant OCR.
+          </small>
+
           <input
             id="fileInputReact"
             type="file"
-            accept="audio/*,video/*,.hevc,.h265,.265,.mp4,.mkv,.mov,.qt,.prores,.avi,.webm,.flv,.wmv,.m4v,.ts,.mts,.m2ts,.3gp,.3g2,.ogv,.vob,.mxf,.rm,.rmvb,.asf,.divx,.xvid,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.wma,.amr,.awb,.ac3,.eac3,.aiff,.aif,.alac,.ape,.caf,.dts,.pcm,.doc,.docx,.txt,.md,.srt,.vtt,.rtf,.csv,.tsv,.json"
+            accept="audio/*,video/*,image/*,.pdf,.hevc,.h265,.265,.mp4,.mkv,.mov,.qt,.prores,.avi,.webm,.flv,.wmv,.m4v,.ts,.mts,.m2ts,.3gp,.3g2,.ogv,.vob,.mxf,.rm,.rmvb,.asf,.divx,.xvid,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.wma,.amr,.awb,.ac3,.eac3,.aiff,.aif,.alac,.ape,.caf,.dts,.pcm,.doc,.docx,.txt,.md,.srt,.vtt,.rtf,.csv,.tsv,.json"
             style={{ display: 'none' }}
             onChange={handleFileChange}
           />
@@ -293,158 +376,59 @@ export default function MediaInput({
         </button>
       </div>
 
-      {/* AI Config Card */}
+      {/* Active AI Engine Status & Models Card */}
       <div className="card" style={{ marginBottom: 0 }}>
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '8px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <Key size={20} color="var(--accent-color)" /> AI Provider & Dedicated Models
-        </h2>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '16px' }}>
-          Connect Groq, Google Gemini (Interactions API), OpenAI, Claude, Manual MCP Server, or Custom endpoints.
-        </p>
-
-        <div className="form-group">
-          <label>AI Provider:</label>
-          <select
-            className="form-control"
-            value={aiConfig.provider}
-            onChange={(e) => {
-              const val = e.target.value;
-              let defaultSTT = 'whisper-large-v3-turbo';
-              let defaultLLM = 'openai/gpt-oss-120b';
-              let defaultBase = '';
-
-              if (val === 'groq') {
-                defaultSTT = 'whisper-large-v3-turbo';
-                defaultLLM = 'openai/gpt-oss-120b';
-                defaultBase = 'https://api.groq.com/openai/v1';
-              } else if (val === 'gemini') {
-                defaultSTT = 'gemini-3.5-flash-lite';
-                defaultLLM = 'gemini-3.5-flash-lite';
-              } else if (val === 'openai') {
-                defaultSTT = 'whisper-1';
-                defaultLLM = 'gpt-4o';
-              } else if (val === 'anthropic') {
-                defaultSTT = 'gemini-3.5-flash-lite';
-                defaultLLM = 'claude-3-5-sonnet-20241022';
-              } else if (val === 'mcp') {
-                defaultSTT = 'mcp-stt-agent';
-                defaultLLM = 'mcp-executive-agent';
-                defaultBase = 'http://localhost:8000/sse';
-              } else if (val === 'custom') {
-                defaultSTT = 'whisper-large-v3-turbo';
-                defaultLLM = 'openai/gpt-oss-120b';
-              }
-
-              setAiConfig({
-                ...aiConfig,
-                provider: val,
-                transcriptionModel: defaultSTT,
-                summarizationModel: defaultLLM,
-                modelName: defaultLLM,
-                baseUrl: defaultBase
-              });
-              setVerifyStatus(null);
-            }}
-          >
-            <option value="groq">Groq Cloud (GPT-OSS-120B / Whisper)</option>
-            <option value="gemini">Google Gemini (Gemini 3.5 Flash Lite Interactions API)</option>
-            <option value="openai">OpenAI (GPT-4o / Whisper)</option>
-            <option value="anthropic">Anthropic Claude</option>
-            <option value="mcp">Manual MCP Server (SSE / HTTP Endpoint)</option>
-            <option value="custom">Custom OpenAI-Compatible (Ollama, vLLM, OpenRouter)</option>
-          </select>
-        </div>
-
-        <div className="form-group">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <label style={{ margin: 0 }}>API Key:</label>
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <button
-                className="btn btn-secondary btn-sm"
-                style={{ padding: '2px 8px', fontSize: '0.75rem' }}
-                onClick={handleVerifyKey}
-                disabled={verifying}
-              >
-                {verifying ? <RefreshCw size={12} className="spin" /> : <CheckCircle size={12} />} Test Key
-              </button>
-              <a
-                href={getKeyLink()}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: 'var(--accent-color)', fontSize: '0.78rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none' }}
-              >
-                Get Free Key <ExternalLink size={12} />
-              </a>
-            </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px', paddingBottom: '12px', borderBottom: '1px solid var(--border-color)' }}>
+          <div>
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 700, margin: 0, display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <Cpu size={18} color="var(--accent-color)" /> Active AI Engine: {getActiveApiDisplayName(aiConfig)}
+            </h2>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', margin: '2px 0 0 0' }}>
+              Provider: <strong>{aiConfig.provider?.toUpperCase()}</strong> • By default using Gemini API (or configured custom API).
+            </p>
           </div>
-
-          <div style={{ position: 'relative' }}>
-            <input
-              type={aiConfig.showKey ? 'text' : 'password'}
-              className="form-control"
-              placeholder="Paste API Key here (e.g. AIzaSy... or gsk_...)"
-              value={aiConfig.apiKey}
-              onChange={(e) => handleKeyChange(e.target.value)}
-            />
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
             <button
+              id="frontPageTestApiBtn"
               type="button"
-              style={{ position: 'absolute', right: '10px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}
-              onClick={() => setAiConfig({ ...aiConfig, showKey: !aiConfig.showKey })}
+              className="btn btn-secondary btn-sm"
+              onClick={handleVerifyKey}
+              disabled={verifying}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.8rem', padding: '6px 14px', background: 'rgba(2, 132, 199, 0.08)' }}
+              title="Test connection to active API engine"
             >
-              {aiConfig.showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+              <Zap size={14} color="var(--accent-color)" /> {verifying ? 'Testing API...' : '⚡ Test API'}
             </button>
+            {onOpenSettings && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={onOpenSettings}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, fontSize: '0.8rem', padding: '6px 12px' }}
+              >
+                <Key size={14} /> Configure / Switch APIs
+              </button>
+            )}
           </div>
-
-          {/* Test Status Feedback */}
-          {verifyStatus && (
-            <div
-              style={{
-                marginTop: '8px',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                fontSize: '0.8rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                background: verifyStatus.valid ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                border: `1px solid ${verifyStatus.valid ? 'rgba(16, 185, 129, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
-                color: verifyStatus.valid ? '#10b981' : '#ef4444'
-              }}
-            >
-              {verifyStatus.valid ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
-              {verifyStatus.message}
-            </div>
-          )}
-
-          {/* Auto Detection Badges */}
-          {!verifyStatus && isGroqKey && (
-            <div style={{ marginTop: '8px', padding: '6px 12px', borderRadius: '8px', background: 'rgba(16, 185, 129, 0.15)', border: '1px solid rgba(16, 185, 129, 0.3)', color: '#10b981', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle size={14} /> Detected Groq Key format. Click 'Test Key' to check if active.
-            </div>
-          )}
-
-          {!verifyStatus && isGeminiKey && (
-            <div style={{ marginTop: '8px', padding: '6px 12px', borderRadius: '8px', background: 'rgba(59, 130, 246, 0.15)', border: '1px solid rgba(59, 130, 246, 0.3)', color: '#60a5fa', fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <CheckCircle size={14} /> Detected Google Gemini Key format. Click 'Test Key' to check if active.
-            </div>
-          )}
         </div>
 
-        {(aiConfig.provider === 'custom' || aiConfig.provider === 'openai' || aiConfig.provider === 'mcp') && (
-          <div className="form-group">
-            <label>{aiConfig.provider === 'mcp' ? 'Manual MCP Server URL (SSE or HTTP):' : 'Custom Base URL:'}</label>
-            <input
-              type="text"
-              className="form-control"
-              placeholder={aiConfig.provider === 'mcp' ? 'http://localhost:8000/sse or http://127.0.0.1:3000/mcp' : 'https://api.groq.com/openai/v1 or http://localhost:11434/v1'}
-              value={aiConfig.baseUrl}
-              onChange={(e) => setAiConfig({ ...aiConfig, baseUrl: e.target.value })}
-            />
-            {aiConfig.provider === 'mcp' && (
-              <small style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginTop: '4px', display: 'block' }}>
-                Connects to any running MCP Server over Server-Sent Events (SSE) or HTTP gateway.
-              </small>
-            )}
+        {/* Live Test Status Alert on Front Page */}
+        {verifyStatus && (
+          <div style={{
+            marginBottom: '14px',
+            padding: '8px 14px',
+            borderRadius: '8px',
+            fontSize: '0.82rem',
+            fontWeight: 600,
+            background: verifyStatus.valid || verifyStatus.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+            color: verifyStatus.valid || verifyStatus.success ? '#10b981' : '#ef4444',
+            border: verifyStatus.valid || verifyStatus.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
+          }}>
+            {verifyStatus.valid || verifyStatus.success ? <CheckCircle size={16} /> : <AlertTriangle size={16} />}
+            <span>{verifyStatus.message}</span>
           </div>
         )}
 

@@ -1,48 +1,50 @@
 import React from 'react';
 import {
-  Upload,
-  Mic,
-  Sparkles,
+  Radio,
+  Layers,
   Languages,
+  Upload,
+  UploadCloud,
+  Cpu,
+  FileCode,
+  Sparkles,
   Calendar,
   MessageSquare,
   Users,
   FileText,
-  FileCode,
-  Landmark,
-  BookOpen,
-  Newspaper,
-  Feather
+  Landmark
 } from 'lucide-react';
 
 export default function NavTabs({ activeSection, scrollToSection, documentType = 'meeting_minutes' }) {
   const getSectionsForDocType = () => {
+    // 1. Live Record (Unified), 2. Transcripts, 3. Engine, 4. Templates, 5. Skills
     const baseSections = [
-      { id: 'section-input', label: '1. Media & AI', icon: Upload },
-      { id: 'section-live', label: '2. Live Mic', icon: Mic },
-      { id: 'section-templates', label: '3. Templates & 3-Directives', icon: FileCode },
-      { id: 'section-transcripts', label: '4. Transcripts', icon: Languages },
+      { id: 'section-live', label: 'Live Record', icon: Radio },
+      { id: 'section-transcripts', label: 'Transcripts', icon: Languages },
+      { id: 'section-input', label: 'Engine', icon: Cpu },
+      { id: 'section-templates', label: 'Templates', icon: FileCode },
+      { id: 'section-skills', label: 'Skills', icon: Sparkles },
     ];
 
     if (documentType === 'meeting_minutes') {
       return [
         ...baseSections,
-        { id: 'section-meta', label: '5. Agendas & Venue', icon: Calendar },
-        { id: 'section-discussions', label: '6. 4-Topic Discussions', icon: MessageSquare },
-        { id: 'section-attendance', label: '7. Attendance (21 Members)', icon: Users },
-        { id: 'section-export', label: '8. Preview & Export', icon: FileText }
+        { id: 'section-meta', label: 'Agendas', icon: Calendar },
+        { id: 'section-discussions', label: 'Discussions', icon: MessageSquare },
+        { id: 'section-attendance', label: 'Attendance', icon: Users },
+        { id: 'section-export', label: 'Preview', icon: FileText }
       ];
     } else if (documentType === 'bangladesh_govt_report') {
       return [
         ...baseSections,
-        { id: 'section-govt-form', label: '5. Govt Nothi Report', icon: Landmark },
-        { id: 'section-export', label: '6. Preview & Export', icon: FileText }
+        { id: 'section-govt-form', label: 'Report', icon: Landmark },
+        { id: 'section-export', label: 'Preview', icon: FileText }
       ];
     } else {
       return [
         ...baseSections,
-        { id: 'section-article-form', label: '5. Document Content', icon: FileText },
-        { id: 'section-export', label: '6. Preview & Export', icon: FileText }
+        { id: 'section-article-form', label: 'Document', icon: FileText },
+        { id: 'section-export', label: 'Preview', icon: FileText }
       ];
     }
   };
@@ -50,7 +52,7 @@ export default function NavTabs({ activeSection, scrollToSection, documentType =
   const currentSections = getSectionsForDocType();
 
   return (
-    <nav className="nav-tabs sticky-navbar">
+    <nav className="nav-tabs sticky-navbar" aria-label="Section Navigation">
       {currentSections.map((sec) => {
         const Icon = sec.icon;
         const isActive = activeSection === sec.id;
@@ -59,9 +61,10 @@ export default function NavTabs({ activeSection, scrollToSection, documentType =
             key={sec.id}
             className={`tab-btn ${isActive ? 'active' : ''}`}
             onClick={() => scrollToSection(sec.id)}
+            aria-current={isActive ? 'true' : undefined}
           >
-            <Icon size={15} />
-            {sec.label}
+            <Icon size={16} />
+            <span>{sec.label}</span>
           </button>
         );
       })}

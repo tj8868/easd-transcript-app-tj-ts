@@ -93,28 +93,28 @@ export default function DocumentPreview({
     <div className="card" id="section-export" style={{ marginBottom: '40px' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <FileText size={20} color="var(--accent-color)" /> Exact Document Preview & Export
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', gap: '8px', alignItems: 'center', margin: 0 }}>
+            <FileText size={20} color="var(--accent-color)" /> Preview
           </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            Current Output Format: <strong>{activeTemplate.name}</strong>. Reflects 100% of the exact template layout, typography, tables, and sections.
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '2px' }}>
+            Current Output: <strong>{activeTemplate.name}</strong> • Live formatted document preview & 1-click export
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
           <button
-            className="btn btn-secondary"
+            className="btn btn-secondary btn-sm"
             onClick={handleDownloadTranscriptOnly}
             title="Download transcript text only (.txt)"
             style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
           >
-            <FileText size={18} /> Download Transcript Only (.txt)
+            <FileText size={15} /> Transcript (.txt)
           </button>
-          <button className="btn btn-primary" onClick={onDownloadDocx} disabled={isGenerating}>
-            <FileDown size={18} /> {isGenerating ? 'Generating Word .docx...' : 'Download Exact .docx'}
+          <button className="btn btn-primary btn-sm" onClick={onDownloadDocx} disabled={isGenerating} style={{ fontWeight: 700 }}>
+            <FileDown size={15} /> {isGenerating ? 'Generating Word...' : 'Download .docx'}
           </button>
           {isEasdMinutes && (
-            <button className="btn btn-success" onClick={onOpenGDrive}>
-              <Cloud size={18} /> Send to Google Drive
+            <button className="btn btn-success btn-sm" onClick={onOpenGDrive} style={{ fontWeight: 700 }}>
+              <Cloud size={15} /> GDrive Sync
             </button>
           )}
         </div>
@@ -126,7 +126,6 @@ export default function DocumentPreview({
         style={{
           background: '#ffffff',
           color: '#1e293b',
-          padding: '52px 60px',
           borderRadius: '8px',
           boxShadow: '0 12px 36px rgba(0,0,0,0.25), 0 0 1px 1px rgba(0,0,0,0.08)',
           maxWidth: '960px',
@@ -221,26 +220,28 @@ export default function DocumentPreview({
                 <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '8px' }}>
                   বাস্তবায়ন কর্মপরিকল্পনা:
                 </h4>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.92rem', border: '1px solid #000' }}>
-                  <thead>
-                    <tr style={{ background: '#f1f5f9', borderBottom: '1.5px solid #000' }}>
-                      <th style={{ padding: '8px 10px', border: '1px solid #000', width: '60px', textAlign: 'center' }}>ক্রমিক</th>
-                      <th style={{ padding: '8px 10px', border: '1px solid #000' }}>কার্যক্রম / সিদ্ধান্ত</th>
-                      <th style={{ padding: '8px 10px', border: '1px solid #000', width: '220px' }}>বাস্তবায়নকারী কর্তৃপক্ষ</th>
-                      <th style={{ padding: '8px 10px', border: '1px solid #000', width: '130px', textAlign: 'center' }}>সময়সীমা</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {meta.action_matrix.map((row, rIdx) => (
-                      <tr key={rIdx}>
-                        <td style={{ padding: '8px 10px', border: '1px solid #000', textAlign: 'center', fontWeight: 'bold' }}>{row.sn}</td>
-                        <td style={{ padding: '8px 10px', border: '1px solid #000' }}>{row.action}</td>
-                        <td style={{ padding: '8px 10px', border: '1px solid #000' }}>{row.authority}</td>
-                        <td style={{ padding: '8px 10px', border: '1px solid #000', textAlign: 'center' }}>{row.deadline}</td>
+                <div className="table-responsive">
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.92rem', border: '1px solid #000' }}>
+                    <thead>
+                      <tr style={{ background: '#f1f5f9', borderBottom: '1.5px solid #000' }}>
+                        <th style={{ padding: '8px 10px', border: '1px solid #000', width: '60px', textAlign: 'center' }}>ক্রমিক</th>
+                        <th style={{ padding: '8px 10px', border: '1px solid #000' }}>কার্যক্রম / সিদ্ধান্ত</th>
+                        <th style={{ padding: '8px 10px', border: '1px solid #000', width: '220px' }}>বাস্তবায়নকারী কর্তৃপক্ষ</th>
+                        <th style={{ padding: '8px 10px', border: '1px solid #000', width: '130px', textAlign: 'center' }}>সময়সীমা</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {meta.action_matrix.map((row, rIdx) => (
+                        <tr key={rIdx}>
+                          <td style={{ padding: '8px 10px', border: '1px solid #000', textAlign: 'center', fontWeight: 'bold' }}>{row.sn}</td>
+                          <td style={{ padding: '8px 10px', border: '1px solid #000' }}>{row.action}</td>
+                          <td style={{ padding: '8px 10px', border: '1px solid #000' }}>{row.authority}</td>
+                          <td style={{ padding: '8px 10px', border: '1px solid #000', textAlign: 'center' }}>{row.deadline}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
 
@@ -298,24 +299,26 @@ export default function DocumentPreview({
               <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
                 Agenda-Wise Meeting Discussions
               </h3>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.94rem', border: '1px solid #000000' }}>
-                <thead>
-                  <tr style={{ background: '#E36C0A', color: '#FFFFFF', borderBottom: '1.5px solid #000000' }}>
-                    <th style={{ width: '45px', padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>SN</th>
-                    <th style={{ width: '220px', padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Discussion Points</th>
-                    <th style={{ padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Major Discussions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(discussions || []).map((row, i) => (
-                    <tr key={i} style={{ background: i % 2 === 1 ? '#fafafa' : '#ffffff' }}>
-                      <td style={{ padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold' }}>{row.sn}</td>
-                      <td style={{ padding: '10px 8px', border: '1px solid #000000', fontWeight: 'bold' }}>{row.topic}</td>
-                      <td style={{ padding: '10px 8px', border: '1px solid #000000', lineHeight: '1.6' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(row.details) }} />
+              <div className="table-responsive">
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.94rem', border: '1px solid #000000' }}>
+                  <thead>
+                    <tr style={{ background: '#E36C0A', color: '#FFFFFF', borderBottom: '1.5px solid #000000' }}>
+                      <th style={{ width: '45px', padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>SN</th>
+                      <th style={{ width: '220px', padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Discussion Points</th>
+                      <th style={{ padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Major Discussions</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {(discussions || []).map((row, i) => (
+                      <tr key={i} style={{ background: i % 2 === 1 ? '#fafafa' : '#ffffff' }}>
+                        <td style={{ padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold' }}>{row.sn}</td>
+                        <td style={{ padding: '10px 8px', border: '1px solid #000000', fontWeight: 'bold' }}>{row.topic}</td>
+                        <td style={{ padding: '10px 8px', border: '1px solid #000000', lineHeight: '1.6' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(row.details) }} />
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
 
             {/* Major Strategic Decisions */}
@@ -334,26 +337,44 @@ export default function DocumentPreview({
                 <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
                   Attendance Checklist (21 Members):
                 </h3>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem', border: '1px solid #000000' }}>
-                  <thead>
-                    <tr style={{ background: '#E36C0A', color: '#FFFFFF' }}>
-                      <th style={{ width: '50px', padding: '6px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>Serial</th>
-                      <th style={{ padding: '6px 10px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Name</th>
-                      <th style={{ width: '110px', padding: '6px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>Participation</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attendance.map((m, i) => (
-                      <tr key={i} style={{ background: i % 2 === 1 ? '#fafafa' : '#ffffff' }}>
-                        <td style={{ padding: '5px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold' }}>{m.serial}</td>
-                        <td style={{ padding: '5px 10px', border: '1px solid #000000' }}>{m.name}</td>
-                        <td style={{ padding: '5px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold', color: m.participation === 'Yes' ? '#16a34a' : '#dc2626' }}>
-                          {m.participation}
-                        </td>
+                <div className="table-responsive">
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem', border: '1px solid #000000' }}>
+                    <thead>
+                      <tr style={{ background: '#E36C0A', color: '#FFFFFF' }}>
+                        <th style={{ width: '50px', padding: '6px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>Serial</th>
+                        <th style={{ padding: '6px 10px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Name</th>
+                        <th style={{ width: '110px', padding: '6px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>Participation</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {attendance.map((m, i) => {
+                        const isPresent = m.participation === 'Yes';
+                        return (
+                          <tr key={i} style={{ background: i % 2 === 1 ? '#fafafa' : '#ffffff' }}>
+                            <td style={{ padding: '5px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold' }}>{m.serial}</td>
+                            <td style={{ padding: '5px 10px', border: '1px solid #000000' }}>{m.name}</td>
+                            <td style={{ padding: '5px 8px', border: '1px solid #000000', textAlign: 'center' }}>
+                              <span style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '2px 8px',
+                                borderRadius: '4px',
+                                fontWeight: '700',
+                                fontSize: '0.82rem',
+                                background: isPresent ? '#dcfce7' : '#fee2e2',
+                                color: isPresent ? '#166534' : '#991b1b',
+                                border: isPresent ? '1px solid #86efac' : '1px solid #fca5a5'
+                              }}>
+                                {isPresent ? '✓ Yes' : '✕ No'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </div>
@@ -545,64 +566,41 @@ export default function DocumentPreview({
                   <h4 style={{ fontSize: '1.1rem', fontWeight: 'bold', color: '#003366', marginBottom: '8px' }}>
                     {tbl.title || `Table ${tIdx + 1}`}
                   </h4>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.92rem', border: '1px solid #000' }}>
-                    <thead>
-                      <tr style={{ background: '#f8fafc', borderBottom: '1.5px solid #000' }}>
-                        {(tbl.columns || []).map((col, cIdx) => (
-                          <th key={cIdx} style={{ padding: '8px 10px', border: '1px solid #000' }}>
-                            {col}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {rows.length > 0 ? (
-                        rows.map((r, rIdx) => (
-                          <tr key={rIdx}>
-                            {(tbl.columns || []).map((col, cIdx) => (
-                              <td key={cIdx} style={{ padding: '8px 10px', border: '1px solid #000' }}>
-                                {typeof r === 'object' ? r[col] || r[col.toLowerCase()] || '' : r}
-                              </td>
-                            ))}
-                          </tr>
-                        ))
-                      ) : (
-                        <tr>
-                          <td colSpan={(tbl.columns || []).length} style={{ padding: '12px', border: '1px solid #000', textAlign: 'center', color: '#94a3b8', fontStyle: 'italic' }}>
-                            Table rows will be automatically populated from audio data synthesis.
-                          </td>
+                  <div className="table-responsive">
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.92rem', border: '1px solid #000' }}>
+                      <thead>
+                        <tr style={{ background: '#f8fafc', borderBottom: '1.5px solid #000' }}>
+                          {(tbl.columns || []).map((col, cIdx) => (
+                            <th key={cIdx} style={{ padding: '8px 10px', border: '1px solid #000' }}>
+                              {col}
+                            </th>
+                          ))}
                         </tr>
-                      )}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {rows.length > 0 ? (
+                          rows.map((r, rIdx) => (
+                            <tr key={rIdx}>
+                              {(tbl.columns || []).map((col, cIdx) => (
+                                <td key={cIdx} style={{ padding: '8px 10px', border: '1px solid #000' }}>
+                                  {typeof r === 'object' ? r[col] || r[col.toLowerCase()] || '' : r}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        ) : (
+                          <tr>
+                            <td colSpan={(tbl.columns || []).length} style={{ padding: '12px', border: '1px solid #000', textAlign: 'center', color: '#94a3b8', fontStyle: 'italic' }}>
+                              Table rows will be automatically populated from audio data synthesis.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* Dual Transcripts Appendix */}
-        {(banglaTranscript || englishTranscript) && (
-          <div style={{ marginTop: '40px', borderTop: '2px dashed #cbd5e1', paddingTop: '20px' }}>
-            <h3 style={{ fontSize: '1.2rem', fontWeight: 'bold', color: '#003366', marginBottom: '14px' }}>
-              Attached Recording Transcriptions
-            </h3>
-            {banglaTranscript && (
-              <div style={{ marginBottom: '16px' }}>
-                <h4 style={{ fontWeight: 'bold', color: '#334155', marginBottom: '4px' }}>বাংলা বিবরণ (Bangla Transcript):</h4>
-                <div style={{ fontSize: '0.95rem', lineHeight: '1.65', color: '#475569', background: '#f8fafc', padding: '14px', borderRadius: '8px', whiteSpace: 'pre-wrap', fontFamily: "'Hind Siliguri', sans-serif" }}>
-                  {sanitize(banglaTranscript)}
-                </div>
-              </div>
-            )}
-            {englishTranscript && (
-              <div>
-                <h4 style={{ fontWeight: 'bold', color: '#334155', marginBottom: '4px' }}>English Transcript:</h4>
-                <div style={{ fontSize: '0.95rem', lineHeight: '1.65', color: '#475569', background: '#f8fafc', padding: '14px', borderRadius: '8px', whiteSpace: 'pre-wrap' }}>
-                  {sanitize(englishTranscript)}
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>

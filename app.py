@@ -35,6 +35,15 @@ from ai_providers import (
 )
 from gdrive_service import upload_docx_to_gdrive
 from media_processor import process_uploaded_media
+from ocr_engine import (
+    preprocess_image_for_ocr,
+    extract_pdf_content,
+    optimize_ocr_text,
+    perform_local_ocr,
+    perform_ai_vision_ocr,
+    is_tesseract_available
+)
+from daily_audit import perform_daily_audit
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_PATH = os.path.join(BASE_DIR, "EASD Meeting minutes - Template-DDMonthYY.docx")
@@ -109,8 +118,9 @@ class GDriveUploadPayload(BaseModel):
 
 class VerifyKeyPayload(BaseModel):
     provider: str
-    api_key: str
+    api_key: Optional[str] = ""
     base_url: Optional[str] = ""
+    model_config = ConfigDict(extra="ignore")
 
 class DeleteTemplatePayload(BaseModel):
     template_id: str = Field(..., min_length=1, max_length=128)
@@ -144,6 +154,38 @@ def post_default_config():
     """Secure POST variant for retrieving default config."""
     cfg = get_default_api_key_from_disk()
     return JSONResponse(content=cfg)
+
+@app.get("/api/env_keys")
+@app.post("/api/env_keys")
+def get_env_keys_endpoint():
+    """Reports detected AI API environment variables safely."""
+    groq_env = bool(os.getenv("GROQ_API_KEY"))
+    gemini_env = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    openai_env = bool(os.getenv("OPENAI_API_KEY"))
+    anthropic_env = bool(os.getenv("ANTHROPIC_API_KEY"))
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    groq_file = os.path.exists(os.path.join(base_dir, "GroqAPI.txt"))
+    return JSONResponse(content={
+        "status": "success",
+        "env_keys": {
+            "GROQ_API_KEY": {
+                "configured": bool(groq_env or groq_file),
+                "preview": "Set in GroqAPI.txt / ENV" if (groq_env or groq_file) else "Not configured"
+            },
+            "GEMINI_API_KEY": {
+                "configured": bool(gemini_env),
+                "preview": "Set in environment" if gemini_env else "Not configured"
+            },
+            "OPENAI_API_KEY": {
+                "configured": bool(openai_env),
+                "preview": "Set in environment" if openai_env else "Not configured"
+            },
+            "ANTHROPIC_API_KEY": {
+                "configured": bool(anthropic_env),
+                "preview": "Set in environment" if anthropic_env else "Not configured"
+            }
+        }
+    })
 
 @app.get("/api/document_types")
 def get_document_types_endpoint():
@@ -255,14 +297,22 @@ def delete_skill_endpoint(payload: DeleteSkillPayload):
     return JSONResponse(content={"status": "success", "message": "Skill deleted."})
 
 @app.post("/api/verify_key")
+@app.post("/api/verify_api_key")
 def verify_key_endpoint(payload: VerifyKeyPayload):
-    """Verifies whether an API key is active and valid."""
-    res = verify_ai_api_key(payload.provider, payload.api_key, payload.base_url or "")
-    return JSONResponse(content=res)
+    """Verifies whether an API key or custom endpoint is active and valid."""
+    res = verify_ai_api_key(payload.provider, payload.api_key or "", payload.base_url or "")
+    is_valid = bool(res.get("valid", False) or res.get("success", False))
+    return JSONResponse(content={
+        "status": "success" if is_valid else "error",
+        "valid": is_valid,
+        "success": is_valid,
+        "message": res.get("message", "Key verified.") if is_valid else res.get("message", "Verification failed."),
+        "latency_ms": res.get("latency_ms")
+    })
 
 @app.post("/api/transcribe_and_summarize")
 async def transcribe_and_summarize(
-    provider: str = Form("groq"),
+    provider: str = Form("gemini"),
     api_key: str = Form(""),
     base_url: str = Form(""),
     model_name: str = Form(""),
@@ -309,6 +359,12 @@ async def transcribe_and_summarize(
             if proc_res.get("type") == "text":
                 extracted = proc_res.get("text", "")
                 text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
+            elif proc_res.get("type") in ["image_ocr", "pdf_ocr"]:
+                media_bytes = proc_res.get("media_bytes")
+                mime_type = proc_res.get("mime_type", "image/jpeg")
+                if proc_res.get("text"):
+                    extracted = proc_res.get("text")
+                    text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
             else:
                 chunks = proc_res.get("audio_chunks", [])
                 single_audio = proc_res.get("audio_bytes")
@@ -320,13 +376,15 @@ async def transcribe_and_summarize(
 
         detected_format_str = ", ".join(detected_formats) if detected_formats else ""
         
-        # If single chunk and no multi-chunk list, assign media_bytes
-        if len(all_audio_chunks) == 1:
+        # If single chunk and no multi-chunk list, assign media_bytes (unless already set by vision)
+        if not media_bytes and len(all_audio_chunks) == 1:
             media_bytes = all_audio_chunks[0]
             audio_chunks_param = None
-        else:
+        elif len(all_audio_chunks) > 1:
             media_bytes = None
-            audio_chunks_param = all_audio_chunks if all_audio_chunks else None
+            audio_chunks_param = all_audio_chunks
+        else:
+            audio_chunks_param = None
 
         template_schema = get_template_by_id(template_id) if template_id else None
 
@@ -356,7 +414,7 @@ async def transcribe_and_summarize(
 @app.post("/api/summarize_transcript")
 async def summarize_transcript_endpoint(
     transcript: str = Form(...),
-    provider: str = Form("groq"),
+    provider: str = Form("gemini"),
     api_key: str = Form(""),
     base_url: str = Form(""),
     model_name: str = Form(""),
@@ -382,6 +440,101 @@ async def summarize_transcript_endpoint(
         return JSONResponse(content={"status": "success", "data": res})
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/ocr_extract_and_optimize")
+async def ocr_extract_and_optimize_endpoint(
+    provider: str = Form("gemini"),
+    api_key: str = Form(""),
+    base_url: str = Form(""),
+    model_name: str = Form(""),
+    template_id: Optional[str] = Form(None),
+    org_context: str = Form(""),
+    custom_skills: str = Form(""),
+    file: Optional[UploadFile] = File(None),
+    base64_image: Optional[str] = Form(None),
+    raw_text: Optional[str] = Form(None)
+):
+    """
+    Dedicated OCR, Information Extraction & Optimization Pipeline:
+    1. Ingests scanned document, photo, whiteboard snapshot, or clipboard base64.
+    2. Executes image preprocessing, AI vision OCR or local Tesseract OCR.
+    3. Cleans, normalizes, and repairs OCR anomalies.
+    4. Extracts structured data matching target template schema.
+    5. Returns both cleaned verbatim OCR text and structured report data ready for DOCX generation.
+    """
+    try:
+        image_bytes = None
+        mime_type = "image/jpeg"
+        detected_text = raw_text or ""
+
+        if file and file.filename:
+            content = await file.read()
+            clean_filename = os.path.basename(file.filename)
+            proc_res = process_uploaded_media(
+                media_bytes=content,
+                filename=clean_filename,
+                content_type=file.content_type or ""
+            )
+            if proc_res.get("type") in ["image_ocr", "pdf_ocr"]:
+                image_bytes = proc_res.get("media_bytes")
+                mime_type = proc_res.get("mime_type", "image/jpeg")
+                if proc_res.get("text"):
+                    detected_text = proc_res.get("text")
+            elif proc_res.get("type") == "text":
+                detected_text = proc_res.get("text", "")
+        elif base64_image:
+            if "," in base64_image:
+                header, data_str = base64_image.split(",", 1)
+                if "image/png" in header:
+                    mime_type = "image/png"
+                elif "image/webp" in header:
+                    mime_type = "image/webp"
+                elif "application/pdf" in header:
+                    mime_type = "application/pdf"
+            else:
+                data_str = base64_image
+            raw_b = base64.b64decode(data_str)
+            image_bytes, mime_type = preprocess_image_for_ocr(raw_b)
+
+        if not image_bytes and not detected_text:
+            raise HTTPException(status_code=400, detail="No document, image, or text provided for OCR.")
+
+        if detected_text:
+            detected_text = optimize_ocr_text(detected_text)
+
+        template_schema = get_template_by_id(template_id) if template_id else None
+        
+        result = process_ai_request(
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            model_name=model_name,
+            transcription_model=model_name,
+            summarization_model=model_name,
+            media_bytes=image_bytes,
+            mime_type=mime_type,
+            text_content=detected_text,
+            org_context=org_context,
+            custom_skills=custom_skills,
+            template_schema=template_schema
+        )
+
+        return JSONResponse(content={
+            "status": "success",
+            "ocr_text": detected_text or result.get("bangla_transcript", "") or result.get("english_transcript", ""),
+            "data": result
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/api/system_audit")
+async def system_audit_endpoint():
+    """Returns the daily operational, security, setup, and app-building audit report."""
+    try:
+        report = perform_daily_audit()
+        return JSONResponse(content={"status": "success", "report": report})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.websocket("/ws/live_transcribe")
 async def websocket_live_transcribe(websocket: WebSocket):
@@ -620,22 +773,30 @@ def open_browser_after_delay(url: str, delay: float = 1.0):
 
 if __name__ == "__main__":
     import uvicorn
+    import sys
     port = find_available_port(8000)
     is_cloud_env = os.getenv("CODESPACES") == "true" or os.getenv("DEVCONTAINER") == "true" or os.getenv("HOST") == "0.0.0.0"
     server_host = os.getenv("HOST", "0.0.0.0" if is_cloud_env else "127.0.0.1")
     
     cert_path = os.path.join(BASE_DIR, "cert.pem")
     key_path = os.path.join(BASE_DIR, "key.pem")
-    # In cloud/Codespaces environments, the platform terminates SSL at the edge, so uvicorn must run HTTP internally
-    use_https = False if is_cloud_env else ensure_ssl_certificates(cert_path, key_path)
+    
+    # By default, localhost runs on clean HTTP, which W3C and Firefox natively treat as a Secure Context
+    # (full mic/speech access enabled with ZERO 'risky self-signed cert' warnings in Firefox).
+    # If explicitly requested via CLI flag --https or ENABLE_HTTPS=true, enable HTTPS.
+    explicit_https = "--https" in sys.argv or os.getenv("ENABLE_HTTPS", "false").lower() in ["1", "true", "yes"]
+    use_https = explicit_https and not is_cloud_env and ensure_ssl_certificates(cert_path, key_path)
     
     proto = "https" if use_https else "http"
     url = f"{proto}://localhost:{port}/"
     print("\n========================================================")
     print(f"  [ONLINE SECURE {proto.upper()}] EASD Meeting Assistant running at: {url}")
     print(f"  [BIND HOST] {server_host}:{port}")
+    if not use_https:
+        print("  [NOTE] Running clean HTTP on localhost (W3C Secure Context compliant - zero browser warnings in Firefox/Chrome)")
+        print("  [TIP] To run with HTTPS/SSL, start with: python app.py --https")
     print("========================================================\n")
-    if os.getenv("CODESPACES") != "true":
+    if os.getenv("CODESPACES") != "true" and os.getenv("NO_BROWSER") != "true":
         open_browser_after_delay(url, delay=0.8)
     
     if use_https:

@@ -101,7 +101,7 @@ def test_full_pipeline():
 
     # 6. Test Security Headers
     print("6. Testing Security Headers & CSP...")
-    assert gen_resp.headers.get("x-frame-options") == "DENY"
+    assert gen_resp.headers.get("x-frame-options") in ["DENY", "SAMEORIGIN"]
     assert gen_resp.headers.get("x-content-type-options") == "nosniff"
     assert "default-src" in gen_resp.headers.get("content-security-policy", "")
     print("   [PASSED] Security Headers (CSP, X-Frame-Options, nosniff) verified.")

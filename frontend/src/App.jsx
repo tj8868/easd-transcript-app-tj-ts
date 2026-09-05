@@ -1,12 +1,24 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import {
+  Upload,
+  Cpu,
+  FileCode,
+  Sparkles,
+  Calendar,
+  MessageSquare,
+  Users,
+  Landmark,
+  FileText
+} from 'lucide-react';
 import Header from './components/Header';
 import NavTabs from './components/NavTabs';
 import MediaInput from './components/MediaInput';
-import LiveTranscription from './components/LiveTranscription';
+import LiveRecordStudio from './components/LiveRecordStudio';
 import TemplateGenerator from './components/TemplateGenerator';
 import AiSkillsSelector from './components/AiSkillsSelector';
 import Transcripts from './components/Transcripts';
+import CollapsibleCard from './components/CollapsibleCard';
 import MetaAgendas from './components/MetaAgendas';
 import Discussions from './components/Discussions';
 import Attendance from './components/Attendance';
@@ -16,6 +28,7 @@ import DocumentPreview from './components/DocumentPreview';
 import GDriveModal from './components/GDriveModal';
 import SettingsModal, { ACCENT_PALETTES } from './components/SettingsModal';
 import ResponsiveDeviceViewer from './components/ResponsiveDeviceViewer';
+import { getSavedKeyForProvider, getSavedBaseUrlForProvider, saveKeyForProvider, activateProvider, getActiveApiDisplayName, PROVIDERS } from './utils/apiKeyStorage';
 
 const DEFAULT_AGENDAS = [
   'Review of previous meeting minutes & action items',
@@ -35,7 +48,26 @@ export default function App() {
   const isFrameView = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'frame';
   const [isDeviceViewerOpen, setIsDeviceViewerOpen] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
-  const [activeSection, setActiveSection] = useState('section-input');
+  const [activeSection, setActiveSection] = useState('section-live');
+
+  // Collapsed state for sections below Transcripts (all collapsed by default)
+  const [collapsedSections, setCollapsedSections] = useState({
+    'section-input': true,
+    'section-templates': true,
+    'section-skills': true,
+    'section-meta': true,
+    'section-discussions': true,
+    'section-attendance': true,
+    'section-govt-form': true,
+    'section-article-form': true
+  });
+
+  const toggleSectionCollapse = (sectionId) => {
+    setCollapsedSections((prev) => ({
+      ...prev,
+      [sectionId]: !prev[sectionId]
+    }));
+  };
 
   // Secondary Settings State (Font Engine, Accent Colors, Typography Scale)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -73,15 +105,23 @@ export default function App() {
   const [customSectionsData, setCustomSectionsData] = useState({});
   const [customTablesData, setCustomTablesData] = useState({});
 
-  const [aiConfig, setAiConfig] = useState({
-    provider: localStorage.getItem('aiProvider') || 'groq',
-    apiKey: localStorage.getItem('apiKey') || '',
-    baseUrl: localStorage.getItem('baseUrl') || 'https://api.groq.com/openai/v1',
-    transcriptionModel: localStorage.getItem('transcriptionModel') || 'whisper-large-v3-turbo',
-    summarizationModel: localStorage.getItem('summarizationModel') || 'openai/gpt-oss-120b',
-    modelName: localStorage.getItem('summarizationModel') || 'openai/gpt-oss-120b',
-    showKey: false
+  const [aiConfig, setAiConfig] = useState(() => {
+    const p = localStorage.getItem('aiProvider') || 'gemini';
+    const k = getSavedKeyForProvider(p);
+    const b = getSavedBaseUrlForProvider(p);
+    const prov = PROVIDERS.find((item) => item.id === p) || PROVIDERS[0];
+    return {
+      provider: p,
+      apiKey: k,
+      baseUrl: b || prov.defaultBaseUrl,
+      transcriptionModel: localStorage.getItem('transcriptionModel') || prov.defaultSTT,
+      summarizationModel: localStorage.getItem('summarizationModel') || prov.defaultLLM,
+      modelName: localStorage.getItem('summarizationModel') || prov.defaultLLM,
+      showKey: false
+    };
   });
+
+  const activeApiName = getActiveApiDisplayName(aiConfig);
 
   const [orgContext, setOrgContext] = useState(
     localStorage.getItem('orgContext') ||
@@ -146,9 +186,14 @@ export default function App() {
 
   // Sync LocalStorage
   useEffect(() => {
-    localStorage.setItem('aiProvider', aiConfig.provider);
-    localStorage.setItem('apiKey', aiConfig.apiKey);
-    localStorage.setItem('baseUrl', aiConfig.baseUrl);
+    if (aiConfig.provider) {
+      localStorage.setItem('aiProvider', aiConfig.provider);
+      if (aiConfig.apiKey) {
+        saveKeyForProvider(aiConfig.provider, aiConfig.apiKey, aiConfig.baseUrl);
+      }
+    }
+    localStorage.setItem('apiKey', aiConfig.apiKey || '');
+    localStorage.setItem('baseUrl', aiConfig.baseUrl || '');
     localStorage.setItem('transcriptionModel', aiConfig.transcriptionModel || '');
     localStorage.setItem('summarizationModel', aiConfig.summarizationModel || '');
     localStorage.setItem('modelName', aiConfig.summarizationModel || '');
@@ -246,16 +291,24 @@ export default function App() {
 
   const scrollToSection = (sectionId) => {
     setActiveSection(sectionId);
-    const elem = document.getElementById(sectionId);
-    if (elem) {
-      const topOffset = 90;
-      const elementPosition = elem.getBoundingClientRect().top;
-      const offsetPosition = elementPosition + window.pageYOffset - topOffset;
-      window.scrollTo({
-        top: offsetPosition,
-        behavior: 'smooth'
-      });
+    if (collapsedSections[sectionId]) {
+      setCollapsedSections((prev) => ({
+        ...prev,
+        [sectionId]: false
+      }));
     }
+    setTimeout(() => {
+      const elem = document.getElementById(sectionId);
+      if (elem) {
+        const topOffset = 80;
+        const elementPosition = elem.getBoundingClientRect().top;
+        const offsetPosition = elementPosition + window.pageYOffset - topOffset;
+        window.scrollTo({
+          top: offsetPosition,
+          behavior: 'smooth'
+        });
+      }
+    }, 60);
   };
 
   const toggleTheme = () => setTheme(theme === 'light' ? 'dark' : 'light');
@@ -559,6 +612,8 @@ export default function App() {
         toggleTheme={toggleTheme}
         onOpenGDrive={() => setIsGDriveOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenApiSettings={() => setIsSettingsOpen(true)}
+        activeApiName={activeApiName}
         onOpenDeviceViewer={() => setIsDeviceViewerOpen(true)}
         isFrameView={isFrameView}
       />
@@ -569,110 +624,187 @@ export default function App() {
       />
 
       {/* SINGLE-PAGE SCROLLING LAYOUT */}
-      <main style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {/* 1. Input & AI Model */}
-        <MediaInput
-          selectedFile={selectedFile}
-          setSelectedFile={setSelectedFile}
-          directText={directText}
-          setDirectText={setDirectText}
-          aiConfig={aiConfig}
-          setAiConfig={setAiConfig}
-          templates={templates}
-          activeTemplateId={activeTemplateId}
-          onSelectTemplate={handleSelectTemplate}
-          onProcessAi={handleProcessAi}
-          isProcessing={isProcessing}
-        />
-
-        {/* 2. Real-Time Live Microphone Auto-Queue Transcription Studio */}
-        <LiveTranscription
+      <main style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        {/* 1. Live Record: Unified live recording, speech-to-text, drag & drop upload & multi-take studio */}
+        <LiveRecordStudio
           aiConfig={aiConfig}
           orgContext={orgContext}
           activeSkills={activeSkills}
           customSkillsList={customSkillsList}
           activeTemplateId={activeTemplateId}
+          onRecordingProcessed={handleRecordingProcessed}
           onSendToBangla={handleSendToBangla}
           onSendToEnglish={handleSendToEnglish}
-          onFitToTemplate={(text) => handleSummarizeTranscript(text, 'default')}
-          onRecordingProcessed={handleRecordingProcessed}
           scrollToSection={scrollToSection}
         />
 
-        {/* 3. AI Document Template Generator & 3 Directives Studio */}
-        <TemplateGenerator
-          templates={templates}
-          activeTemplateId={activeTemplateId}
-          onSelectTemplate={handleSelectTemplate}
-          onTemplatesUpdated={loadTemplates}
-          documentType={documentType}
-          onSelectDocumentType={handleSelectDocumentType}
-        />
-
-        {/* 4. AI Skills & Directives */}
-        <AiSkillsSelector
-          activeSkills={activeSkills}
-          setActiveSkills={setActiveSkills}
-          customSkillsList={customSkillsList}
-          setCustomSkillsList={setCustomSkillsList}
-          orgContext={orgContext}
-          setOrgContext={setOrgContext}
-        />
-
-        {/* 5. Dual Transcripts & AI Summarizer */}
+        {/* 3. Transcripts: Raw transcripts only (No summarizer) */}
         <Transcripts
           banglaTranscript={banglaTranscript}
           setBanglaTranscript={setBanglaTranscript}
           englishTranscript={englishTranscript}
           setEnglishTranscript={setEnglishTranscript}
-          onSummarizeTranscript={handleSummarizeTranscript}
-          isSummarizing={isSummarizing}
         />
 
-        {/* DYNAMIC DOCUMENT TYPE FORMS */}
+        {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}
 
-        {/* Form Mode A: Meeting Minutes */}
+        {/* 4. Engine: AI models, OCR & text input */}
+        <CollapsibleCard
+          id="section-input"
+          title="Engine"
+          icon={Cpu}
+          badge={selectedFile ? `${selectedFile.name.slice(0, 18)}...` : directText ? 'Draft text' : undefined}
+          summary="AI provider models, direct draft text & OCR"
+          isCollapsed={collapsedSections['section-input']}
+          onToggle={() => toggleSectionCollapse('section-input')}
+        >
+          <MediaInput
+            selectedFile={selectedFile}
+            setSelectedFile={setSelectedFile}
+            directText={directText}
+            setDirectText={setDirectText}
+            aiConfig={aiConfig}
+            setAiConfig={setAiConfig}
+            templates={templates}
+            activeTemplateId={activeTemplateId}
+            onSelectTemplate={handleSelectTemplate}
+            onProcessAi={handleProcessAi}
+            isProcessing={isProcessing}
+            onOpenSettings={() => setIsSettingsOpen(true)}
+          />
+        </CollapsibleCard>
+
+        {/* 5. Templates */}
+        <CollapsibleCard
+          id="section-templates"
+          title="Templates"
+          icon={FileCode}
+          badge={activeTemplate?.name || 'Standard'}
+          summary="Choose or generate document templates & directives"
+          isCollapsed={collapsedSections['section-templates']}
+          onToggle={() => toggleSectionCollapse('section-templates')}
+        >
+          <TemplateGenerator
+            templates={templates}
+            activeTemplateId={activeTemplateId}
+            onSelectTemplate={handleSelectTemplate}
+            onTemplatesUpdated={loadTemplates}
+            documentType={documentType}
+            onSelectDocumentType={handleSelectDocumentType}
+          />
+        </CollapsibleCard>
+
+        {/* 6. Skills */}
+        <CollapsibleCard
+          id="section-skills"
+          title="Skills"
+          icon={Sparkles}
+          badge={`${activeSkills.length} active`}
+          summary="Specialized AI directives and institutional rules"
+          isCollapsed={collapsedSections['section-skills']}
+          onToggle={() => toggleSectionCollapse('section-skills')}
+        >
+          <AiSkillsSelector
+            activeSkills={activeSkills}
+            setActiveSkills={setActiveSkills}
+            customSkillsList={customSkillsList}
+            setCustomSkillsList={setCustomSkillsList}
+            orgContext={orgContext}
+            setOrgContext={setOrgContext}
+          />
+        </CollapsibleCard>
+
+        {/* DYNAMIC FORMS (COLLAPSED BY DEFAULT) */}
         {isMeetingMinutes && (
           <>
-            <MetaAgendas
-              meta={meta}
-              setMeta={setMeta}
-              agendas={agendas}
-              setAgendas={setAgendas}
-            />
-            <Discussions
-              discussions={discussions}
-              setDiscussions={setDiscussions}
-              decisions={decisions}
-              setDecisions={setDecisions}
-            />
-            <Attendance
-              attendance={attendance}
-              setAttendance={setAttendance}
-            />
+            {/* 7. Agendas */}
+            <CollapsibleCard
+              id="section-meta"
+              title="Agendas"
+              icon={Calendar}
+              badge={meta.date}
+              summary="Meeting title, venue, date, time & agendas"
+              isCollapsed={collapsedSections['section-meta']}
+              onToggle={() => toggleSectionCollapse('section-meta')}
+            >
+              <MetaAgendas
+                meta={meta}
+                setMeta={setMeta}
+                agendas={agendas}
+                setAgendas={setAgendas}
+              />
+            </CollapsibleCard>
+
+            {/* 8. Discussions */}
+            <CollapsibleCard
+              id="section-discussions"
+              title="Discussions"
+              icon={MessageSquare}
+              badge="4 Topics"
+              summary="Follow-up, action items, task assignments & decisions"
+              isCollapsed={collapsedSections['section-discussions']}
+              onToggle={() => toggleSectionCollapse('section-discussions')}
+            >
+              <Discussions
+                discussions={discussions}
+                setDiscussions={setDiscussions}
+                decisions={decisions}
+                setDecisions={setDecisions}
+              />
+            </CollapsibleCard>
+
+            {/* 9. Attendance */}
+            <CollapsibleCard
+              id="section-attendance"
+              title="Attendance"
+              icon={Users}
+              badge={`${attendance.filter((m) => m.present).length} Present`}
+              summary="Member roster & attendance sheet"
+              isCollapsed={collapsedSections['section-attendance']}
+              onToggle={() => toggleSectionCollapse('section-attendance')}
+            >
+              <Attendance
+                attendance={attendance}
+                setAttendance={setAttendance}
+              />
+            </CollapsibleCard>
           </>
         )}
 
-        {/* Form Mode B: Bangladesh Government Nothi Report */}
         {isGovtReport && (
-          <div id="section-govt-form">
+          <CollapsibleCard
+            id="section-govt-form"
+            title="Report"
+            icon={Landmark}
+            badge="Govt Nothi"
+            summary="Ministry, memo number, observations & decisions"
+            isCollapsed={collapsedSections['section-govt-form']}
+            onToggle={() => toggleSectionCollapse('section-govt-form')}
+          >
             <GovtReportForm
               formData={meta}
               onChange={setMeta}
             />
-          </div>
+          </CollapsibleCard>
         )}
 
-        {/* Form Mode C: Journal, News, Blog, or Custom Article */}
         {!isMeetingMinutes && !isGovtReport && (
-          <div id="section-article-form">
+          <CollapsibleCard
+            id="section-article-form"
+            title="Document"
+            icon={FileText}
+            badge={activeTemplate?.name || 'Article'}
+            summary="Document content, author, abstract & sections"
+            isCollapsed={collapsedSections['section-article-form']}
+            onToggle={() => toggleSectionCollapse('section-article-form')}
+          >
             <ArticleReportForm
               docType={documentType}
               templateInfo={activeTemplate}
               formData={meta}
               onChange={setMeta}
             />
-          </div>
+          </CollapsibleCard>
         )}
 
         {/* 6. Live Document Preview & Export */}
@@ -710,6 +842,8 @@ export default function App() {
         setTheme={setTheme}
         settings={settings}
         setSettings={setSettings}
+        aiConfig={aiConfig}
+        setAiConfig={setAiConfig}
       />
 
       {isDeviceViewerOpen && !isFrameView && (

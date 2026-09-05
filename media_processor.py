@@ -7,6 +7,13 @@ import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Dict, Any, Optional
+from ocr_engine import (
+    extract_pdf_content,
+    preprocess_image_for_ocr,
+    optimize_ocr_text,
+    perform_local_ocr,
+    is_tesseract_available
+)
 
 # Supported extensions mapping
 VIDEO_EXTENSIONS = {
@@ -23,8 +30,15 @@ AUDIO_EXTENSIONS = {
 }
 
 DOCUMENT_EXTENSIONS = {
-    ".docx", ".doc", ".txt", ".md", ".srt", ".vtt", ".rtf", ".csv", ".tsv", ".json"
+    ".docx", ".doc", ".txt", ".md", ".srt", ".vtt", ".rtf", ".csv", ".tsv", ".json",
+    ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".heic"
 }
+
+IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif", ".heic"
+}
+
+PDF_EXTENSIONS = {".pdf"}
 
 # Maximum chunk size for API uploads (20 MB safe limit to stay well below 25MB Groq / OpenAI limits)
 MAX_CHUNK_BYTES = 20 * 1024 * 1024
@@ -285,8 +299,47 @@ def process_uploaded_media(
             "type": "text",
             "text": raw_text,
             "format_detected": "Text Document",
+            "media_bytes": None,
             "audio_bytes": None,
             "mime_type": "text/plain",
+            "audio_chunks": []
+        }
+
+    # 2. Check PDF Documents
+    if ext == ".pdf" or content_type == "application/pdf":
+        pdf_info = extract_pdf_content(media_bytes)
+        if not pdf_info["is_scanned"] and len(pdf_info["text"]) >= 60:
+            return {
+                "type": "text",
+                "text": pdf_info["text"],
+                "format_detected": f"PDF Document ({pdf_info['page_count']} Pages - Digital Text)",
+                "media_bytes": media_bytes,
+                "audio_bytes": None,
+                "mime_type": "text/plain",
+                "audio_chunks": []
+            }
+        else:
+            return {
+                "type": "pdf_ocr",
+                "text": pdf_info.get("text", ""),
+                "format_detected": f"Scanned PDF ({pdf_info['page_count']} Pages - Vision OCR)",
+                "media_bytes": media_bytes,
+                "audio_bytes": None,
+                "mime_type": "application/pdf",
+                "audio_chunks": []
+            }
+
+    # 3. Check Images for OCR (Photos, Scans, Whiteboards)
+    if ext in IMAGE_EXTENSIONS or content_type.startswith("image/"):
+        opt_bytes, opt_mime = preprocess_image_for_ocr(media_bytes)
+        local_text = perform_local_ocr(opt_bytes) if is_tesseract_available() else ""
+        return {
+            "type": "image_ocr",
+            "text": local_text,
+            "format_detected": f"Image Document ({ext.upper().lstrip('.')} - Multimodal OCR)",
+            "media_bytes": opt_bytes,
+            "audio_bytes": None,
+            "mime_type": opt_mime,
             "audio_chunks": []
         }
 

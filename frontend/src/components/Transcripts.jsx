@@ -1,19 +1,16 @@
 import React, { useState } from 'react';
-import { Languages, Copy, Check, Sparkles, Wand2, RefreshCw, Download, FileText } from 'lucide-react';
+import { Languages, Copy, Check, Download, Trash2 } from 'lucide-react';
 
 export default function Transcripts({
   banglaTranscript,
   setBanglaTranscript,
   englishTranscript,
-  setEnglishTranscript,
-  onSummarizeTranscript,
-  isSummarizing
+  setEnglishTranscript
 }) {
   const [copiedBangla, setCopiedBangla] = useState(false);
   const [copiedEnglish, setCopiedEnglish] = useState(false);
   const [copiedBoth, setCopiedBoth] = useState(false);
   const [downloadedBoth, setDownloadedBoth] = useState(false);
-  const [summarizeModel, setSummarizeModel] = useState('default');
 
   const downloadTextFile = (filename, content) => {
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
@@ -95,28 +92,26 @@ export default function Transcripts({
     downloadTextFile(`EASD_English_Transcript_${today}.txt`, englishTranscript);
   };
 
-  const handleTriggerSummarize = () => {
-    const textToSummarize = englishTranscript.trim() || banglaTranscript.trim();
-    if (!textToSummarize) {
-      alert('Please enter or generate a transcript first to summarize.');
-      return;
+  const handleClearAll = () => {
+    if (confirm('Clear both Bangla and English transcripts?')) {
+      setBanglaTranscript('');
+      setEnglishTranscript('');
     }
-    onSummarizeTranscript(textToSummarize, summarizeModel);
   };
 
   return (
     <div className="card" id="section-transcripts">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
         <div>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, display: 'flex', gap: '8px', alignItems: 'center' }}>
-            <Languages size={20} color="var(--accent-color)" /> 3. Dual Transcripts & AI Summarizer
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', gap: '8px', alignItems: 'center', margin: 0 }}>
+            <Languages size={20} color="var(--accent-color)" /> Transcripts
           </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
-            Review, manually edit, copy individual transcripts, or trigger specialized AI models to restructure transcripts into the official template.
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '2px' }}>
+            Raw editable transcripts in Bangla and English
           </p>
         </div>
 
-        {/* Action Buttons: Download & Copy Transcripts */}
+        {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
           <button
             className="btn btn-primary btn-sm"
@@ -125,7 +120,7 @@ export default function Transcripts({
             style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
           >
             {downloadedBoth ? <Check size={14} /> : <Download size={14} />}
-            {downloadedBoth ? 'Downloaded Transcript!' : '📥 Download Transcript (.txt)'}
+            {downloadedBoth ? 'Downloaded!' : '📥 Download (.txt)'}
           </button>
           <button
             className="btn btn-secondary btn-sm"
@@ -134,15 +129,26 @@ export default function Transcripts({
             style={{ fontSize: '0.78rem' }}
           >
             {copiedBoth ? <Check size={14} color="var(--success-color)" /> : <Copy size={14} />}
-            {copiedBoth ? 'Copied Both Transcripts!' : '📋 Copy Transcripts'}
+            {copiedBoth ? 'Copied Both!' : '📋 Copy Both'}
           </button>
+          {(banglaTranscript || englishTranscript) && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={handleClearAll}
+              title="Clear transcripts"
+              style={{ fontSize: '0.78rem' }}
+            >
+              <Trash2 size={13} /> Clear
+            </button>
+          )}
         </div>
       </div>
 
       <div className="grid-2col">
+        {/* Bangla Transcript */}
         <div className="form-group" style={{ marginBottom: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0, fontWeight: 700 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0, fontWeight: 700, fontSize: '0.86rem' }}>
               <span>🇧🇩</span> Bangla Transcript (বাংলা ট্রান্সক্রিপ্ট):
             </label>
             <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -160,7 +166,7 @@ export default function Transcripts({
                 style={{ padding: '3px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
               >
                 {copiedBangla ? <Check size={12} color="var(--success-color)" /> : <Copy size={12} />}
-                {copiedBangla ? 'Copied Bangla!' : 'Copy Bangla'}
+                {copiedBangla ? 'Copied!' : 'Copy'}
               </button>
             </div>
           </div>
@@ -174,9 +180,10 @@ export default function Transcripts({
           />
         </div>
 
+        {/* English Transcript */}
         <div className="form-group" style={{ marginBottom: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0, fontWeight: 700 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', margin: 0, fontWeight: 700, fontSize: '0.86rem' }}>
               <span>🇬🇧</span> English Transcript:
             </label>
             <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -194,7 +201,7 @@ export default function Transcripts({
                 style={{ padding: '3px 10px', fontSize: '0.75rem', display: 'flex', alignItems: 'center', gap: '4px' }}
               >
                 {copiedEnglish ? <Check size={12} color="var(--success-color)" /> : <Copy size={12} />}
-                {copiedEnglish ? 'Copied English!' : 'Copy English'}
+                {copiedEnglish ? 'Copied!' : 'Copy'}
               </button>
             </div>
           </div>
@@ -206,43 +213,6 @@ export default function Transcripts({
             value={englishTranscript}
             onChange={(e) => setEnglishTranscript(e.target.value)}
           />
-        </div>
-      </div>
-
-      {/* Dedicated Fit to Template Control Bar */}
-      <div style={{ marginTop: '16px', padding: '16px 20px', borderRadius: '14px', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <Wand2 size={18} color="var(--accent-color)" />
-          <div>
-            <div style={{ fontSize: '0.9rem', fontWeight: 700 }}>⚡ Fit Extracted Text to EASD Template</div>
-            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>Automatically fits raw text into structured Tables, Agendas, Decisions & Attendance for .docx.</div>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          <select
-            className="form-control"
-            style={{ width: 'auto', padding: '8px 12px', fontSize: '0.85rem' }}
-            value={summarizeModel}
-            onChange={(e) => setSummarizeModel(e.target.value)}
-          >
-            <option value="default">Use Configured Provider (GPT-OSS-120B)</option>
-            <option value="groq">Groq Cloud (openai/gpt-oss-120b)</option>
-            <option value="gemini">Google Gemini (Flash 2.5 / 2.0)</option>
-            <option value="openai">OpenAI (GPT-4o)</option>
-            <option value="claude">Anthropic Claude 3.5 Sonnet</option>
-            <option value="local">Fast Local Semantic Synthesizer</option>
-          </select>
-
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={handleTriggerSummarize}
-            disabled={isSummarizing}
-            style={{ padding: '8px 18px', fontWeight: 700 }}
-          >
-            {isSummarizing ? <RefreshCw size={14} className="spin" /> : <Sparkles size={14} />}
-            {isSummarizing ? 'Fitting to Template...' : '⚡ Fit to Template'}
-          </button>
         </div>
       </div>
     </div>

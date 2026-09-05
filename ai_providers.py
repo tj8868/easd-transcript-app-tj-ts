@@ -6,7 +6,9 @@ import time
 import httpx
 from typing import Dict, Any, Optional, List
 from google import genai
+from google.genai import types
 from document_engine import DEFAULT_MEMBERS
+from ocr_engine import optimize_ocr_text, preprocess_image_for_ocr
 
 LLM_SYSTEM_PROMPT = """
 You are an expert bilingual Chief Executive Rapporteur and AI Documentation Director for Eminence Associates for Social Development (EASD).
@@ -455,61 +457,253 @@ def process_extracted_payload(
             
     return deep_semantic_synthesis(raw_text or fallback_content, custom_skills, org_context)
 
-def verify_ai_api_key(provider: str, api_key: str, base_url: str = "") -> Dict[str, Any]:
-    api_key = api_key.strip()
-    if not api_key:
-        return {"valid": False, "message": "API key is empty."}
-        
+def verify_ai_api_key(provider: str, api_key: str = "", base_url: str = "") -> Dict[str, Any]:
+    import time
+    start_time = time.time()
+    api_key = (api_key or "").strip()
+    provider = (provider or "gemini").lower()
+    
+    # If API key is empty and not custom, check if the server has an active key in .env or disk
+    if not api_key and provider != "custom":
+        env_map = {
+            "gemini": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
+            "groq": os.getenv("GROQ_API_KEY"),
+            "openai": os.getenv("OPENAI_API_KEY"),
+            "anthropic": os.getenv("ANTHROPIC_API_KEY")
+        }
+        fallback_key = env_map.get(provider)
+        if not fallback_key:
+            disk_info = get_default_api_key_from_disk()
+            if disk_info.get("provider") == provider:
+                fallback_key = disk_info.get("api_key")
+        if fallback_key:
+            api_key = fallback_key.strip()
+        else:
+            return {
+                "valid": False,
+                "success": False,
+                "message": f"API key is empty for {provider.capitalize()}. Please enter a key or configure in settings.",
+                "latency_ms": 0
+            }
+
     try:
         if api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini":
             try:
                 client = genai.Client(api_key=api_key)
                 interaction = client.interactions.create(
                     model="gemini-3.5-flash-lite",
-                    input="Hi"
+                    input="Ping"
                 )
+                latency = round((time.time() - start_time) * 1000)
                 if interaction and interaction.output_text is not None:
-                    return {"valid": True, "message": "Google Gemini API Key verified & active (gemini-3.5-flash-lite)!"}
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"Google Gemini API verified & active ({latency}ms)!",
+                        "latency_ms": latency
+                    }
             except Exception as e:
-                # If rate limited (429) or other API-level error, the key is still verified
                 err_str = str(e).lower()
+                latency = round((time.time() - start_time) * 1000)
                 if "quota" in err_str or "rate" in err_str or "429" in err_str:
-                    return {"valid": True, "message": "Google Gemini API Key verified (active, rate limit resets shortly)!"}
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"Google Gemini API verified (Active, rate quota active, {latency}ms)!",
+                        "latency_ms": latency
+                    }
                 # Fallback to direct HTTP check
                 url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
-                with httpx.Client(timeout=10.0) as http_client:
+                with httpx.Client(timeout=8.0) as http_client:
                     r = http_client.get(url)
+                    latency = round((time.time() - start_time) * 1000)
                     if r.status_code == 200:
-                        return {"valid": True, "message": "Google Gemini API Key verified & active!"}
-                    return {"valid": False, "message": f"Gemini Key error: {str(e)}"}
-                    
-        elif api_key.startswith(("sk-proj-", "sk-")) or provider == "openai":
+                        return {
+                            "valid": True,
+                            "success": True,
+                            "message": f"Google Gemini API verified & active ({latency}ms)!",
+                            "latency_ms": latency
+                        }
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "message": f"Gemini Key error: {str(e)}",
+                        "latency_ms": latency
+                    }
+
+        elif api_key.startswith("sk-ant-") or provider == "anthropic":
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            data = {
+                "model": "claude-3-5-haiku-20241022",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "Hi"}]
+            }
+            with httpx.Client(timeout=8.0) as client:
+                r = client.post(url, headers=headers, json=data)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code in [200, 429]:
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"Anthropic Claude API verified & active ({latency}ms)!",
+                        "latency_ms": latency
+                    }
+                elif r.status_code == 401:
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "message": "Anthropic Key error (401): Invalid or unauthorized key.",
+                        "latency_ms": latency
+                    }
+                else:
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"Anthropic Key verified (Status {r.status_code}, {latency}ms).",
+                        "latency_ms": latency
+                    }
+
+        elif api_key.startswith("sk-proj-") or (api_key.startswith("sk-") and not api_key.startswith("sk-ant-")) or provider == "openai":
             url = "https://api.openai.com/v1/models"
             headers = {"Authorization": f"Bearer {api_key}"}
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=8.0) as client:
                 r = client.get(url, headers=headers)
+                latency = round((time.time() - start_time) * 1000)
                 if r.status_code == 200:
-                    return {"valid": True, "message": "OpenAI API Key verified & active!"}
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"OpenAI API Key verified & active ({latency}ms)!",
+                        "latency_ms": latency
+                    }
                 else:
-                    return {"valid": False, "message": f"OpenAI Key error ({r.status_code}): Invalid or revoked API key."}
-                    
-        elif api_key.startswith("gsk_") or provider in ["groq", "custom"]:
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "message": f"OpenAI Key error ({r.status_code}): Invalid or revoked API key.",
+                        "latency_ms": latency
+                    }
+
+        elif provider == "custom":
+            clean_base = (base_url or "http://localhost:11434/v1").rstrip("/")
+            target_url = f"{clean_base}/models"
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            try:
+                with httpx.Client(timeout=6.0) as client:
+                    r = client.get(target_url, headers=headers)
+                    latency = round((time.time() - start_time) * 1000)
+                    if r.status_code in [200, 201, 204]:
+                        return {
+                            "valid": True,
+                            "success": True,
+                            "message": f"Custom endpoint verified ({clean_base}, {latency}ms)!",
+                            "latency_ms": latency
+                        }
+                    elif r.status_code == 401:
+                        return {
+                            "valid": False,
+                            "success": False,
+                            "message": f"Custom endpoint ({clean_base}) returned 401 Unauthorized. Key required.",
+                            "latency_ms": latency
+                        }
+                    else:
+                        return {
+                            "valid": True,
+                            "success": True,
+                            "message": f"Custom endpoint connected ({clean_base}, status {r.status_code}, {latency}ms).",
+                            "latency_ms": latency
+                        }
+            except Exception as e:
+                # Fallback ping to root URL if /models is not implemented
+                try:
+                    with httpx.Client(timeout=4.0) as client:
+                        r = client.get(clean_base, headers=headers)
+                        latency = round((time.time() - start_time) * 1000)
+                        return {
+                            "valid": True,
+                            "success": True,
+                            "message": f"Custom endpoint reachable ({clean_base}, {latency}ms).",
+                            "latency_ms": latency
+                        }
+                except Exception:
+                    latency = round((time.time() - start_time) * 1000)
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "message": f"Could not reach {clean_base}: {str(e)}",
+                        "latency_ms": latency
+                    }
+
+        elif api_key.startswith("gsk_") or provider == "groq":
             url = f"{(base_url or 'https://api.groq.com/openai/v1').rstrip('/')}/models"
             headers = {"Authorization": f"Bearer {api_key}"}
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=8.0) as client:
                 r = client.get(url, headers=headers)
+                latency = round((time.time() - start_time) * 1000)
                 if r.status_code == 200:
-                    return {"valid": True, "message": "Groq API Key verified & active!"}
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"Groq API Key verified & active ({latency}ms)!",
+                        "latency_ms": latency
+                    }
                 else:
-                    return {"valid": False, "message": f"Groq Key error ({r.status_code}): Invalid or revoked API key."}
-                    
-        return {"valid": True, "message": "API Key format accepted."}
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "message": f"Groq Key error ({r.status_code}): Invalid or revoked API key.",
+                        "latency_ms": latency
+                    }
+
+        latency = round((time.time() - start_time) * 1000)
+        return {
+            "valid": True,
+            "success": True,
+            "message": f"API Key format accepted ({latency}ms).",
+            "latency_ms": latency
+        }
     except Exception as e:
-        return {"valid": False, "message": f"Key verification failed: {str(e)}"}
+        latency = round((time.time() - start_time) * 1000)
+        return {
+            "valid": False,
+            "success": False,
+            "message": f"Key verification failed: {str(e)}",
+            "latency_ms": latency
+        }
 
 def get_default_api_key_from_disk() -> Dict[str, str]:
-    """Checks for GroqAPI.txt or other key files in project root."""
+    """Checks for Gemini or Groq key files in project root, defaulting to Gemini."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    gemini_file = os.path.join(base_dir, "GeminiAPI.txt")
+    gemini_env = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if gemini_env:
+        return {
+            "provider": "gemini",
+            "api_key": gemini_env.strip(),
+            "transcription_model": "gemini-2.5-flash",
+            "summarization_model": "gemini-2.5-flash",
+            "model_name": "gemini-2.5-flash"
+        }
+    if os.path.exists(gemini_file):
+        try:
+            with open(gemini_file, "r", encoding="utf-8") as f:
+                k = f.read().strip()
+                if k:
+                    return {
+                        "provider": "gemini",
+                        "api_key": k,
+                        "transcription_model": "gemini-2.5-flash",
+                        "summarization_model": "gemini-2.5-flash",
+                        "model_name": "gemini-2.5-flash"
+                    }
+        except Exception:
+            pass
+
     groq_file = os.path.join(base_dir, "GroqAPI.txt")
     if os.path.exists(groq_file):
         try:
@@ -528,9 +722,9 @@ def get_default_api_key_from_disk() -> Dict[str, str]:
     return {
         "provider": "gemini",
         "api_key": "",
-        "transcription_model": "gemini-3.5-flash-lite",
-        "summarization_model": "gemini-3.5-flash-lite",
-        "model_name": "gemini-3.5-flash-lite"
+        "transcription_model": "gemini-2.5-flash",
+        "summarization_model": "gemini-2.5-flash",
+        "model_name": "gemini-2.5-flash"
     }
 
 def transcribe_audio_groq(
@@ -675,9 +869,11 @@ def summarize_text_openai_compatible(
     model_name: str = "openai/gpt-oss-120b",
     org_context: str = "",
     custom_skills: str = "",
-    template_schema: Optional[Dict[str, Any]] = None
+    template_schema: Optional[Dict[str, Any]] = None,
+    media_bytes: Optional[bytes] = None,
+    mime_type: str = ""
 ) -> Dict[str, Any]:
-    """Generates structured JSON using OpenAI-compatible chat completion for any template schema."""
+    """Generates structured JSON using OpenAI-compatible chat completion for any template schema, with multimodal vision support."""
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -703,14 +899,25 @@ def summarize_text_openai_compatible(
         candidate_models.extend(["gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo"])
         
     candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
-    
+
+    # Construct user message content: multimodal if image is present
+    user_prompt_text = f"Analyze, translate, and organize this document/transcript into the exact JSON format:\n\n{text_content or 'Document Content'}"
+    if media_bytes and mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf"):
+        b64_data = base64.b64encode(media_bytes).decode("utf-8")
+        user_message_content = [
+            {"type": "text", "text": user_prompt_text},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_data}"}}
+        ]
+    else:
+        user_message_content = user_prompt_text
+
     with httpx.Client(timeout=120.0) as client:
         for model in candidate_models:
             payload = {
                 "model": model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Analyze, translate, and organize this transcript into the exact JSON format:\n\n{text_content}"}
+                    {"role": "user", "content": user_message_content}
                 ],
                 "temperature": 0.2
             }
@@ -797,10 +1004,48 @@ def transcribe_and_summarize_gemini(
     audio_chunks: Optional[List[bytes]] = None,
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Processes media and structures document using Google Gemini Interactions API."""
-    models_to_try = [summarization_model or "gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.1-pro-preview"]
+    """Processes media and structures document using Google Gemini (Multimodal Vision OCR + Audio STT)."""
+    models_to_try = [summarization_model or "gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"]
     models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
-    
+    client = genai.Client(api_key=api_key)
+    system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
+
+    # 1. Multimodal Document / Image OCR Flow
+    if (mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf")) and media_bytes:
+        target_bytes = media_bytes
+        target_mime = mime_type
+        if target_mime != "application/pdf":
+            target_bytes, target_mime = preprocess_image_for_ocr(media_bytes)
+
+        part = types.Part.from_bytes(data=target_bytes, mime_type=target_mime)
+        ocr_prompt = (
+            f"{system_prompt}\n\n"
+            "TASK: Perform high-fidelity optical character recognition (OCR) and layout extraction from this document/image. "
+            "Transcribe all Bengali (বাংলা) and English text verbatim. Preserve tables, dates, memo numbers, attendees, "
+            "agendas, discussions, and decisions. Clean any OCR distortions and format into the exact JSON schema requested."
+        )
+
+        for model in models_to_try:
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=[ocr_prompt, part]
+                )
+                raw_text = resp.text or ""
+                if raw_text:
+                    return process_extracted_payload(
+                        raw_text,
+                        fallback_content=text_content or "OCR Extracted Document",
+                        custom_skills=custom_skills,
+                        org_context=org_context,
+                        template_schema=template_schema
+                    )
+            except Exception as e:
+                print(f"[Gemini Multimodal OCR '{model}' Exception] {e}")
+
+        return deep_semantic_synthesis(text_content or "OCR Scanned Content", custom_skills, org_context)
+
+    # 2. Audio Processing Flow
     transcript = text_content
     chunks_to_process = []
     if audio_chunks and len(audio_chunks) > 0:
@@ -821,10 +1066,7 @@ def transcribe_and_summarize_gemini(
         if transcripts:
             transcript = ("\n\n".join([text_content] + transcripts) if text_content else "\n\n".join(transcripts))
 
-    system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
     full_text_prompt = f"{system_prompt}\n\nAnalyze, translate, and organize this transcript into the exact JSON format:\n\n{transcript or 'Document Content'}"
-    
-    client = genai.Client(api_key=api_key)
     
     for model in models_to_try:
         try:
@@ -861,7 +1103,7 @@ def process_ai_request(
     audio_chunks: Optional[List[bytes]] = None,
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Unified entrypoint handling split transcription & summarization models, multi-chunk audio, and custom template schemas."""
+    """Unified entrypoint handling split transcription & summarization models, multi-chunk audio, vision OCR, and custom template schemas."""
     api_key = api_key.strip()
     provider = (provider or "").lower()
     
@@ -874,21 +1116,9 @@ def process_ai_request(
     stt_model = transcription_model or model_name
     llm_model = summarization_model or model_name
 
-    if api_key.startswith("gsk_") or provider in ["groq", "custom"]:
-        return transcribe_and_summarize_groq(
-            media_bytes=media_bytes,
-            mime_type=mime_type,
-            api_key=api_key,
-            base_url=base_url or "https://api.groq.com/openai/v1",
-            transcription_model=stt_model or "whisper-large-v3-turbo",
-            summarization_model=llm_model or "openai/gpt-oss-120b",
-            org_context=org_context,
-            custom_skills=custom_skills,
-            text_content=text_content,
-            audio_chunks=audio_chunks,
-            template_schema=template_schema
-        )
-        
+    # Check if media is an image or PDF for multimodal OCR
+    is_vision_media = bool(media_bytes and mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf"))
+
     if (api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini") and api_key:
         return transcribe_and_summarize_gemini(
             media_bytes=media_bytes,
@@ -902,8 +1132,31 @@ def process_ai_request(
             audio_chunks=audio_chunks,
             template_schema=template_schema
         )
-        
-    if api_key.startswith(("sk-proj-", "sk-")) or provider == "openai":
+
+    if api_key.startswith("sk-ant-") or provider == "anthropic":
+        return summarize_text_anthropic(
+            text_content=text_content or "Document Content",
+            api_key=api_key,
+            model_name=llm_model or "claude-3-5-sonnet-20241022",
+            org_context=org_context,
+            custom_skills=custom_skills,
+            template_schema=template_schema
+        )
+
+    if api_key.startswith("sk-proj-") or (api_key.startswith("sk-") and not api_key.startswith("sk-ant-")) or provider == "openai":
+        if is_vision_media:
+            return summarize_text_openai_compatible(
+                text_content=text_content or "OCR Document",
+                api_key=api_key,
+                base_url=base_url or "https://api.openai.com/v1",
+                model_name=llm_model or "gpt-4o",
+                org_context=org_context,
+                custom_skills=custom_skills,
+                template_schema=template_schema,
+                media_bytes=media_bytes,
+                mime_type=mime_type
+            )
+
         raw_text = text_content
         chunks_to_process = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
         if chunks_to_process:
@@ -932,6 +1185,78 @@ def process_ai_request(
             custom_skills=custom_skills,
             template_schema=template_schema
         )
+
+    if api_key.startswith("gsk_") or provider in ["groq", "custom"]:
+        # If image/PDF uploaded under Groq, use extracted text_content (from pypdf/tesseract)
+        return transcribe_and_summarize_groq(
+            media_bytes=None if is_vision_media else media_bytes,
+            mime_type=mime_type,
+            api_key=api_key,
+            base_url=base_url or "https://api.groq.com/openai/v1",
+            transcription_model=stt_model or "whisper-large-v3-turbo",
+            summarization_model=llm_model or "llama-3.3-70b-versatile",
+            org_context=org_context,
+            custom_skills=custom_skills,
+            text_content=text_content or ("Document content" if is_vision_media else ""),
+            audio_chunks=None if is_vision_media else audio_chunks,
+            template_schema=template_schema
+        )
         
+    return deep_semantic_synthesis(text_content or "Document Content", custom_skills, org_context)
+
+def summarize_text_anthropic(
+    text_content: str,
+    api_key: str,
+    model_name: str = "claude-3-5-sonnet-20241022",
+    org_context: str = "",
+    custom_skills: str = "",
+    template_schema: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Synthesizes minutes and executive documents using Anthropic Claude Messages API."""
+    system_prompt = build_template_system_prompt(template_schema, org_context, custom_skills)
+    user_prompt = f"Analyze, translate, and organize this transcript into the exact JSON format:\n\n{text_content or 'Document Content'}"
+    
+    models_to_try = [
+        model_name or "claude-3-5-sonnet-20241022",
+        "claude-3-5-haiku-20241022",
+        "claude-3-opus-20240229"
+    ]
+    
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json"
+    }
+    
+    for model in models_to_try:
+        try:
+            payload = {
+                "model": model,
+                "max_tokens": 4096,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": user_prompt}]
+            }
+            with httpx.Client(timeout=120.0) as client:
+                res = client.post(url, headers=headers, json=payload)
+                if res.status_code == 200:
+                    data = res.json()
+                    raw_text = ""
+                    for block in data.get("content", []):
+                        if block.get("type") == "text":
+                            raw_text += block.get("text", "")
+                    if raw_text:
+                        return process_extracted_payload(
+                            raw_text,
+                            fallback_content=text_content,
+                            custom_skills=custom_skills,
+                            org_context=org_context,
+                            template_schema=template_schema
+                        )
+                else:
+                    print(f"[Anthropic Claude '{model}' Notice] Status {res.status_code}: {res.text[:120]}")
+        except Exception as e:
+            print(f"[Anthropic Claude Exception '{model}'] {e}")
+            
     return deep_semantic_synthesis(text_content or "Document Content", custom_skills, org_context)
 
