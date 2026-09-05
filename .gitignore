@@ -35,6 +35,8 @@ Test Input .txt
 .env
 .env.local
 GroqAPI.txt
+GeminiAPI.txt
+api_settings.json
 
 # OS Generated
 .DS_Store

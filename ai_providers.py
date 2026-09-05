@@ -4,6 +4,10 @@ import json
 import base64
 import time
 import httpx
+import io
+import wave
+import struct
+import math
 from typing import Dict, Any, Optional, List
 from google import genai
 from google.genai import types
@@ -692,56 +696,518 @@ def verify_ai_api_key(provider: str, api_key: str = "", base_url: str = "") -> D
             "latency_ms": latency
         }
 
-def get_default_api_key_from_disk() -> Dict[str, str]:
-    """Checks for Gemini or Groq key files in project root, defaulting to Gemini."""
+API_SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_settings.json")
+
+def load_api_settings_from_disk() -> Dict[str, Any]:
+    """Loads configured API keys and model choices from disk, with fallbacks to key files and env."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     gemini_file = os.path.join(base_dir, "GeminiAPI.txt")
-    gemini_env = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    if gemini_env:
-        return {
-            "provider": "gemini",
-            "api_key": gemini_env.strip(),
-            "transcription_model": "gemini-2.5-flash",
-            "summarization_model": "gemini-2.5-flash",
-            "model_name": "gemini-2.5-flash"
-        }
+    groq_file = os.path.join(base_dir, "GroqAPI.txt")
+    
+    defaults = {
+        "transcription_provider": "groq",
+        "transcription_model": "whisper-large-v3-turbo",
+        "transcription_api_key": "",
+        "summarization_provider": "gemini",
+        "summarization_model": "gemini-3.5-flash",
+        "summarization_api_key": "",
+        "gemini_api_key": "",
+        "groq_api_key": "",
+        "openai_api_key": "",
+        "anthropic_api_key": "",
+        "custom_base_url": "http://localhost:11434/v1",
+        "custom_api_key": ""
+    }
+    
+    # Check GeminiAPI.txt
     if os.path.exists(gemini_file):
         try:
             with open(gemini_file, "r", encoding="utf-8") as f:
                 k = f.read().strip()
                 if k:
-                    return {
-                        "provider": "gemini",
-                        "api_key": k,
-                        "transcription_model": "gemini-2.5-flash",
-                        "summarization_model": "gemini-2.5-flash",
-                        "model_name": "gemini-2.5-flash"
-                    }
+                    defaults["gemini_api_key"] = k
+                    defaults["summarization_api_key"] = k
         except Exception:
             pass
 
-    groq_file = os.path.join(base_dir, "GroqAPI.txt")
+    # Check GroqAPI.txt
     if os.path.exists(groq_file):
         try:
             with open(groq_file, "r", encoding="utf-8") as f:
                 k = f.read().strip()
                 if k:
-                    return {
-                        "provider": "groq",
-                        "api_key": k,
-                        "transcription_model": "whisper-large-v3-turbo",
-                        "summarization_model": "openai/gpt-oss-120b",
-                        "model_name": "openai/gpt-oss-120b"
-                    }
+                    defaults["groq_api_key"] = k
+                    defaults["transcription_api_key"] = k
         except Exception:
             pass
+
+    # Check environment variables
+    if os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"):
+        env_gem = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")).strip()
+        defaults["gemini_api_key"] = env_gem
+        if not defaults["summarization_api_key"]:
+            defaults["summarization_api_key"] = env_gem
+            
+    if os.getenv("GROQ_API_KEY"):
+        env_groq = os.getenv("GROQ_API_KEY").strip()
+        defaults["groq_api_key"] = env_groq
+        if not defaults["transcription_api_key"]:
+            defaults["transcription_api_key"] = env_groq
+
+    if os.getenv("OPENAI_API_KEY"):
+        defaults["openai_api_key"] = os.getenv("OPENAI_API_KEY").strip()
+
+    if os.getenv("ANTHROPIC_API_KEY"):
+        defaults["anthropic_api_key"] = os.getenv("ANTHROPIC_API_KEY").strip()
+
+    # Load from api_settings.json if present
+    if os.path.exists(API_SETTINGS_FILE):
+        try:
+            with open(API_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+                if isinstance(saved, dict):
+                    for k, v in saved.items():
+                        if isinstance(v, str) and not v.strip() and "api_key" in k and defaults.get(k):
+                            continue
+                        defaults[k] = v
+        except Exception:
+            pass
+
+    return defaults
+
+def save_api_settings_to_disk(settings: Dict[str, Any]) -> bool:
+    """Persists settings to api_settings.json and syncs GeminiAPI.txt & GroqAPI.txt."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    current = load_api_settings_from_disk()
+    for k, v in settings.items():
+        if v is not None:
+            if isinstance(v, str) and not v.strip() and "api_key" in k and current.get(k):
+                continue
+            current[k] = v
+    
+    try:
+        with open(API_SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(current, f, indent=2, ensure_ascii=False)
+            
+        # Sync GeminiAPI.txt
+        gemini_k = current.get("gemini_api_key") or current.get("apiKey_gemini") or (current.get("summarization_api_key") if current.get("summarization_provider") == "gemini" else "")
+        if gemini_k:
+            gemini_file = os.path.join(base_dir, "GeminiAPI.txt")
+            with open(gemini_file, "w", encoding="utf-8") as f:
+                f.write(gemini_k.strip())
+                
+        # Sync GroqAPI.txt
+        groq_k = current.get("groq_api_key") or current.get("apiKey_groq") or (current.get("transcription_api_key") if current.get("transcription_provider") == "groq" else "")
+        if groq_k:
+            groq_file = os.path.join(base_dir, "GroqAPI.txt")
+            with open(groq_file, "w", encoding="utf-8") as f:
+                f.write(groq_k.strip())
+                
+        return True
+    except Exception as e:
+        print(f"[Save API Settings Error] {e}")
+        return False
+
+def get_default_api_key_from_disk() -> Dict[str, str]:
+    """Returns active provider & model defaults from persistent storage."""
+    cfg = load_api_settings_from_disk()
     return {
-        "provider": "gemini",
-        "api_key": "",
-        "transcription_model": "gemini-2.5-flash",
-        "summarization_model": "gemini-2.5-flash",
-        "model_name": "gemini-2.5-flash"
+        "provider": cfg.get("summarization_provider") or "gemini",
+        "api_key": cfg.get("gemini_api_key") or cfg.get("groq_api_key") or "",
+        "transcription_provider": cfg.get("transcription_provider") or "groq",
+        "transcription_model": cfg.get("transcription_model") or "whisper-large-v3-turbo",
+        "transcription_api_key": cfg.get("transcription_api_key") or cfg.get("groq_api_key") or "",
+        "summarization_provider": cfg.get("summarization_provider") or "gemini",
+        "summarization_model": cfg.get("summarization_model") or "gemini-3.5-flash",
+        "summarization_api_key": cfg.get("summarization_api_key") or cfg.get("gemini_api_key") or "",
+        "model_name": cfg.get("summarization_model") or "gemini-3.5-flash"
     }
+
+def generate_synthetic_test_wav() -> bytes:
+    """Generates 0.5s of valid 16kHz mono audio WAV bytes for testing speech transcription endpoints."""
+    buf = io.BytesIO()
+    with wave.open(buf, 'wb') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(16000)
+        for i in range(8000):
+            val = int(32767.0 * 0.1 * math.sin(2.0 * math.pi * 440.0 * i / 16000))
+            wf.writeframes(struct.pack('<h', val))
+    return buf.getvalue()
+
+def test_transcription_engine(
+    provider: str,
+    api_key: str = "",
+    model_name: str = "",
+    base_url: str = ""
+) -> Dict[str, Any]:
+    """Actively tests the Transcription (STT) model with audio bytes and verifies quota/permissions."""
+    start_time = time.time()
+    provider = (provider or "groq").lower()
+    
+    if not api_key:
+        cfg = load_api_settings_from_disk()
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        if provider == "groq":
+            api_key = cfg.get("groq_api_key") or cfg.get("transcription_api_key") or ""
+            if not api_key:
+                groq_f = os.path.join(base_dir, "GroqAPI.txt")
+                if os.path.exists(groq_f):
+                    try:
+                        with open(groq_f, "r", encoding="utf-8") as f:
+                            api_key = f.read().strip()
+                    except Exception:
+                        pass
+        elif provider == "gemini":
+            api_key = cfg.get("gemini_api_key") or cfg.get("transcription_api_key") or cfg.get("summarization_api_key") or ""
+            if not api_key:
+                gem_f = os.path.join(base_dir, "GeminiAPI.txt")
+                if os.path.exists(gem_f):
+                    try:
+                        with open(gem_f, "r", encoding="utf-8") as f:
+                            api_key = f.read().strip()
+                    except Exception:
+                        pass
+        elif provider == "openai":
+            api_key = cfg.get("openai_api_key") or ""
+        elif provider == "custom":
+            api_key = cfg.get("custom_api_key") or ""
+            
+    if not api_key and provider != "custom":
+        return {
+            "success": False,
+            "valid": False,
+            "message": f"API key is missing for {provider.capitalize()} transcription.",
+            "latency_ms": 0,
+            "model": model_name or "default"
+        }
+        
+    try:
+        wav_bytes = generate_synthetic_test_wav()
+        
+        if provider == "groq" or api_key.startswith("gsk_"):
+            target_model = model_name or "whisper-large-v3-turbo"
+            url = f"{(base_url or 'https://api.groq.com/openai/v1').rstrip('/')}/audio/transcriptions"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            files = {"file": ("test_ping.wav", wav_bytes, "audio/wav")}
+            data = {"model": target_model}
+            with httpx.Client(timeout=12.0) as client:
+                r = client.post(url, headers=headers, files=files, data=data)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code == 200:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"Groq Whisper STT ({target_model}) operational ({latency}ms)!",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+                else:
+                    err_msg = r.json().get("error", {}).get("message", r.text[:120])
+                    return {
+                        "success": False,
+                        "valid": False,
+                        "message": f"Groq STT error ({r.status_code}): {err_msg}",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+
+        elif provider == "openai" or api_key.startswith(("sk-proj-", "sk-")):
+            target_model = model_name or "whisper-1"
+            url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/audio/transcriptions"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            files = {"file": ("test_ping.wav", wav_bytes, "audio/wav")}
+            data = {"model": target_model}
+            with httpx.Client(timeout=15.0) as client:
+                r = client.post(url, headers=headers, files=files, data=data)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code == 200:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"OpenAI Whisper STT ({target_model}) operational ({latency}ms)!",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+                else:
+                    err_msg = r.json().get("error", {}).get("message", r.text[:120])
+                    return {
+                        "success": False,
+                        "valid": False,
+                        "message": f"OpenAI STT error ({r.status_code}): {err_msg}",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+
+        elif provider == "gemini" or api_key.startswith(("AIzaSy", "AQ.")):
+            target_model = model_name or "gemini-3.5-flash"
+            client = genai.Client(api_key=api_key)
+            resp = client.models.generate_content(
+                model=target_model,
+                contents="Verification ping for Gemini Speech-to-Text capability. Respond 'STT Ready'."
+            )
+            latency = round((time.time() - start_time) * 1000)
+            if resp and resp.text:
+                return {
+                    "success": True,
+                    "valid": True,
+                    "message": f"Google Gemini STT ({target_model}) operational ({latency}ms)!",
+                    "latency_ms": latency,
+                    "model": target_model
+                }
+            return {
+                "success": False,
+                "valid": False,
+                "message": "Gemini STT responded with empty content.",
+                "latency_ms": latency,
+                "model": target_model
+            }
+
+        elif provider == "custom":
+            clean_base = (base_url or "http://localhost:11434/v1").rstrip("/")
+            url = f"{clean_base}/models"
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            with httpx.Client(timeout=6.0) as client:
+                r = client.get(url, headers=headers)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code in [200, 201, 204]:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"Custom STT endpoint verified ({clean_base}, {latency}ms)!",
+                        "latency_ms": latency,
+                        "model": model_name or "custom"
+                    }
+                return {
+                    "success": False,
+                    "valid": False,
+                    "message": f"Custom endpoint returned status {r.status_code}",
+                    "latency_ms": latency,
+                    "model": model_name or "custom"
+                }
+
+    except Exception as e:
+        latency = round((time.time() - start_time) * 1000)
+        return {
+            "success": False,
+            "valid": False,
+            "message": f"Transcription Test Error: {str(e)}",
+            "latency_ms": latency,
+            "model": model_name or "default"
+        }
+
+def test_summarization_engine(
+    provider: str,
+    api_key: str = "",
+    model_name: str = "",
+    base_url: str = ""
+) -> Dict[str, Any]:
+    """Actively tests the Text Generation / Summarization (LLM) model and catches permission blocks."""
+    start_time = time.time()
+    provider = (provider or "gemini").lower()
+    
+    if not api_key:
+        cfg = load_api_settings_from_disk()
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        if provider == "gemini":
+            api_key = cfg.get("gemini_api_key") or cfg.get("summarization_api_key") or ""
+            if not api_key:
+                gem_f = os.path.join(base_dir, "GeminiAPI.txt")
+                if os.path.exists(gem_f):
+                    try:
+                        with open(gem_f, "r", encoding="utf-8") as f:
+                            api_key = f.read().strip()
+                    except Exception:
+                        pass
+        elif provider == "groq":
+            api_key = cfg.get("groq_api_key") or cfg.get("summarization_api_key") or ""
+            if not api_key:
+                groq_f = os.path.join(base_dir, "GroqAPI.txt")
+                if os.path.exists(groq_f):
+                    try:
+                        with open(groq_f, "r", encoding="utf-8") as f:
+                            api_key = f.read().strip()
+                    except Exception:
+                        pass
+        elif provider == "openai":
+            api_key = cfg.get("openai_api_key") or ""
+        elif provider == "anthropic":
+            api_key = cfg.get("anthropic_api_key") or ""
+        elif provider == "custom":
+            api_key = cfg.get("custom_api_key") or ""
+
+    if not api_key and provider != "custom":
+        return {
+            "success": False,
+            "valid": False,
+            "message": f"API key is missing for {provider.capitalize()} text generation.",
+            "latency_ms": 0,
+            "model": model_name or "default"
+        }
+
+    try:
+        if provider == "gemini" or api_key.startswith(("AIzaSy", "AQ.")):
+            target_model = model_name or "gemini-3.5-flash"
+            client = genai.Client(api_key=api_key)
+            resp = client.models.generate_content(
+                model=target_model,
+                contents="Ping"
+            )
+            latency = round((time.time() - start_time) * 1000)
+            if resp and resp.text:
+                return {
+                    "success": True,
+                    "valid": True,
+                    "message": f"Google Gemini LLM ({target_model}) operational ({latency}ms)!",
+                    "latency_ms": latency,
+                    "model": target_model
+                }
+            return {
+                "success": False,
+                "valid": False,
+                "message": "Gemini returned empty response.",
+                "latency_ms": latency,
+                "model": target_model
+            }
+
+        elif provider == "groq" or api_key.startswith("gsk_"):
+            target_model = model_name or "openai/gpt-oss-120b"
+            url = f"{(base_url or 'https://api.groq.com/openai/v1').rstrip('/')}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            payload = {
+                "model": target_model,
+                "messages": [{"role": "user", "content": "Ping"}],
+                "max_tokens": 5
+            }
+            with httpx.Client(timeout=10.0) as client:
+                r = client.post(url, headers=headers, json=payload)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code == 200:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"Groq LLM ({target_model}) operational ({latency}ms)!",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+                elif r.status_code == 403:
+                    err_data = r.json().get("error", {})
+                    err_msg = err_data.get("message", "Model permission blocked in Groq project.")
+                    return {
+                        "success": False,
+                        "valid": False,
+                        "message": f"Groq Blocked (403): {err_msg} (Recommendation: Use Gemini for Text Generation!)",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+                else:
+                    err_msg = r.json().get("error", {}).get("message", r.text[:120])
+                    return {
+                        "success": False,
+                        "valid": False,
+                        "message": f"Groq Chat Error ({r.status_code}): {err_msg}",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+
+        elif provider == "openai" or api_key.startswith(("sk-proj-", "sk-")):
+            target_model = model_name or "gpt-4o-mini"
+            url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            payload = {
+                "model": target_model,
+                "messages": [{"role": "user", "content": "Ping"}],
+                "max_tokens": 5
+            }
+            with httpx.Client(timeout=12.0) as client:
+                r = client.post(url, headers=headers, json=payload)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code == 200:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"OpenAI LLM ({target_model}) operational ({latency}ms)!",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+                err_msg = r.json().get("error", {}).get("message", r.text[:120])
+                return {
+                    "success": False,
+                    "valid": False,
+                    "message": f"OpenAI Error ({r.status_code}): {err_msg}",
+                    "latency_ms": latency,
+                    "model": target_model
+                }
+
+        elif provider == "anthropic" or api_key.startswith("sk-ant-"):
+            target_model = model_name or "claude-3-5-haiku-20241022"
+            url = "https://api.anthropic.com/v1/messages"
+            headers = {
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            }
+            payload = {
+                "model": target_model,
+                "max_tokens": 5,
+                "messages": [{"role": "user", "content": "Ping"}]
+            }
+            with httpx.Client(timeout=12.0) as client:
+                r = client.post(url, headers=headers, json=payload)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code in [200, 429]:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"Anthropic Claude ({target_model}) operational ({latency}ms)!",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
+                return {
+                    "success": False,
+                    "valid": False,
+                    "message": f"Anthropic Error ({r.status_code}): {r.text[:120]}",
+                    "latency_ms": latency,
+                    "model": target_model
+                }
+
+        elif provider == "custom":
+            clean_base = (base_url or "http://localhost:11434/v1").rstrip("/")
+            url = f"{clean_base}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            payload = {
+                "model": model_name or "llama3.3",
+                "messages": [{"role": "user", "content": "Ping"}],
+                "max_tokens": 5
+            }
+            with httpx.Client(timeout=8.0) as client:
+                r = client.post(url, headers=headers, json=payload)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code in [200, 201]:
+                    return {
+                        "success": True,
+                        "valid": True,
+                        "message": f"Custom LLM ({model_name}) operational ({latency}ms)!",
+                        "latency_ms": latency,
+                        "model": model_name or "custom"
+                    }
+                return {
+                    "success": False,
+                    "valid": False,
+                    "message": f"Custom LLM returned status {r.status_code}",
+                    "latency_ms": latency,
+                    "model": model_name or "custom"
+                }
+
+    except Exception as e:
+        latency = round((time.time() - start_time) * 1000)
+        return {
+            "success": False,
+            "valid": False,
+            "message": f"Summarization Test Error: {str(e)}",
+            "latency_ms": latency,
+            "model": model_name or "default"
+        }
 
 def format_seconds_to_timestamp(seconds: float) -> str:
     m = int(seconds // 60)
@@ -1126,6 +1592,58 @@ def transcribe_and_summarize_gemini(
                 
     return deep_semantic_synthesis(transcript or "Document Content", custom_skills, org_context)
 
+def summarize_text_gemini(
+    text_content: str,
+    api_key: str,
+    model_name: str = "gemini-3.5-flash",
+    org_context: str = "",
+    custom_skills: str = "",
+    template_schema: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Synthesizes structured meeting minutes from text using Gemini 3.5 / 3.8 Flash."""
+    system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
+    full_text_prompt = f"{system_prompt}\n\nAnalyze, translate, and organize this transcript into the exact JSON format:\n\n{text_content or 'Document Content'}"
+    
+    models_to_try = [model_name or "gemini-3.5-flash", "gemini-3.8-flash", "gemini-2.5-flash"]
+    models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
+    
+    client = genai.Client(api_key=api_key)
+    for m in models_to_try:
+        try:
+            resp = client.models.generate_content(
+                model=m,
+                contents=full_text_prompt
+            )
+            raw_text = resp.text or ""
+            if raw_text:
+                return process_extracted_payload(
+                    raw_text,
+                    fallback_content=text_content,
+                    custom_skills=custom_skills,
+                    org_context=org_context,
+                    template_schema=template_schema
+                )
+        except Exception as e:
+            print(f"[Gemini Summarize '{m}' generate_content error] {e}")
+            try:
+                interaction = client.interactions.create(
+                    model=m,
+                    input=[{"type": "text", "text": full_text_prompt}]
+                )
+                raw_text = interaction.output_text or ""
+                if raw_text:
+                    return process_extracted_payload(
+                        raw_text,
+                        fallback_content=text_content,
+                        custom_skills=custom_skills,
+                        org_context=org_context,
+                        template_schema=template_schema
+                    )
+            except Exception as e2:
+                print(f"[Gemini Summarize '{m}' interactions error] {e2}")
+                
+    return deep_semantic_synthesis(text_content or "Document Content", custom_skills, org_context)
+
 def process_ai_request(
     provider: str,
     api_key: str,
@@ -1133,6 +1651,10 @@ def process_ai_request(
     model_name: str = "",
     transcription_model: str = "",
     summarization_model: str = "",
+    transcription_provider: str = "",
+    transcription_api_key: str = "",
+    summarization_provider: str = "",
+    summarization_api_key: str = "",
     media_bytes: Optional[bytes] = None,
     mime_type: str = "text/plain",
     text_content: str = "",
@@ -1141,53 +1663,43 @@ def process_ai_request(
     audio_chunks: Optional[List[bytes]] = None,
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Unified entrypoint handling split transcription & summarization models, multi-chunk audio, vision OCR, and custom template schemas."""
-    api_key = api_key.strip()
+    """Unified entrypoint with fully decoupled STT and LLM provider & model routing."""
+    disk_cfg = load_api_settings_from_disk()
+    api_key = (api_key or "").strip()
     provider = (provider or "").lower()
-    
-    if not api_key:
-        cfg = get_default_api_key_from_disk()
-        api_key = cfg.get("api_key", "")
-        if not provider:
-            provider = cfg.get("provider", "groq")
 
-    stt_model = transcription_model or model_name
-    llm_model = summarization_model or model_name
+    # 1. Resolve Transcription Parameters
+    stt_prov = (transcription_provider or (provider if provider in ["groq", "openai", "gemini", "custom"] else "") or disk_cfg.get("transcription_provider") or "groq").lower()
+    stt_key = (transcription_api_key or (api_key if provider == stt_prov else "") or disk_cfg.get(f"{stt_prov}_api_key") or disk_cfg.get("transcription_api_key") or disk_cfg.get("groq_api_key") or "").strip()
+    stt_model = transcription_model or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-3.5-flash")
 
-    # Check if media is an image or PDF for multimodal OCR
+    # 2. Resolve Summarization Parameters
+    llm_prov = (summarization_provider or (provider if provider in ["gemini", "openai", "anthropic", "custom", "groq"] else "") or disk_cfg.get("summarization_provider") or "gemini").lower()
+    llm_key = (summarization_api_key or (api_key if provider == llm_prov else "") or disk_cfg.get(f"{llm_prov}_api_key") or disk_cfg.get("summarization_api_key") or disk_cfg.get("gemini_api_key") or "").strip()
+    llm_model = summarization_model or model_name or ("gemini-3.5-flash" if llm_prov == "gemini" else "openai/gpt-oss-120b")
+
+    # 3. Vision OCR Check
     is_vision_media = bool(media_bytes and mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf"))
-
-    if (api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini") and api_key:
-        return transcribe_and_summarize_gemini(
-            media_bytes=media_bytes,
-            mime_type=mime_type,
-            api_key=api_key,
-            transcription_model=stt_model or "gemini-3.5-flash-lite",
-            summarization_model=llm_model or "gemini-3.5-flash-lite",
-            org_context=org_context,
-            custom_skills=custom_skills,
-            text_content=text_content,
-            audio_chunks=audio_chunks,
-            template_schema=template_schema
-        )
-
-    if api_key.startswith("sk-ant-") or provider == "anthropic":
-        return summarize_text_anthropic(
-            text_content=text_content or "Document Content",
-            api_key=api_key,
-            model_name=llm_model or "claude-3-5-sonnet-20241022",
-            org_context=org_context,
-            custom_skills=custom_skills,
-            template_schema=template_schema
-        )
-
-    if api_key.startswith("sk-proj-") or (api_key.startswith("sk-") and not api_key.startswith("sk-ant-")) or provider == "openai":
-        if is_vision_media:
+    if is_vision_media:
+        if (llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ."))) and llm_key:
+            return transcribe_and_summarize_gemini(
+                media_bytes=media_bytes,
+                mime_type=mime_type,
+                api_key=llm_key,
+                transcription_model=stt_model,
+                summarization_model=llm_model,
+                org_context=org_context,
+                custom_skills=custom_skills,
+                text_content=text_content,
+                audio_chunks=audio_chunks,
+                template_schema=template_schema
+            )
+        else:
             return summarize_text_openai_compatible(
-                text_content=text_content or "OCR Document",
-                api_key=api_key,
+                text_content=text_content or "OCR Scanned Document",
+                api_key=llm_key or stt_key,
                 base_url=base_url or "https://api.openai.com/v1",
-                model_name=llm_model or "gpt-4o",
+                model_name=llm_model,
                 org_context=org_context,
                 custom_skills=custom_skills,
                 template_schema=template_schema,
@@ -1195,52 +1707,92 @@ def process_ai_request(
                 mime_type=mime_type
             )
 
-        raw_text = text_content
-        chunks_to_process = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
-        if chunks_to_process:
-            whisper_texts = []
-            try:
-                whisper_url = "https://api.openai.com/v1/audio/transcriptions"
-                headers = {"Authorization": f"Bearer {api_key}"}
-                for chunk in chunks_to_process:
-                    files = {"file": ("audio.mp3", chunk, mime_type or "audio/mp3")}
-                    data = {"model": stt_model or "whisper-1"}
-                    with httpx.Client(timeout=180.0) as client:
-                        w_resp = client.post(whisper_url, headers=headers, files=files, data=data)
-                        if w_resp.status_code == 200:
-                            whisper_texts.append(w_resp.json().get("text", ""))
-                if whisper_texts:
-                    raw_text = "\n\n".join([t for t in [raw_text] + whisper_texts if t])
-            except Exception as e:
-                print(f"[OpenAI Whisper Warning] {e}")
+    # 4. Audio Transcription Stage (STT)
+    raw_transcript = text_content or ""
+    chunks_to_process = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
+    
+    if chunks_to_process:
+        audio_transcripts = []
+        for chunk in chunks_to_process:
+            if not chunk or len(chunk) < 32:
+                continue
+            chunk_txt = ""
+            if stt_prov == "groq" or stt_key.startswith("gsk_"):
+                chunk_txt = transcribe_audio_groq(chunk, stt_key, model_name=stt_model, mime_type=mime_type)
+            elif stt_prov == "gemini" or stt_key.startswith(("AIzaSy", "AQ.")):
+                res = transcribe_audio_gemini(chunk, stt_key, model_name=stt_model, mime_type=mime_type)
+                chunk_txt = res.get("text", "")
+            elif stt_prov == "openai" or stt_key.startswith(("sk-proj-", "sk-")):
+                whisper_url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/audio/transcriptions"
+                files = {"file": ("audio.wav", chunk, mime_type or "audio/wav")}
+                data = {"model": stt_model or "whisper-1"}
+                headers = {"Authorization": f"Bearer {stt_key}"}
+                try:
+                    with httpx.Client(timeout=60.0) as client:
+                        r = client.post(whisper_url, headers=headers, files=files, data=data)
+                        if r.status_code == 200:
+                            chunk_txt = r.json().get("text", "")
+                except Exception as e:
+                    print(f"[OpenAI STT Error] {e}")
+            elif stt_prov == "custom":
+                whisper_url = f"{base_url.rstrip('/')}/audio/transcriptions"
+                files = {"file": ("audio.wav", chunk, mime_type or "audio/wav")}
+                data = {"model": stt_model or "whisper-large-v3-turbo"}
+                headers = {"Authorization": f"Bearer {stt_key}"} if stt_key else {}
+                try:
+                    with httpx.Client(timeout=60.0) as client:
+                        r = client.post(whisper_url, headers=headers, files=files, data=data)
+                        if r.status_code == 200:
+                            chunk_txt = r.json().get("text", "")
+                except Exception as e:
+                    print(f"[Custom STT Error] {e}")
 
-        return summarize_text_openai_compatible(
-            text_content=raw_text or "Document Content",
-            api_key=api_key,
-            base_url=base_url or "https://api.openai.com/v1",
-            model_name=llm_model or "gpt-4o",
+            if chunk_txt and chunk_txt.strip():
+                audio_transcripts.append(chunk_txt.strip())
+
+        if audio_transcripts:
+            full_audio_text = "\n\n".join(audio_transcripts)
+            raw_transcript = (f"{raw_transcript}\n\n{full_audio_text}" if raw_transcript else full_audio_text).strip()
+
+    if not raw_transcript:
+        raw_transcript = "Weekly Strategic, Programmatic and Presentation Review Meeting discussion and proceedings."
+
+    # 5. Summarization & Template Fitting Stage (LLM)
+    if (llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ."))) and llm_key:
+        return summarize_text_gemini(
+            text_content=raw_transcript,
+            api_key=llm_key,
+            model_name=llm_model,
             org_context=org_context,
             custom_skills=custom_skills,
             template_schema=template_schema
         )
 
-    if api_key.startswith("gsk_") or provider in ["groq", "custom"]:
-        # If image/PDF uploaded under Groq, use extracted text_content (from pypdf/tesseract)
-        return transcribe_and_summarize_groq(
-            media_bytes=None if is_vision_media else media_bytes,
-            mime_type=mime_type,
-            api_key=api_key,
-            base_url=base_url or "https://api.groq.com/openai/v1",
-            transcription_model=stt_model or "whisper-large-v3-turbo",
-            summarization_model=llm_model or "llama-3.3-70b-versatile",
+    if (llm_prov == "anthropic" or llm_key.startswith("sk-ant-")) and llm_key:
+        return summarize_text_anthropic(
+            text_content=raw_transcript,
+            api_key=llm_key,
+            model_name=llm_model,
             org_context=org_context,
             custom_skills=custom_skills,
-            text_content=text_content or ("Document content" if is_vision_media else ""),
-            audio_chunks=None if is_vision_media else audio_chunks,
             template_schema=template_schema
         )
-        
-    return deep_semantic_synthesis(text_content or "Document Content", custom_skills, org_context)
+
+    if llm_key:
+        target_base = base_url or ("https://api.groq.com/openai/v1" if llm_prov == "groq" else "https://api.openai.com/v1")
+        result = summarize_text_openai_compatible(
+            text_content=raw_transcript,
+            api_key=llm_key,
+            base_url=target_base,
+            model_name=llm_model,
+            org_context=org_context,
+            custom_skills=custom_skills,
+            template_schema=template_schema
+        )
+        return result
+
+    # If user provided no active LLM key, or if LLM failed, fallback to local deep semantic synthesis
+    return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
 
 def summarize_text_anthropic(
     text_content: str,

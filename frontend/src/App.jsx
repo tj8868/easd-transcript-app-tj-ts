@@ -291,6 +291,28 @@ export default function App() {
         }
       })
       .catch((err) => console.log('Default config check notice:', err));
+
+    // Hydrate persistent settings from backend disk storage
+    axios
+      .get('/api/settings')
+      .then((res) => {
+        if (res.data?.status === 'success' && res.data.settings) {
+          const s = res.data.settings;
+          setAiConfig((prev) => ({
+            ...prev,
+            transcriptionProvider: s.transcription_provider || prev.transcriptionProvider || 'groq',
+            transcriptionApiKey: s.transcription_api_key || s.groq_api_key || prev.transcriptionApiKey || '',
+            transcriptionModel: s.transcription_model || prev.transcriptionModel || 'whisper-large-v3-turbo',
+            summarizationProvider: s.summarization_provider || prev.summarizationProvider || 'gemini',
+            summarizationApiKey: s.summarization_api_key || s.gemini_api_key || prev.summarizationApiKey || '',
+            summarizationModel: s.summarization_model || prev.summarizationModel || 'gemini-3.5-flash',
+            provider: s.summarization_provider || prev.provider || 'gemini',
+            apiKey: s.summarization_api_key || s.gemini_api_key || prev.apiKey || '',
+            modelName: s.summarization_model || prev.modelName || 'gemini-3.5-flash'
+          }));
+        }
+      })
+      .catch((err) => console.log('Settings load notice:', err));
   }, []);
 
   const scrollToSection = (sectionId) => {
@@ -391,9 +413,13 @@ export default function App() {
     formData.append('provider', aiConfig.provider);
     formData.append('api_key', aiConfig.apiKey.trim());
     formData.append('base_url', aiConfig.baseUrl.trim());
-    formData.append('model_name', aiConfig.summarizationModel || aiConfig.modelName);
-    formData.append('transcription_model', aiConfig.transcriptionModel || '');
-    formData.append('summarization_model', aiConfig.summarizationModel || '');
+    formData.append('model_name', aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.5-flash');
+    formData.append('transcription_provider', aiConfig.transcriptionProvider || (aiConfig.transcriptionModel?.includes('whisper') ? 'groq' : 'gemini'));
+    formData.append('transcription_api_key', (aiConfig.transcriptionApiKey || aiConfig.apiKey || '').trim());
+    formData.append('transcription_model', aiConfig.transcriptionModel || 'whisper-large-v3-turbo');
+    formData.append('summarization_provider', aiConfig.summarizationProvider || 'gemini');
+    formData.append('summarization_api_key', (aiConfig.summarizationApiKey || aiConfig.apiKey || '').trim());
+    formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.5-flash');
     formData.append('org_context', orgContext);
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
     
@@ -441,10 +467,10 @@ export default function App() {
 
     if (selectedModel === 'groq') {
       chosenProvider = 'groq';
-      chosenModelName = 'openai/gpt-oss-120b';
+      chosenModelName = 'llama-3.3-70b-versatile';
     } else if (selectedModel === 'gemini') {
       chosenProvider = 'gemini';
-      chosenModelName = 'gemini-2.5-flash';
+      chosenModelName = 'gemini-3.5-flash';
     } else if (selectedModel === 'claude') {
       chosenProvider = 'anthropic';
       chosenModelName = 'claude-3-5-sonnet-20241022';

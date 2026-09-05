@@ -13,19 +13,17 @@ import {
 export const MODEL_OPTIONS_BY_PROVIDER = {
   gemini: {
     stt: [
-      { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (⭐ Recommended - Fast Multilingual STT)' },
+      { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash (⭐ Recommended - High Quality Multilingual STT)' },
+      { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (Fast Multilingual Audio STT)' },
       { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Ultra Fast & Lightweight STT)' },
-      { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (Advanced Reasoning & Audio STT)' },
       { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro (Deep Multimodal Audio Understanding)' },
-      { value: 'gemini-3.1-pro-preview', label: 'gemini-3.1-pro-preview (Next-Gen Gemini Pro)' },
       { value: 'custom', label: '✏️ Type Custom STT Model...' }
     ],
     llm: [
-      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (⭐ Recommended - High Speed Synthesis)' },
+      { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash (⭐ Recommended - High Speed Synthesis & Minutes)' },
+      { value: 'gemini-3.8-flash', label: 'gemini-3.8-flash (⭐ High-Speed Flagship Synthesis)' },
       { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (Balanced Speed & Quality)' },
-      { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (Advanced Multilingual Executive Reports)' },
       { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro (Comprehensive Institutional Briefs)' },
-      { value: 'gemini-3.1-pro-preview', label: 'gemini-3.1-pro-preview (Deep Executive Reasoning)' },
       { value: 'custom', label: '✏️ Type Custom LLM Model...' }
     ]
   },

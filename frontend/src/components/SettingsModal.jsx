@@ -15,6 +15,7 @@ import {
   saveKeyForProvider,
   getSavedKeyForProvider,
   getActiveApiDisplayName,
+  saveServerSettings,
   PROVIDERS
 } from '../utils/apiKeyStorage';
 
@@ -109,6 +110,12 @@ export default function SettingsModal({
     const clean = geminiKeyInput.trim();
     saveKeyForProvider('gemini', clean);
     activateProvider('gemini', setAiConfig);
+    saveServerSettings({
+      gemini_api_key: clean,
+      summarization_api_key: clean,
+      summarization_provider: 'gemini',
+      summarization_model: aiConfig?.summarizationModel || 'gemini-3.5-flash'
+    });
     setGeminiFeedback('✅ Google Gemini saved and activated as default engine!');
     setTimeout(() => setGeminiFeedback(''), 4000);
   };
@@ -278,6 +285,15 @@ export default function SettingsModal({
     const clean = otherKey.trim();
     saveKeyForProvider(otherProvider, clean);
     activateProvider(otherProvider, setAiConfig);
+    const update = {
+      [`${otherProvider}_api_key`]: clean
+    };
+    if (otherProvider === 'groq') {
+      update.transcription_provider = 'groq';
+      update.transcription_api_key = clean;
+      update.transcription_model = aiConfig?.transcriptionModel || 'whisper-large-v3-turbo';
+    }
+    saveServerSettings(update);
     setOtherFeedback(`✅ ${otherProvider.toUpperCase()} saved & activated!`);
     setTimeout(() => setOtherFeedback(''), 4000);
   };

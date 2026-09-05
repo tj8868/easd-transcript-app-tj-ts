@@ -7,8 +7,8 @@ export const PROVIDERS = [
     shortName: 'Gemini',
     tag: '⭐ Recommended (Default)',
     badgeColor: '#0284c7',
-    defaultSTT: 'gemini-2.5-flash',
-    defaultLLM: 'gemini-2.5-flash',
+    defaultSTT: 'gemini-3.5-flash',
+    defaultLLM: 'gemini-3.5-flash',
     defaultBaseUrl: '',
     placeholder: 'Paste Google Gemini key (e.g. AIzaSy...)',
     keyPrefix: 'AIzaSy',
@@ -315,4 +315,90 @@ export const activateProvider = (providerId, setAiConfig) => {
     transcriptionModel: providerObj.defaultSTT,
     summarizationModel: providerObj.defaultLLM
   };
+};
+
+// --- QUICK SELECTION BUTTON CONFIGURATIONS ---
+
+export const QUICK_STT_MODELS = [
+  { id: 'whisper-large-v3-turbo', label: 'Groq Whisper Turbo', shortLabel: 'Groq Whisper Turbo', provider: 'groq', icon: '🎙️' },
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', shortLabel: 'Gemini 3.5 STT', provider: 'gemini', icon: '🎙️' },
+  { id: 'whisper-large-v3', label: 'Whisper Large v3', shortLabel: 'Whisper Large v3', provider: 'groq', icon: '🎙️' },
+  { id: 'whisper-1', label: 'OpenAI Whisper', shortLabel: 'OpenAI Whisper', provider: 'openai', icon: '🎙️' }
+];
+
+export const QUICK_LLM_MODELS = [
+  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', shortLabel: 'Gemini 3.5 Flash', provider: 'gemini', icon: '⚡' },
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', shortLabel: 'Gemini 3.8 Flash', provider: 'gemini', icon: '⚡' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', shortLabel: 'Gemini 2.5 Flash', provider: 'gemini', icon: '⚡' },
+  { id: 'llama-3.3-70b-versatile', label: 'Groq Llama 3.3', shortLabel: 'Groq Llama 3.3', provider: 'groq', icon: '⚡' },
+  { id: 'gpt-4o', label: 'GPT-4o', shortLabel: 'GPT-4o', provider: 'openai', icon: '⚡' }
+];
+
+// --- SERVER PERSISTENCE & TWO-WAY API TESTING ---
+
+export const loadServerSettings = async () => {
+  try {
+    const res = await fetch('/api/settings');
+    if (res.ok) {
+      const data = await res.json();
+      if (data.status === 'success' && data.settings) {
+        return data.settings;
+      }
+    }
+  } catch (e) {
+    console.warn('Failed to load settings from server:', e);
+  }
+  return null;
+};
+
+export const saveServerSettings = async (settings) => {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data;
+    }
+  } catch (e) {
+    console.error('Failed to save settings to server:', e);
+  }
+  return null;
+};
+
+export const testAiEngine = async ({
+  test_type = 'both',
+  stt_provider,
+  stt_model,
+  stt_api_key,
+  llm_provider,
+  llm_model,
+  llm_api_key,
+  base_url
+}) => {
+  try {
+    const res = await fetch('/api/test_engine', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        test_type,
+        stt_provider,
+        stt_model,
+        stt_api_key,
+        llm_provider,
+        llm_model,
+        llm_api_key,
+        base_url
+      })
+    });
+    const data = await res.json();
+    return data;
+  } catch (e) {
+    return {
+      status: 'error',
+      message: e.message || 'Connection failed'
+    };
+  }
 };

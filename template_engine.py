@@ -40,7 +40,7 @@ DEFAULT_TEMPLATES: List[Dict[str, Any]] = [
         "description": "Standard 4-topic discussion table (Followup, Action items, Task Assignments, Decisions) with 21-member attendance sheet.",
         "is_default": True,
         "is_builtin": True,
-        "docx_filename": "EASD Meeting minutes - Template-DDMonthYY.docx",
+        "docx_filename": "EASD Meeting minutes - Template.docx",
         "context": "Official strategic, programmatic, and presentation review meetings conducted by Eminence Associates for Social Development (EASD). Designed for executive leadership, program managers, and stakeholders.",
         "rules": "1. Write in formal institutional tone.\n2. Must extract exactly 4 thematic discussion areas (Followup, Action items, Task assignments, Decisions).\n3. Keep bullet points concise and prefixed with a single bullet (• ).\n4. Maintain bilingual accuracy (Bangla + English).",
         "requirements": "- Document Title, Date, Venue, Time.\n- 4-5 high-level Agenda items.\n- 4-row Discussion & Action matrix.\n- Member participation verification in Attendance sheet.\n- Clearly stated major decisions.",

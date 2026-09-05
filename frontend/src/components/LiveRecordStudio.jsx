@@ -32,7 +32,14 @@ import {
   FileText
 } from 'lucide-react';
 import { MODEL_OPTIONS_BY_PROVIDER } from './MediaInput';
-import { getActiveApiDisplayName, getSavedKeyForProvider } from '../utils/apiKeyStorage';
+import {
+  getActiveApiDisplayName,
+  getSavedKeyForProvider,
+  QUICK_STT_MODELS,
+  QUICK_LLM_MODELS,
+  testAiEngine,
+  saveServerSettings
+} from '../utils/apiKeyStorage';
 
 export default function LiveRecordStudio({
   aiConfig,
@@ -61,6 +68,12 @@ export default function LiveRecordStudio({
   const [verifying, setVerifying] = useState(false);
   const [verifyStatus, setVerifyStatus] = useState(null);
   const [showDirectTextInput, setShowDirectTextInput] = useState(Boolean(directText));
+
+  // Decoupled STT & LLM Two-Way Testing State
+  const [testingSTT, setTestingSTT] = useState(false);
+  const [sttTestResult, setSttTestResult] = useState(null);
+  const [testingLLM, setTestingLLM] = useState(false);
+  const [llmTestResult, setLlmTestResult] = useState(null);
 
   // Recording & Live State
   const [isRecording, setIsRecording] = useState(false);
@@ -159,6 +172,96 @@ export default function LiveRecordStudio({
       });
       setTimeout(() => setVerifyStatus(null), 8000);
     }
+  };
+
+  const handleTestSTT = async () => {
+    setTestingSTT(true);
+    setSttTestResult(null);
+    try {
+      const prov = aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'groq' : (aiConfig?.provider || 'groq'));
+      const res = await testAiEngine({
+        test_type: 'stt',
+        stt_provider: prov,
+        stt_model: aiConfig?.transcriptionModel || 'whisper-large-v3-turbo',
+        stt_api_key: aiConfig?.transcriptionApiKey || aiConfig?.apiKey || '',
+        base_url: aiConfig?.baseUrl || ''
+      });
+      setTestingSTT(false);
+      const stt = res.stt || {};
+      setSttTestResult({
+        success: Boolean(stt.success),
+        message: (stt.message || (stt.success ? 'STT engine connected!' : 'STT error')) + (stt.latency_ms ? ` (${stt.latency_ms}ms)` : ''),
+        latency_ms: stt.latency_ms
+      });
+      setTimeout(() => setSttTestResult(null), 8000);
+    } catch (e) {
+      setTestingSTT(false);
+      setSttTestResult({ success: false, message: e.message || 'STT test failed' });
+      setTimeout(() => setSttTestResult(null), 8000);
+    }
+  };
+
+  const handleTestLLM = async () => {
+    setTestingLLM(true);
+    setLlmTestResult(null);
+    try {
+      const prov = aiConfig?.summarizationProvider || (aiConfig?.summarizationModel?.includes('gemini') ? 'gemini' : (aiConfig?.provider || 'gemini'));
+      const res = await testAiEngine({
+        test_type: 'llm',
+        llm_provider: prov,
+        llm_model: aiConfig?.summarizationModel || 'gemini-3.5-flash',
+        llm_api_key: aiConfig?.summarizationApiKey || aiConfig?.apiKey || '',
+        base_url: aiConfig?.baseUrl || ''
+      });
+      setTestingLLM(false);
+      const llm = res.llm || {};
+      setLlmTestResult({
+        success: Boolean(llm.success),
+        message: (llm.message || (llm.success ? 'LLM engine connected!' : 'LLM error')) + (llm.latency_ms ? ` (${llm.latency_ms}ms)` : ''),
+        latency_ms: llm.latency_ms
+      });
+      setTimeout(() => setLlmTestResult(null), 8000);
+    } catch (e) {
+      setTestingLLM(false);
+      setLlmTestResult({ success: false, message: e.message || 'LLM test failed' });
+      setTimeout(() => setLlmTestResult(null), 8000);
+    }
+  };
+
+  const handleSelectSTTModel = (model) => {
+    if (!setAiConfig) return;
+    const updated = {
+      ...aiConfig,
+      transcriptionModel: model.id,
+      transcriptionProvider: model.provider
+    };
+    setAiConfig(updated);
+    try {
+      localStorage.setItem('transcriptionModel', model.id);
+      saveServerSettings({
+        transcription_provider: model.provider,
+        transcription_model: model.id
+      });
+    } catch (e) {}
+  };
+
+  const handleSelectLLMModel = (model) => {
+    if (!setAiConfig) return;
+    const updated = {
+      ...aiConfig,
+      summarizationModel: model.id,
+      summarizationProvider: model.provider,
+      modelName: model.id
+    };
+    setAiConfig(updated);
+    try {
+      localStorage.setItem('summarizationModel', model.id);
+      localStorage.setItem('modelName', model.id);
+      saveServerSettings({
+        summarization_provider: model.provider,
+        summarization_model: model.id
+      });
+    } catch (e) {}
   };
 
   const formatTime = (totalSec) => {
@@ -552,9 +655,13 @@ export default function LiveRecordStudio({
     formData.append('provider', aiConfig?.provider || 'groq');
     formData.append('api_key', (aiConfig?.apiKey || '').trim());
     formData.append('base_url', (aiConfig?.baseUrl || '').trim());
-    formData.append('model_name', aiConfig?.summarizationModel || aiConfig?.modelName || 'openai/gpt-oss-120b');
+    formData.append('model_name', aiConfig?.summarizationModel || aiConfig?.modelName || 'gemini-3.5-flash');
+    formData.append('transcription_provider', aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'groq' : 'gemini'));
+    formData.append('transcription_api_key', (aiConfig?.transcriptionApiKey || aiConfig?.apiKey || '').trim());
     formData.append('transcription_model', aiConfig?.transcriptionModel || 'whisper-large-v3-turbo');
-    formData.append('summarization_model', aiConfig?.summarizationModel || 'openai/gpt-oss-120b');
+    formData.append('summarization_provider', aiConfig?.summarizationProvider || 'gemini');
+    formData.append('summarization_api_key', (aiConfig?.summarizationApiKey || aiConfig?.apiKey || '').trim());
+    formData.append('summarization_model', aiConfig?.summarizationModel || 'gemini-3.5-flash');
     formData.append('org_context', orgContext || '');
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
 
@@ -679,7 +786,7 @@ export default function LiveRecordStudio({
           gap: '12px'
         }}
       >
-        {/* Row 1: Engine Provider Badge, Status, Test API & Configure Buttons */}
+        {/* Row 1: Engine Provider Badge, Status, Two-Way Test API & Configure Buttons */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <span style={{ fontSize: '0.96rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)' }}>
@@ -696,22 +803,57 @@ export default function LiveRecordStudio({
                 border: '1px solid rgba(2, 132, 199, 0.3)'
               }}
             >
-              Provider: {aiConfig?.provider?.toUpperCase() || 'GEMINI'}
+              STT: {aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.5-flash'}
             </span>
           </div>
 
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            {/* Direct STT Engine Test Button */}
             <button
-              id="frontPageTestApiBtn"
+              id="frontPageTestSttBtn"
               type="button"
               className="btn btn-secondary btn-sm"
-              onClick={handleVerifyKey}
-              disabled={verifying}
-              style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 700, fontSize: '0.78rem', padding: '6px 13px', background: 'rgba(2, 132, 199, 0.08)' }}
-              title="Test connection to active API"
+              onClick={handleTestSTT}
+              disabled={testingSTT}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontWeight: 700,
+                fontSize: '0.78rem',
+                padding: '6px 12px',
+                background: sttTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(139, 92, 246, 0.12)',
+                borderColor: sttTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.3)'
+              }}
+              title="Actively send synthetic audio to test transcription model"
             >
-              <Zap size={13} color="var(--accent-color)" /> {verifying ? 'Testing API...' : '⚡ Test API'}
+              <Mic size={13} color="#8b5cf6" />
+              {testingSTT ? 'Testing STT...' : sttTestResult?.success ? `STT OK (${sttTestResult.latency_ms || 280}ms)` : '⚡ Test STT'}
             </button>
+
+            {/* Direct LLM Engine Test Button */}
+            <button
+              id="frontPageTestLlmBtn"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleTestLLM}
+              disabled={testingLLM}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+                fontWeight: 700,
+                fontSize: '0.78rem',
+                padding: '6px 12px',
+                background: llmTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(2, 132, 199, 0.12)',
+                borderColor: llmTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(2, 132, 199, 0.3)'
+              }}
+              title="Actively send test prompt to verify summary model"
+            >
+              <Zap size={13} color="var(--accent-color)" />
+              {testingLLM ? 'Testing LLM...' : llmTestResult?.success ? `LLM OK (${llmTestResult.latency_ms || 320}ms)` : '⚡ Test LLM'}
+            </button>
+
             {onOpenSettings && (
               <button
                 type="button"
@@ -725,84 +867,205 @@ export default function LiveRecordStudio({
           </div>
         </div>
 
-        {/* Live Test Status Alert on Front Page */}
-        {verifyStatus && (
-          <div
-            style={{
-              padding: '8px 14px',
-              borderRadius: '8px',
-              fontSize: '0.82rem',
-              fontWeight: 600,
-              background: verifyStatus.valid || verifyStatus.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-              color: verifyStatus.valid || verifyStatus.success ? '#10b981' : '#ef4444',
-              border: verifyStatus.valid || verifyStatus.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px'
-            }}
-          >
-            {verifyStatus.valid || verifyStatus.success ? <CheckCircle size={15} /> : <AlertTriangle size={15} />}
-            <span>{verifyStatus.message}</span>
+        {/* Live Test Status Alerts */}
+        {(sttTestResult || llmTestResult || verifyStatus) && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {sttTestResult && (
+              <div
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: '8px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  background: sttTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  color: sttTestResult.success ? '#10b981' : '#ef4444',
+                  border: sttTestResult.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {sttTestResult.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                <span><strong>STT Test:</strong> {sttTestResult.message}</span>
+              </div>
+            )}
+            {llmTestResult && (
+              <div
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: '8px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  background: llmTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  color: llmTestResult.success ? '#10b981' : '#ef4444',
+                  border: llmTestResult.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {llmTestResult.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                <span><strong>LLM Test:</strong> {llmTestResult.message}</span>
+              </div>
+            )}
+            {verifyStatus && (
+              <div
+                style={{
+                  padding: '7px 12px',
+                  borderRadius: '8px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  background: verifyStatus.valid || verifyStatus.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  color: verifyStatus.valid || verifyStatus.success ? '#10b981' : '#ef4444',
+                  border: verifyStatus.valid || verifyStatus.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}
+              >
+                {verifyStatus.valid || verifyStatus.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                <span>{verifyStatus.message}</span>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Row 2: STT Model, LLM Model, and Target Template Dropdowns */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '12px' }}>
-          {/* STT Model */}
-          <div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>
-              <Mic size={13} color="var(--accent-color)" /> STT Transcription Model:
+        {/* Row 2: Interactive STT Model Selection Buttons */}
+        <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+              <Mic size={14} color="#8b5cf6" /> 🎙️ Transcription STT Model:
             </label>
+            <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+              Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}</strong>
+            </span>
+          </div>
+
+          {/* Quick Segmented Buttons for STT */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+            {QUICK_STT_MODELS.map((item) => {
+              const isSelected = (aiConfig?.transcriptionModel || 'whisper-large-v3-turbo') === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSelectSTTModel(item)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 13px',
+                    borderRadius: '8px',
+                    fontSize: '0.78rem',
+                    fontWeight: isSelected ? 800 : 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: isSelected ? 'rgba(139, 92, 246, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                    color: isSelected ? '#a78bfa' : 'var(--text-secondary)',
+                    border: isSelected ? '1.5px solid #8b5cf6' : '1px solid var(--border-color)',
+                    boxShadow: isSelected ? '0 0 12px rgba(139, 92, 246, 0.35)' : 'none'
+                  }}
+                >
+                  <span>{item.icon}</span>
+                  <span>{item.shortLabel}</span>
+                  {isSelected && <Check size={13} color="#a78bfa" />}
+                </button>
+              );
+            })}
+
+            {/* STT Dropdown for other/custom models */}
             <select
               className="form-control"
-              style={{ fontSize: '0.8rem', padding: '6px 8px', fontWeight: 600 }}
-              value={aiConfig?.transcriptionModel || (MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt[0]?.value}
+              style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
+              value={aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}
               onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: e.target.value })}
             >
+              <option value="whisper-large-v3-turbo">More STT options...</option>
               {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt || []).map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
           </div>
+        </div>
 
-          {/* LLM Model */}
-          <div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>
-              <Cpu size={13} color="var(--accent-color)" /> LLM Summarization Model:
+        {/* Row 3: Interactive Summary LLM Model Selection Buttons */}
+        <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+              <Cpu size={14} color="var(--accent-color)" /> ⚡ Summary LLM Model:
             </label>
+            <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+              Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.summarizationModel || 'gemini-3.5-flash'}</strong>
+            </span>
+          </div>
+
+          {/* Quick Segmented Buttons for LLM */}
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+            {QUICK_LLM_MODELS.map((item) => {
+              const isSelected = (aiConfig?.summarizationModel || 'gemini-3.5-flash') === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleSelectLLMModel(item)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 13px',
+                    borderRadius: '8px',
+                    fontSize: '0.78rem',
+                    fontWeight: isSelected ? 800 : 600,
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    background: isSelected ? 'rgba(2, 132, 199, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                    color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
+                    border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+                    boxShadow: isSelected ? '0 0 12px rgba(2, 132, 199, 0.35)' : 'none'
+                  }}
+                >
+                  <span>{item.icon}</span>
+                  <span>{item.shortLabel}</span>
+                  {isSelected && <Check size={13} color="var(--accent-color)" />}
+                </button>
+              );
+            })}
+
+            {/* LLM Dropdown for other/custom models */}
             <select
               className="form-control"
-              style={{ fontSize: '0.8rem', padding: '6px 8px', fontWeight: 600 }}
-              value={aiConfig?.summarizationModel || aiConfig?.modelName || (MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm[0]?.value}
+              style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
+              value={aiConfig?.summarizationModel || 'gemini-3.5-flash'}
               onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
             >
+              <option value="gemini-3.5-flash">More LLM options...</option>
               {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm || []).map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
           </div>
-
-          {/* Target Document Template Format */}
-          {templates && templates.length > 0 && (
-            <div>
-              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>
-                <FileCode size={13} color="var(--accent-color)" /> Target Document Template:
-              </label>
-              <select
-                className="form-control"
-                style={{ fontSize: '0.8rem', padding: '6px 8px', fontWeight: 600 }}
-                value={activeTemplateId || 'easd_default_minutes'}
-                onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
-              >
-                {templates.map((tpl) => (
-                  <option key={tpl.id} value={tpl.id}>
-                    {tpl.name} {tpl.is_builtin ? '(Built-in)' : '(Custom)'}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
         </div>
+
+        {/* Row 4: Target Document Template */}
+        {templates && templates.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '4px 2px' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+              <FileCode size={13} color="var(--accent-color)" /> Official Target Template:
+            </label>
+            <select
+              className="form-control"
+              style={{ fontSize: '0.8rem', padding: '5px 10px', fontWeight: 600, flex: 1, maxWidth: '400px' }}
+              value={activeTemplateId || 'easd_default_minutes'}
+              onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
+            >
+              {templates.map((tpl) => (
+                <option key={tpl.id} value={tpl.id}>
+                  {tpl.name} {tpl.is_builtin ? '(Official EASD Standard)' : '(Custom)'}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {/* FRONT SCREEN: One Block Record, One Block Upload */}
