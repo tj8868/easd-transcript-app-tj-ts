@@ -19,22 +19,49 @@ import {
   Edit2,
   FileAudio,
   Plus,
-  Users
+  Users,
+  Cpu,
+  Key,
+  Zap,
+  CheckCircle,
+  AlertTriangle,
+  FileCode,
+  Edit3,
+  ChevronDown,
+  ChevronUp,
+  FileText
 } from 'lucide-react';
+import { MODEL_OPTIONS_BY_PROVIDER } from './MediaInput';
+import { getActiveApiDisplayName, getSavedKeyForProvider } from '../utils/apiKeyStorage';
 
 export default function LiveRecordStudio({
   aiConfig,
+  setAiConfig,
   orgContext,
   activeSkills,
   customSkillsList,
   activeTemplateId,
+  onSelectTemplate,
+  templates = [],
   onRecordingProcessed,
   onLiveTranscriptSync,
   onAppendToTranscript,
   onSendToBangla,
   onSendToEnglish,
-  scrollToSection
+  scrollToSection,
+  onOpenSettings,
+  directText = '',
+  setDirectText,
+  selectedFile,
+  setSelectedFile,
+  onProcessAi,
+  isProcessing = false
 }) {
+  // Engine Verification & Direct Text State
+  const [verifying, setVerifying] = useState(false);
+  const [verifyStatus, setVerifyStatus] = useState(null);
+  const [showDirectTextInput, setShowDirectTextInput] = useState(Boolean(directText));
+
   // Recording & Live State
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
@@ -101,6 +128,38 @@ export default function LiveRecordStudio({
       });
     };
   }, []);
+
+  const handleVerifyKey = async () => {
+    setVerifying(true);
+    setVerifyStatus(null);
+    try {
+      const p = aiConfig?.provider || 'gemini';
+      const k = aiConfig?.apiKey?.trim() || getSavedKeyForProvider(p) || '';
+      const u = aiConfig?.baseUrl || '';
+      const res = await axios.post('/api/verify_key', {
+        provider: p,
+        api_key: k,
+        base_url: u
+      });
+      setVerifying(false);
+      const isValid = Boolean(res.data?.valid || res.data?.success);
+      const lat = res.data?.latency_ms ? ` (${res.data.latency_ms}ms)` : '';
+      setVerifyStatus({
+        valid: isValid,
+        success: isValid,
+        message: (res.data?.message || (isValid ? 'API connected successfully!' : 'Verification failed.')) + lat
+      });
+      setTimeout(() => setVerifyStatus(null), 8000);
+    } catch (err) {
+      setVerifying(false);
+      setVerifyStatus({
+        valid: false,
+        success: false,
+        message: err.response?.data?.detail || err.message || 'Key verification failed.'
+      });
+      setTimeout(() => setVerifyStatus(null), 8000);
+    }
+  };
 
   const formatTime = (totalSec) => {
     const mins = Math.floor(totalSec / 60);
@@ -407,6 +466,9 @@ export default function LiveRecordStudio({
     if (!files || files.length === 0) return;
     const newItems = [];
     Array.from(files).forEach((file, fIdx) => {
+      if (setSelectedFile && fIdx === 0) {
+        setSelectedFile(file);
+      }
       const url = URL.createObjectURL(file);
       newItems.push({
         id: 'upload_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7) + '_' + fIdx,
@@ -604,14 +666,153 @@ export default function LiveRecordStudio({
         <span style={{ color: 'var(--text-secondary)' }}>4. Template Fillup via Skills</span>
       </div>
 
-      {/* FRONT SCREEN: One Block Record, One Block Upload -- Nothing Else */}
+      {/* INTEGRATED AI ENGINE COMMAND BAR */}
+      <div
+        style={{
+          background: 'var(--bg-secondary)',
+          border: '1.5px solid var(--border-color)',
+          borderRadius: '14px',
+          padding: '14px 18px',
+          marginBottom: '20px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '12px'
+        }}
+      >
+        {/* Row 1: Engine Provider Badge, Status, Test API & Configure Buttons */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.96rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)' }}>
+              <Cpu size={18} color="var(--accent-color)" /> Active AI Engine: {getActiveApiDisplayName(aiConfig)}
+            </span>
+            <span
+              style={{
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                padding: '2px 8px',
+                borderRadius: '6px',
+                background: 'rgba(2, 132, 199, 0.15)',
+                color: 'var(--accent-color)',
+                border: '1px solid rgba(2, 132, 199, 0.3)'
+              }}
+            >
+              Provider: {aiConfig?.provider?.toUpperCase() || 'GEMINI'}
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button
+              id="frontPageTestApiBtn"
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleVerifyKey}
+              disabled={verifying}
+              style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 700, fontSize: '0.78rem', padding: '6px 13px', background: 'rgba(2, 132, 199, 0.08)' }}
+              title="Test connection to active API"
+            >
+              <Zap size={13} color="var(--accent-color)" /> {verifying ? 'Testing API...' : '⚡ Test API'}
+            </button>
+            {onOpenSettings && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={onOpenSettings}
+                style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 700, fontSize: '0.78rem', padding: '6px 13px' }}
+              >
+                <Key size={13} /> Configure / Switch APIs
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Live Test Status Alert on Front Page */}
+        {verifyStatus && (
+          <div
+            style={{
+              padding: '8px 14px',
+              borderRadius: '8px',
+              fontSize: '0.82rem',
+              fontWeight: 600,
+              background: verifyStatus.valid || verifyStatus.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+              color: verifyStatus.valid || verifyStatus.success ? '#10b981' : '#ef4444',
+              border: verifyStatus.valid || verifyStatus.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px'
+            }}
+          >
+            {verifyStatus.valid || verifyStatus.success ? <CheckCircle size={15} /> : <AlertTriangle size={15} />}
+            <span>{verifyStatus.message}</span>
+          </div>
+        )}
+
+        {/* Row 2: STT Model, LLM Model, and Target Template Dropdowns */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '12px' }}>
+          {/* STT Model */}
+          <div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+              <Mic size={13} color="var(--accent-color)" /> STT Transcription Model:
+            </label>
+            <select
+              className="form-control"
+              style={{ fontSize: '0.8rem', padding: '6px 8px', fontWeight: 600 }}
+              value={aiConfig?.transcriptionModel || (MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt[0]?.value}
+              onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: e.target.value })}
+            >
+              {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt || []).map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* LLM Model */}
+          <div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+              <Cpu size={13} color="var(--accent-color)" /> LLM Summarization Model:
+            </label>
+            <select
+              className="form-control"
+              style={{ fontSize: '0.8rem', padding: '6px 8px', fontWeight: 600 }}
+              value={aiConfig?.summarizationModel || aiConfig?.modelName || (MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm[0]?.value}
+              onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
+            >
+              {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm || []).map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Target Document Template Format */}
+          {templates && templates.length > 0 && (
+            <div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: '4px' }}>
+                <FileCode size={13} color="var(--accent-color)" /> Target Document Template:
+              </label>
+              <select
+                className="form-control"
+                style={{ fontSize: '0.8rem', padding: '6px 8px', fontWeight: 600 }}
+                value={activeTemplateId || 'easd_default_minutes'}
+                onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
+              >
+                {templates.map((tpl) => (
+                  <option key={tpl.id} value={tpl.id}>
+                    {tpl.name} {tpl.is_builtin ? '(Built-in)' : '(Custom)'}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* FRONT SCREEN: One Block Record, One Block Upload */}
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
           gap: '20px',
           maxWidth: '720px',
-          margin: '0 auto 20px auto',
+          margin: '0 auto 16px auto',
           width: '100%',
           boxSizing: 'border-box'
         }}
@@ -724,7 +925,7 @@ export default function LiveRecordStudio({
           )}
         </div>
 
-        {/* BLOCK 2: UPLOAD */}
+        {/* BLOCK 2: UNIVERSAL UPLOAD */}
         <div
           className={`drop-zone ${isDragging ? 'dragging' : ''}`}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }}
@@ -759,7 +960,7 @@ export default function LiveRecordStudio({
             ref={fileInputRef}
             type="file"
             multiple
-            accept="audio/*,video/*,.mp3,.wav,.m4a,.aac,.ogg,.opus,.flac,.mp4,.mkv,.mov,.webm,.avi"
+            accept="audio/*,video/*,image/*,.pdf,.doc,.docx,.txt,.srt,.vtt,.hevc,.mov,.mp4,.m4a,.wav,.mp3"
             style={{ display: 'none' }}
             onChange={(e) => handleAddUploadedFiles(e.target.files)}
           />
@@ -784,13 +985,79 @@ export default function LiveRecordStudio({
 
           <div style={{ textAlign: 'center' }}>
             <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-              Upload
+              Universal Upload
             </h3>
             <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-              {isDragging ? 'Drop audio or video files here!' : 'Click or drag audio / video files'}
+              {isDragging ? 'Drop audio, video, OCR photos or PDFs here!' : 'Audio, Video, Photos & OCR, PDFs & Docs'}
             </p>
           </div>
         </div>
+      </div>
+
+      {/* DIRECT DRAFT TEXT & DOCUMENT SYNTHESIS DRAWER */}
+      <div style={{ maxWidth: '720px', margin: '0 auto 18px auto', width: '100%', boxSizing: 'border-box' }}>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <button
+            type="button"
+            onClick={() => setShowDirectTextInput((prev) => !prev)}
+            style={{
+              background: 'rgba(255, 255, 255, 0.04)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-primary)',
+              fontSize: '0.8rem',
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              borderRadius: '20px',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <Edit3 size={13} color="var(--accent-color)" />
+            {showDirectTextInput ? 'Hide Draft Text Input ▲' : '📝 Or Paste Draft Notes / Direct Text Directly ▼'}
+          </button>
+        </div>
+
+        {showDirectTextInput && (
+          <div
+            style={{
+              marginTop: '10px',
+              padding: '14px',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '12px',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px'
+            }}
+          >
+            <label style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
+              Paste raw conversation notes, draft bullet points, or transcript text:
+            </label>
+            <textarea
+              className="form-control"
+              rows="3"
+              value={directText}
+              onChange={(e) => setDirectText && setDirectText(e.target.value)}
+              placeholder="Paste raw conversation notes, bullet points, or draft text here..."
+              style={{ fontSize: '0.84rem', padding: '8px' }}
+            />
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={onProcessAi}
+                disabled={isProcessing || (!directText.trim() && !selectedFile)}
+                style={{ fontWeight: 800, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
+              >
+                <Sparkles size={14} />
+                {isProcessing ? 'Processing with AI...' : '⚡ Generate Meeting Minutes from Draft / Media'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* HIGH-VISIBILITY REAL-TIME SPEECH MONITOR */}

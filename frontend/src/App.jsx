@@ -651,19 +651,29 @@ export default function App() {
 
       {/* SINGLE-PAGE SCROLLING LAYOUT */}
       <main style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        {/* 1. Live Record: Unified live recording, speech-to-text, drag & drop upload & multi-take studio */}
+        {/* 1. Live Record & AI Engine Hero Command Studio */}
         <LiveRecordStudio
           aiConfig={aiConfig}
+          setAiConfig={setAiConfig}
           orgContext={orgContext}
           activeSkills={activeSkills}
           customSkillsList={customSkillsList}
           activeTemplateId={activeTemplateId}
+          onSelectTemplate={handleSelectTemplate}
+          templates={templates}
           onRecordingProcessed={handleRecordingProcessed}
           onLiveTranscriptSync={handleLiveTranscriptSync}
           onAppendToTranscript={handleAppendToTranscript}
           onSendToBangla={handleSendToBangla}
           onSendToEnglish={handleSendToEnglish}
           scrollToSection={scrollToSection}
+          onOpenSettings={() => setIsSettingsOpen(true)}
+          directText={directText}
+          setDirectText={setDirectText}
+          selectedFile={selectedFile}
+          setSelectedFile={setSelectedFile}
+          onProcessAi={handleProcessAi}
+          isProcessing={isProcessing}
         />
 
         {/* 2. Transcript: Single unified real-time transcript section */}
@@ -675,32 +685,6 @@ export default function App() {
         />
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}
-
-        {/* 4. Engine: AI models, OCR & text input */}
-        <CollapsibleCard
-          id="section-input"
-          title="Engine"
-          icon={Cpu}
-          badge={selectedFile ? `${selectedFile.name.slice(0, 18)}...` : directText ? 'Draft text' : undefined}
-          summary="AI provider models, direct draft text & OCR"
-          isCollapsed={collapsedSections['section-input']}
-          onToggle={() => toggleSectionCollapse('section-input')}
-        >
-          <MediaInput
-            selectedFile={selectedFile}
-            setSelectedFile={setSelectedFile}
-            directText={directText}
-            setDirectText={setDirectText}
-            aiConfig={aiConfig}
-            setAiConfig={setAiConfig}
-            templates={templates}
-            activeTemplateId={activeTemplateId}
-            onSelectTemplate={handleSelectTemplate}
-            onProcessAi={handleProcessAi}
-            isProcessing={isProcessing}
-            onOpenSettings={() => setIsSettingsOpen(true)}
-          />
-        </CollapsibleCard>
 
         {/* 5. Templates */}
         <CollapsibleCard

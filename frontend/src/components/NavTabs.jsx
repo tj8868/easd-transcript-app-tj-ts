@@ -17,11 +17,10 @@ import {
 
 export default function NavTabs({ activeSection, scrollToSection, documentType = 'meeting_minutes' }) {
   const getSectionsForDocType = () => {
-    // 1. Live Record (Unified), 2. Transcripts, 3. Engine, 4. Templates, 5. Skills
+    // 1. Record & Engine (Unified Hero), 2. Transcript, 3. Templates, 4. Skills
     const baseSections = [
-      { id: 'section-live', label: 'Live Record', icon: Radio },
+      { id: 'section-live', label: 'Record & Engine', icon: Radio },
       { id: 'section-transcripts', label: 'Transcript', icon: FileText },
-      { id: 'section-input', label: 'Engine', icon: Cpu },
       { id: 'section-templates', label: 'Templates', icon: FileCode },
       { id: 'section-skills', label: 'Skills', icon: Sparkles },
     ];
