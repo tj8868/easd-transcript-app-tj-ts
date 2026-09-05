@@ -8,6 +8,7 @@ export default function DocumentPreview({
   discussions = [],
   decisions = '',
   attendance = [],
+  transcript = '',
   banglaTranscript = '',
   englishTranscript = '',
   templates = [],
@@ -59,8 +60,9 @@ export default function DocumentPreview({
   };
 
   const handleDownloadTranscriptOnly = () => {
-    if (!banglaTranscript && !englishTranscript) {
-      alert('No transcripts available to download.');
+    const textToExport = transcript || banglaTranscript || englishTranscript;
+    if (!textToExport) {
+      alert('No transcript available to download.');
       return;
     }
     const today = new Date().toISOString().slice(0, 10);
@@ -70,11 +72,7 @@ export default function DocumentPreview({
       `  TRANSCRIPT EXPORT: ${title}`,
       `  Date: ${meta.date || today} | Venue: ${meta.location || 'N/A'}`,
       `============================================================\n`,
-      `--- BANGLA TRANSCRIPT (বাংলা ট্রান্সক্রিপ্ট) ---`,
-      banglaTranscript || '(No Bangla transcript generated)',
-      `\n------------------------------------------------------------\n`,
-      `--- ENGLISH TRANSCRIPT ---`,
-      englishTranscript || '(No English transcript generated)',
+      textToExport,
       `\n============================================================`
     ].join('\n');
 

@@ -102,6 +102,7 @@ class MeetingDocPayload(BaseModel):
     discussions: Optional[List[DiscussionItem]] = []
     decisions: Optional[str] = ""
     attendance: Optional[List[AttendanceItem]] = []
+    transcript: Optional[str] = ""
     bangla_transcript: Optional[str] = ""
     english_transcript: Optional[str] = ""
     model_config = ConfigDict(extra="ignore")

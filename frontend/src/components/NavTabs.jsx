@@ -20,7 +20,7 @@ export default function NavTabs({ activeSection, scrollToSection, documentType =
     // 1. Live Record (Unified), 2. Transcripts, 3. Engine, 4. Templates, 5. Skills
     const baseSections = [
       { id: 'section-live', label: 'Live Record', icon: Radio },
-      { id: 'section-transcripts', label: 'Transcripts', icon: Languages },
+      { id: 'section-transcripts', label: 'Transcript', icon: FileText },
       { id: 'section-input', label: 'Engine', icon: Cpu },
       { id: 'section-templates', label: 'Templates', icon: FileCode },
       { id: 'section-skills', label: 'Skills', icon: Sparkles },

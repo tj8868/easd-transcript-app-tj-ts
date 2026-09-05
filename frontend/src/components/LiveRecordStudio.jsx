@@ -28,6 +28,8 @@ export default function LiveRecordStudio({
   customSkillsList,
   activeTemplateId,
   onRecordingProcessed,
+  onLiveTranscriptSync,
+  onAppendToTranscript,
   onSendToBangla,
   onSendToEnglish,
   scrollToSection
@@ -115,11 +117,13 @@ export default function LiveRecordStudio({
     return '';
   };
 
-  // --- Web Speech Recognition Setup ---
-  const initSpeechRecognition = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  // --- webkitSpeechRecognition Speech Detection Setup ---
+  const initSpeechRecognition = (langOverride = null) => {
+    // Explicitly prioritize webkitSpeechRecognition
+    const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
     if (!SpeechRecognition) {
-      console.warn('Web Speech API not supported in this browser.');
+      console.warn('webkitSpeechRecognition not supported in this browser. Please use Google Chrome, Microsoft Edge, or a Chromium-based browser for live speech recognition.');
+      setStatusText('webkitSpeechRecognition requires Chrome or Edge browser');
       return null;
     }
     const recognition = new SpeechRecognition();
@@ -127,9 +131,10 @@ export default function LiveRecordStudio({
     recognition.interimResults = true;
     recognition.maxAlternatives = 1;
 
-    if (language === 'bn') {
+    const activeLang = langOverride || language;
+    if (activeLang === 'bn') {
       recognition.lang = 'bn-BD';
-    } else if (language === 'en') {
+    } else if (activeLang === 'en') {
       recognition.lang = 'en-US';
     } else {
       const userLang = navigator.language || 'bn-BD';
@@ -138,7 +143,7 @@ export default function LiveRecordStudio({
 
     recognition.onstart = () => {
       isStartingRecognitionRef.current = false;
-      setStatusText(`Live speech streaming active (${recognition.lang})`);
+      setStatusText(`webkitSpeechRecognition active (${recognition.lang})`);
     };
 
     recognition.onresult = (event) => {
@@ -153,18 +158,29 @@ export default function LiveRecordStudio({
         }
       }
       if (finalStr) {
-        setLiveTranscript((prev) => (prev ? prev + ' ' + finalStr.trim() : finalStr.trim()));
+        setLiveTranscript((prev) => {
+          const updated = prev ? prev + ' ' + finalStr.trim() : finalStr.trim();
+          if (onLiveTranscriptSync) {
+            onLiveTranscriptSync(updated);
+          }
+          if (onAppendToTranscript) {
+            onAppendToTranscript(finalStr.trim());
+          }
+          return updated;
+        });
       }
       setInterimText(interimStr);
     };
 
     recognition.onerror = (event) => {
+      isStartingRecognitionRef.current = false;
       if (event.error === 'no-speech') return;
       console.warn('Speech recognition notice:', event.error);
     };
 
     recognition.onend = () => {
-      if (isRecordingRef.current && !isPausedRef.current && !isStartingRecognitionRef.current) {
+      isStartingRecognitionRef.current = false;
+      if (isRecordingRef.current && !isPausedRef.current) {
         try {
           isStartingRecognitionRef.current = true;
           recognition.start();
@@ -175,6 +191,26 @@ export default function LiveRecordStudio({
     };
 
     return recognition;
+  };
+
+  const handleLanguageChange = (newLang) => {
+    setLanguage(newLang);
+    if (isRecordingRef.current && recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {}
+      setTimeout(() => {
+        if (isRecordingRef.current && !isPausedRef.current) {
+          const rec = initSpeechRecognition(newLang);
+          if (rec) {
+            recognitionRef.current = rec;
+            try {
+              rec.start();
+            } catch (err) {}
+          }
+        }
+      }, 100);
+    }
   };
 
   // --- Start Unified Recording & Live Transcribing ---
@@ -264,6 +300,9 @@ export default function LiveRecordStudio({
         };
 
         setRecordingsQueue((prev) => [...prev, newTake]);
+        if (capturedTranscript && onLiveTranscriptSync) {
+          onLiveTranscriptSync(capturedTranscript);
+        }
         setStatusText(`✓ Take #${takeNum} saved automatically to queue!`);
       };
 
@@ -497,17 +536,31 @@ export default function LiveRecordStudio({
     setTimeout(() => setIsCopied(false), 2000);
   };
 
+  const handleClearLive = () => {
+    if (window.confirm('Clear the live spoken transcript?')) {
+      setLiveTranscript('');
+      setInterimText('');
+      if (onLiveTranscriptSync) onLiveTranscriptSync('');
+    }
+  };
+
+  const handleScrollToTranscript = () => {
+    if (scrollToSection) scrollToSection('section-transcripts');
+  };
+
   const handleSendBangla = () => {
     const text = (liveTranscript + (interimText ? ' ' + interimText : '')).trim();
     if (!text) return;
-    if (onSendToBangla) onSendToBangla(text);
+    if (onLiveTranscriptSync) onLiveTranscriptSync(text);
+    else if (onSendToBangla) onSendToBangla(text);
     if (scrollToSection) scrollToSection('section-transcripts');
   };
 
   const handleSendEnglish = () => {
     const text = (liveTranscript + (interimText ? ' ' + interimText : '')).trim();
     if (!text) return;
-    if (onSendToEnglish) onSendToEnglish(text);
+    if (onLiveTranscriptSync) onLiveTranscriptSync(text);
+    else if (onSendToEnglish) onSendToEnglish(text);
     if (scrollToSection) scrollToSection('section-transcripts');
   };
 
@@ -702,62 +755,219 @@ export default function LiveRecordStudio({
         </div>
       </div>
 
-      {/* Live Transcribe Box (Visible when recording or when text exists) */}
+      {/* HIGH-VISIBILITY REAL-TIME SPEECH MONITOR */}
       {(isRecording || liveTranscript || interimText) && (
         <div
+          id="realtime-speech-monitor"
           style={{
-            background: 'rgba(0, 0, 0, 0.35)',
-            border: '1.5px solid var(--border-color)',
-            borderRadius: '12px',
-            padding: '16px',
-            marginBottom: '16px'
+            background: isRecording
+              ? 'linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(8, 14, 26, 0.98) 100%)'
+              : 'var(--bg-secondary)',
+            border: isRecording
+              ? '2px solid rgba(16, 185, 129, 0.55)'
+              : '1.5px solid var(--border-color)',
+            borderRadius: '16px',
+            padding: '20px',
+            marginBottom: '20px',
+            boxShadow: isRecording
+              ? '0 0 35px rgba(16, 185, 129, 0.2), 0 8px 30px rgba(0, 0, 0, 0.4)'
+              : 'var(--card-shadow)',
+            transition: 'all 0.25s ease',
+            position: 'relative'
           }}
         >
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
-            <span style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-color)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <Radio size={14} /> Live Speech Transcription (Instant):
-            </span>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button className="btn btn-secondary btn-sm" onClick={handleCopyLive} style={{ fontSize: '0.75rem', padding: '4px 8px' }}>
-                {isCopied ? <Check size={12} color="#10b981" /> : <Copy size={12} />} {isCopied ? 'Copied' : 'Copy'}
+          {/* Top Bar: Live Status, Voice Visualizer, Language Pills, Toolbar */}
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginBottom: '14px',
+              flexWrap: 'wrap',
+              gap: '12px',
+              borderBottom: '1px solid var(--border-color)',
+              paddingBottom: '12px'
+            }}
+          >
+            {/* Live Indicator & Volume Level */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+              <div
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '4px 12px',
+                  borderRadius: '20px',
+                  background: isRecording ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
+                  border: isRecording ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(16, 185, 129, 0.3)'
+                }}
+              >
+                <span
+                  style={{
+                    width: '9px',
+                    height: '9px',
+                    borderRadius: '50%',
+                    backgroundColor: isRecording ? '#ef4444' : '#10b981',
+                    animation: isRecording && !isPaused ? 'pulse 1.2s infinite' : 'none',
+                    boxShadow: isRecording ? '0 0 8px #ef4444' : 'none'
+                  }}
+                />
+                <span style={{ fontSize: '0.82rem', fontWeight: 800, color: isRecording ? '#ef4444' : '#10b981' }}>
+                  {isRecording ? (isPaused ? 'PAUSED' : `LIVE SPEECH [${formatTime(recordingSeconds)}]`) : 'LIVE TRANSCRIPT READY'}
+                </span>
+              </div>
+
+              {isRecording && !isPaused && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Volume2 size={16} color="var(--accent-color)" />
+                  <div style={{ width: '90px', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        height: '100%',
+                        width: `${audioLevel}%`,
+                        background: audioLevel > 60 ? '#ef4444' : 'var(--accent-color)',
+                        transition: 'width 0.08s ease'
+                      }}
+                    />
+                  </div>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Voice</span>
+                </div>
+              )}
+            </div>
+
+            {/* Language Selector Pills */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Globe size={13} /> Spoken:
+              </span>
+              {[
+                { id: 'auto', label: 'Auto' },
+                { id: 'bn', label: '🇧🇩 বাংলা' },
+                { id: 'en', label: '🇬🇧 English' }
+              ].map((pill) => {
+                const isSelected = language === pill.id;
+                return (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => handleLanguageChange(pill.id)}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: '16px',
+                      fontSize: '0.74rem',
+                      fontWeight: isSelected ? 700 : 500,
+                      border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+                      background: isSelected ? 'var(--accent-glow)' : 'transparent',
+                      color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {pill.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Quick Actions: Copy, View in Transcript, Clear */}
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleCopyLive}
+                disabled={!liveTranscript && !interimText}
+                style={{ fontSize: '0.76rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                title="Copy live spoken text"
+              >
+                {isCopied ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
+                {isCopied ? 'Copied' : 'Copy'}
               </button>
-              <button className="btn btn-secondary btn-sm" onClick={handleSendBangla} style={{ fontSize: '0.75rem', padding: '4px 8px' }}>
-                <Send size={12} /> Send to বাংলা
+
+              <button
+                className="btn btn-secondary btn-sm"
+                onClick={handleScrollToTranscript}
+                style={{ fontSize: '0.76rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
+                title="View in main transcript section"
+              >
+                <Send size={12} color="var(--accent-color)" /> View in Transcript ↓
               </button>
-              <button className="btn btn-secondary btn-sm" onClick={handleSendEnglish} style={{ fontSize: '0.75rem', padding: '4px 8px' }}>
-                <Send size={12} /> Send to English
-              </button>
+
+              {(liveTranscript || interimText) && (
+                <button
+                  className="btn btn-secondary btn-sm"
+                  onClick={handleClearLive}
+                  style={{ fontSize: '0.76rem', padding: '4px 8px', color: '#f87171' }}
+                  title="Clear live monitor"
+                >
+                  <Trash2 size={12} />
+                </button>
+              )}
             </div>
           </div>
 
+          {/* High-Legibility Real-Time Text Monitor Display */}
           <div
+            id="live-speech-stream-display"
             style={{
-              minHeight: '80px',
-              maxHeight: '180px',
+              minHeight: '120px',
+              maxHeight: '260px',
               overflowY: 'auto',
-              background: 'rgba(0, 0, 0, 0.25)',
-              padding: '12px',
-              borderRadius: '8px',
-              fontSize: '0.92rem',
-              lineHeight: '1.6',
-              color: 'var(--text-primary)',
+              background: 'rgba(0, 0, 0, 0.45)',
+              padding: '18px 20px',
+              borderRadius: '12px',
+              fontSize: '1.22rem',
+              lineHeight: '1.8',
+              color: '#f8fafc',
               whiteSpace: 'pre-wrap',
-              fontFamily: language === 'bn' ? "'Hind Siliguri', sans-serif" : 'inherit'
+              wordBreak: 'break-word',
+              fontFamily: language === 'bn' ? "'Hind Siliguri', 'Inter', sans-serif" : "'Inter', -apple-system, sans-serif",
+              border: '1px solid rgba(255, 255, 255, 0.08)',
+              boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.4)'
             }}
           >
             {liveTranscript ? (
-              <span>{liveTranscript}</span>
+              <span style={{ color: '#f1f5f9', fontWeight: 500 }}>{liveTranscript}</span>
             ) : (
-              <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>
-                Listening for speech... Speak into microphone.
+              <span style={{ color: 'rgba(148, 163, 184, 0.75)', fontStyle: 'italic', fontSize: '1.05rem' }}>
+                {isRecording
+                  ? '🎙️ Listening... Speak naturally into your microphone. Exactly what you say streams here word-by-word in real time.'
+                  : 'Click Record above to start live speech recognition. Words stream here in real time.'}
               </span>
             )}
+
             {interimText && (
-              <span style={{ color: 'var(--accent-color)', opacity: 0.85, fontStyle: 'italic' }}>
-                {' ' + interimText}
+              <span
+                style={{
+                  color: '#34d399',
+                  background: 'rgba(16, 185, 129, 0.15)',
+                  padding: '2px 8px',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(16, 185, 129, 0.35)',
+                  fontWeight: 600,
+                  marginLeft: '8px',
+                  display: 'inline-block',
+                  animation: 'pulse 1.4s infinite'
+                }}
+              >
+                {interimText}
               </span>
             )}
             <div ref={transcriptBottomRef} />
+          </div>
+
+          {/* Live Sync Status Footer */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', fontSize: '0.76rem', color: 'var(--text-secondary)', flexWrap: 'wrap', gap: '8px' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <Sparkles size={12} color="var(--accent-color)" />
+              Streaming live directly into the single Transcript section below
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span id="speech-engine-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>
+                ⚡ Engine: <strong style={{ color: 'var(--text-primary)' }}>webkitSpeechRecognition</strong>
+              </span>
+              <span>
+                {liveTranscript.trim() ? liveTranscript.trim().split(/\s+/).length : 0} words captured
+              </span>
+            </div>
           </div>
         </div>
       )}

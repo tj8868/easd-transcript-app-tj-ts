@@ -146,8 +146,12 @@ export default function App() {
     }
   });
 
-  const [banglaTranscript, setBanglaTranscript] = useState('');
-  const [englishTranscript, setEnglishTranscript] = useState('');
+  const [transcript, setTranscript] = useState('');
+  // Backward-compatibility aliases for DOCX generation and components
+  const banglaTranscript = transcript;
+  const englishTranscript = transcript;
+  const setBanglaTranscript = setTranscript;
+  const setEnglishTranscript = setTranscript;
 
   // Comprehensive Metadata state for all document types
   const [meta, setMeta] = useState({
@@ -398,8 +402,8 @@ export default function App() {
 
       if (res.data && res.data.status === 'success') {
         const payload = res.data.data;
-        setBanglaTranscript(payload.bangla_transcript || '');
-        setEnglishTranscript(payload.english_transcript || '');
+        const text = payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
+        setTranscript(text);
 
         if (payload.doc_type) setDocumentType(payload.doc_type);
         if (payload.summary) {
@@ -459,8 +463,8 @@ export default function App() {
 
       if (res.data && res.data.status === 'success') {
         const payload = res.data.data;
-        if (payload.bangla_transcript) setBanglaTranscript(payload.bangla_transcript);
-        if (payload.english_transcript) setEnglishTranscript(payload.english_transcript);
+        const text = payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
+        if (text) setTranscript(text);
         if (payload.doc_type) setDocumentType(payload.doc_type);
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
@@ -479,23 +483,29 @@ export default function App() {
   // Recording Processed with AI handler
   const handleRecordingProcessed = (payload) => {
     if (!payload) return;
-    if (payload.bangla_transcript) setBanglaTranscript(payload.bangla_transcript);
-    if (payload.english_transcript) setEnglishTranscript(payload.english_transcript);
+    const text = payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
+    if (text) setTranscript(text);
     if (payload.doc_type) setDocumentType(payload.doc_type);
     if (payload.summary) {
       applyExtractedSummary(payload.summary);
     }
   };
 
-  // Live Transcription Handlers
+  // Live Real-Time Transcription Handlers
+  const handleLiveTranscriptSync = (text) => {
+    setTranscript(text);
+  };
+
+  const handleAppendToTranscript = (text) => {
+    setTranscript((prev) => (prev ? `${prev}\n\n${text}` : text));
+  };
+
   const handleSendToBangla = (text) => {
-    setBanglaTranscript((prev) => (prev ? `${prev}\n\n${text}` : text));
-    alert('Live text appended to Bangla Transcript.');
+    handleAppendToTranscript(text);
   };
 
   const handleSendToEnglish = (text) => {
-    setEnglishTranscript((prev) => (prev ? `${prev}\n\n${text}` : text));
-    alert('Live text appended to English Transcript.');
+    handleAppendToTranscript(text);
   };
 
   // Download DOCX (Supports default EASD, Bangladesh Govt Nothi, Journal, News, Blog, and custom templates)
@@ -524,8 +534,9 @@ export default function App() {
       attendance: attendance || [],
       sections_data: customSectionsData || {},
       tables_data: customTablesData || {},
-      bangla_transcript: banglaTranscript || '',
-      english_transcript: englishTranscript || ''
+      transcript: transcript || '',
+      bangla_transcript: transcript || '',
+      english_transcript: transcript || ''
     };
 
     try {
@@ -578,8 +589,9 @@ export default function App() {
         discussions: discussions || [],
         decisions: decisions || '',
         attendance: attendance || [],
-        bangla_transcript: banglaTranscript || '',
-        english_transcript: englishTranscript || ''
+        transcript: transcript || '',
+        bangla_transcript: transcript || '',
+        english_transcript: transcript || ''
       },
       access_token: token,
       folder_name: 'EASD - meeting minutes'
@@ -633,17 +645,17 @@ export default function App() {
           customSkillsList={customSkillsList}
           activeTemplateId={activeTemplateId}
           onRecordingProcessed={handleRecordingProcessed}
+          onLiveTranscriptSync={handleLiveTranscriptSync}
+          onAppendToTranscript={handleAppendToTranscript}
           onSendToBangla={handleSendToBangla}
           onSendToEnglish={handleSendToEnglish}
           scrollToSection={scrollToSection}
         />
 
-        {/* 3. Transcripts: Raw transcripts only (No summarizer) */}
+        {/* 2. Transcript: Single unified real-time transcript section */}
         <Transcripts
-          banglaTranscript={banglaTranscript}
-          setBanglaTranscript={setBanglaTranscript}
-          englishTranscript={englishTranscript}
-          setEnglishTranscript={setEnglishTranscript}
+          transcript={transcript}
+          setTranscript={setTranscript}
         />
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}
@@ -814,6 +826,7 @@ export default function App() {
           discussions={discussions}
           decisions={decisions}
           attendance={attendance}
+          transcript={transcript}
           banglaTranscript={banglaTranscript}
           englishTranscript={englishTranscript}
           templates={templates}
