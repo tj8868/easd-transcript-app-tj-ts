@@ -368,6 +368,17 @@ export default function App() {
     if (s.tables_data) setCustomTablesData(s.tables_data);
   };
 
+  // Helper to identify and reject AI-synthesized meeting summaries from contaminating the raw transcript section
+  const isSyntheticSummary = (str) => {
+    if (!str || typeof str !== 'string') return false;
+    const s = str.trim();
+    return s.startsWith('ইমিনের্স অ্যাসোসিয়েটস') || 
+           s.includes('সভায় আলোচিত মূল বিষয়সমূহ') ||
+           s.includes('মূল সিদ্ধান্তসমূহ:') ||
+           s.includes('Followup from previous meeting:') ||
+           (s.includes('Action items:') && s.includes('Task Assignments:'));
+  };
+
   // AI Process Request
   const handleProcessAi = async () => {
     if (!selectedFile && !directText.trim()) {
@@ -402,8 +413,10 @@ export default function App() {
 
       if (res.data && res.data.status === 'success') {
         const payload = res.data.data;
-        const text = payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
-        setTranscript(text);
+        const rawCandidate = payload.raw_transcript || payload.transcript || '';
+        if (rawCandidate && !isSyntheticSummary(rawCandidate)) {
+          setTranscript(rawCandidate);
+        }
 
         if (payload.doc_type) setDocumentType(payload.doc_type);
         if (payload.summary) {
@@ -463,8 +476,7 @@ export default function App() {
 
       if (res.data && res.data.status === 'success') {
         const payload = res.data.data;
-        const text = payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
-        if (text) setTranscript(text);
+        // Intentionally keep raw transcript in place; do NOT overwrite with minutes summary
         if (payload.doc_type) setDocumentType(payload.doc_type);
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
@@ -483,8 +495,10 @@ export default function App() {
   // Recording Processed with AI handler
   const handleRecordingProcessed = (payload) => {
     if (!payload) return;
-    const text = payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
-    if (text) setTranscript(text);
+    const rawCandidate = payload.raw_transcript || payload.transcript || '';
+    if (rawCandidate && !isSyntheticSummary(rawCandidate)) {
+      setTranscript(rawCandidate);
+    }
     if (payload.doc_type) setDocumentType(payload.doc_type);
     if (payload.summary) {
       applyExtractedSummary(payload.summary);

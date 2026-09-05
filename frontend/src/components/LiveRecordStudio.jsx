@@ -18,7 +18,8 @@ import {
   Sparkles,
   Edit2,
   FileAudio,
-  Plus
+  Plus,
+  Users
 } from 'lucide-react';
 
 export default function LiveRecordStudio({
@@ -38,6 +39,8 @@ export default function LiveRecordStudio({
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [language, setLanguage] = useState('auto'); // 'auto', 'bn', 'en'
+  const [activeSpeaker, setActiveSpeaker] = useState('Speaker 1');
+  const activeSpeakerRef = useRef('Speaker 1');
   const [liveTranscript, setLiveTranscript] = useState('');
   const [interimText, setInterimText] = useState('');
   const [statusText, setStatusText] = useState('Ready to record');
@@ -79,6 +82,10 @@ export default function LiveRecordStudio({
   useEffect(() => {
     liveTranscriptForTakeRef.current = liveTranscript;
   }, [liveTranscript]);
+
+  useEffect(() => {
+    activeSpeakerRef.current = activeSpeaker;
+  }, [activeSpeaker]);
 
   useEffect(() => {
     if (transcriptBottomRef.current) {
@@ -157,14 +164,17 @@ export default function LiveRecordStudio({
           interimStr += transcriptPart;
         }
       }
-      if (finalStr) {
+      if (finalStr.trim()) {
+        const timeTag = formatTime(currentTakeSecondsRef.current || 0);
+        const speaker = activeSpeakerRef.current || 'Speaker 1';
+        const formattedLine = `[${timeTag}] ${speaker}: ${finalStr.trim()}`;
         setLiveTranscript((prev) => {
-          const updated = prev ? prev + ' ' + finalStr.trim() : finalStr.trim();
+          const updated = prev ? `${prev}\n${formattedLine}` : formattedLine;
           if (onLiveTranscriptSync) {
             onLiveTranscriptSync(updated);
           }
           if (onAppendToTranscript) {
-            onAppendToTranscript(finalStr.trim());
+            onAppendToTranscript(formattedLine);
           }
           return updated;
         });
@@ -835,6 +845,36 @@ export default function LiveRecordStudio({
               )}
             </div>
 
+            {/* Active Speaker Selector Pills */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <Users size={13} color="var(--accent-color)" /> Speaker:
+              </span>
+              {['Speaker 1', 'Speaker 2', 'Speaker 3'].map((spk) => {
+                const isSelected = activeSpeaker === spk;
+                return (
+                  <button
+                    key={spk}
+                    type="button"
+                    onClick={() => setActiveSpeaker(spk)}
+                    style={{
+                      padding: '3px 10px',
+                      borderRadius: '16px',
+                      fontSize: '0.74rem',
+                      fontWeight: isSelected ? 700 : 500,
+                      border: isSelected ? '1.5px solid #38bdf8' : '1px solid var(--border-color)',
+                      background: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+                      color: isSelected ? '#38bdf8' : 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    {spk}
+                  </button>
+                );
+              })}
+            </div>
+
             {/* Language Selector Pills */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -925,31 +965,61 @@ export default function LiveRecordStudio({
             }}
           >
             {liveTranscript ? (
-              <span style={{ color: '#f1f5f9', fontWeight: 500 }}>{liveTranscript}</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {liveTranscript.split('\n').map((line, idx) => {
+                  const match = line.match(/^(\[\d{2}:\d{2}\])\s*([^:]+):\s*(.*)$/);
+                  if (match) {
+                    return (
+                      <div key={idx} style={{ lineHeight: '1.7' }}>
+                        <span style={{ color: '#38bdf8', fontWeight: 700, marginRight: '8px', fontSize: '1.02rem', fontFamily: 'monospace' }}>
+                          {match[1]}
+                        </span>
+                        <span style={{ color: '#34d399', fontWeight: 700, marginRight: '8px', fontSize: '1.08rem' }}>
+                          {match[2]}:
+                        </span>
+                        <span style={{ color: '#f8fafc', fontWeight: 500 }}>
+                          {match[3]}
+                        </span>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div key={idx} style={{ color: '#f1f5f9', fontWeight: 500 }}>
+                      {line}
+                    </div>
+                  );
+                })}
+              </div>
             ) : (
               <span style={{ color: 'rgba(148, 163, 184, 0.75)', fontStyle: 'italic', fontSize: '1.05rem' }}>
                 {isRecording
-                  ? '🎙️ Listening... Speak naturally into your microphone. Exactly what you say streams here word-by-word in real time.'
-                  : 'Click Record above to start live speech recognition. Words stream here in real time.'}
+                  ? '🎙️ Listening... Speak naturally into your microphone. Exactly what you say streams here word-by-word with timestamp and speaker attribution.'
+                  : 'Click Record above to start live speech recognition. Words stream here in real time by speaker and time.'}
               </span>
             )}
 
             {interimText && (
-              <span
-                style={{
-                  color: '#34d399',
-                  background: 'rgba(16, 185, 129, 0.15)',
-                  padding: '2px 8px',
-                  borderRadius: '6px',
-                  border: '1px solid rgba(16, 185, 129, 0.35)',
-                  fontWeight: 600,
-                  marginLeft: '8px',
-                  display: 'inline-block',
-                  animation: 'pulse 1.4s infinite'
-                }}
-              >
-                {interimText}
-              </span>
+              <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: '#94a3b8', fontSize: '0.92rem', fontFamily: 'monospace' }}>
+                  [{formatTime(currentTakeSecondsRef.current || 0)}]
+                </span>
+                <span style={{ color: '#a7f3d0', fontWeight: 700, fontSize: '0.98rem' }}>
+                  {activeSpeaker}:
+                </span>
+                <span
+                  style={{
+                    color: '#34d399',
+                    background: 'rgba(16, 185, 129, 0.15)',
+                    padding: '2px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(16, 185, 129, 0.35)',
+                    fontWeight: 600,
+                    animation: 'pulse 1.4s infinite'
+                  }}
+                >
+                  {interimText}
+                </span>
+              </div>
             )}
             <div ref={transcriptBottomRef} />
           </div>

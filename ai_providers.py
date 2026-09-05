@@ -285,8 +285,18 @@ def deep_semantic_synthesis(raw_text: str, custom_skills: str = "", org_context:
 
     english_transcript = text
 
+    # Raw transcript formatted by speaker and time
+    raw_transcript = text
+    if raw_transcript and not raw_transcript.startswith("["):
+        # If not already formatted with timestamps, format as Speaker 1
+        lines = [line.strip() for line in raw_transcript.split("\n") if line.strip()]
+        if lines:
+            raw_transcript = "\n".join([f"[00:00] Speaker 1: {l}" if not l.startswith("[") else l for l in lines])
+
     return {
         "detected_language": detected_lang,
+        "raw_transcript": raw_transcript,
+        "transcript": raw_transcript,
         "bangla_transcript": bangla_transcript,
         "english_transcript": english_transcript,
         "summary": {
@@ -417,10 +427,13 @@ def process_extracted_payload(
                 if "subject" not in summary:
                     summary["subject"] = summary.get("title", "প্রতিবেদন প্রসঙ্গে")
                     
+            raw_tx = fallback_content or raw_text
             return {
                 "detected_language": detected_lang,
                 "template_id": template_schema.get("id"),
                 "doc_type": template_schema.get("doc_type", "custom"),
+                "raw_transcript": raw_tx,
+                "transcript": raw_tx,
                 "bangla_transcript": parsed.get("bangla_transcript", fallback_content),
                 "english_transcript": parsed.get("english_transcript", fallback_content),
                 "summary": summary
@@ -446,10 +459,13 @@ def process_extracted_payload(
             
             present_members = summary.get("present_members", [])
             summary["attendance"] = match_attendance_list(present_members, fallback_content or raw_text)
+            raw_tx = fallback_content or raw_text
             return {
                 "detected_language": detected_lang,
                 "template_id": "easd_default_minutes",
                 "doc_type": "meeting_minutes",
+                "raw_transcript": raw_tx,
+                "transcript": raw_tx,
                 "bangla_transcript": parsed.get("bangla_transcript", fallback_content),
                 "english_transcript": parsed.get("english_transcript", fallback_content),
                 "summary": summary
@@ -727,13 +743,18 @@ def get_default_api_key_from_disk() -> Dict[str, str]:
         "model_name": "gemini-2.5-flash"
     }
 
+def format_seconds_to_timestamp(seconds: float) -> str:
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    return f"{m:02d}:{s:02d}"
+
 def transcribe_audio_groq(
     media_bytes: bytes,
     api_key: str,
     model_name: str = "whisper-large-v3-turbo",
     mime_type: str = "audio/wav"
 ) -> str:
-    """Transcribes audio using Groq's high-speed Whisper API."""
+    """Transcribes audio using Groq's high-speed Whisper API with timestamps and speaker formatting."""
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {api_key}"}
     
@@ -752,14 +773,31 @@ def transcribe_audio_groq(
     whisper_model = "whisper-large-v3-turbo" if "turbo" in model_name or not model_name else "whisper-large-v3"
     data = {
         "model": whisper_model,
-        "response_format": "json"
+        "response_format": "verbose_json"
     }
     
     with httpx.Client(timeout=180.0) as client:
         resp = client.post(url, headers=headers, files=files, data=data)
         resp.raise_for_status()
         res_json = resp.json()
-        return res_json.get("text", "")
+        
+        # Check if verbose_json returned segments with timestamps
+        segments = res_json.get("segments", [])
+        if segments:
+            lines = []
+            for seg in segments:
+                start_s = seg.get("start", 0.0)
+                seg_text = seg.get("text", "").strip()
+                if seg_text:
+                    time_tag = format_seconds_to_timestamp(start_s)
+                    lines.append(f"[{time_tag}] Speaker 1: {seg_text}")
+            if lines:
+                return "\n".join(lines)
+                
+        plain_text = res_json.get("text", "").strip()
+        if plain_text and not plain_text.startswith("["):
+            return f"[00:00] Speaker 1: {plain_text}"
+        return plain_text
 
 def transcribe_audio_gemini(
     media_bytes: bytes,
@@ -768,15 +806,15 @@ def transcribe_audio_gemini(
     mime_type: str = "audio/webm",
     language_hint: str = "auto"
 ) -> Dict[str, Any]:
-    """Transcribes audio using Google Gemini Interactions API."""
+    """Transcribes audio using Google Gemini Interactions API with timestamps and speaker attribution."""
     models_to_try = [model_name or "gemini-3.7-flash", "gemini-3.6-flash"]
     models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
     
-    lang_prompt = "Transcribe the audio verbatim in its native spoken language (Bangla or English)."
+    lang_prompt = "Transcribe the audio verbatim in its native spoken language (Bangla or English) with timestamps and speaker attribution formatted strictly as [MM:SS] Speaker 1: <words>."
     if language_hint == "bn":
-        lang_prompt = "Transcribe this audio verbatim in Bengali (বাংলা) script."
+        lang_prompt = "Transcribe this audio verbatim in Bengali (বাংলা) script with timestamps and speaker labels formatted strictly as [MM:SS] Speaker 1: <words>."
     elif language_hint == "en":
-        lang_prompt = "Transcribe this audio verbatim in formal English."
+        lang_prompt = "Transcribe this audio verbatim in formal English with timestamps and speaker labels formatted strictly as [MM:SS] Speaker 1: <words>."
         
     encoded_file = base64.b64encode(media_bytes).decode("utf-8")
     client = genai.Client(api_key=api_key)
@@ -788,7 +826,7 @@ def transcribe_audio_gemini(
                 input=[
                     {
                         "type": "text",
-                        "text": f"You are an expert bilingual speech-to-text transcriber for Eminence Associates for Social Development. {lang_prompt} Return ONLY the verbatim transcribed text with no preamble or comments."
+                        "text": f"You are an expert bilingual speech-to-text transcriber for Eminence Associates for Social Development. {lang_prompt} Do NOT summarize, bulletize, or add meeting minutes or decisions. Return ONLY the raw timestamped speaker transcript."
                     },
                     {
                         "type": "audio",
