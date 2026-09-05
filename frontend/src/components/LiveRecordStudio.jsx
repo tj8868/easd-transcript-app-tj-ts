@@ -576,6 +576,34 @@ export default function LiveRecordStudio({
 
   return (
     <div className="card" id="section-live" style={{ border: '1.5px solid var(--border-color)', position: 'relative' }}>
+      {/* 4-Layer Architecture Workflow Tracker Banner */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '6px 14px',
+          background: 'rgba(255, 255, 255, 0.03)',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: '8px',
+          marginBottom: '16px',
+          fontSize: '0.74rem',
+          color: 'var(--text-secondary)',
+          flexWrap: 'wrap'
+        }}
+      >
+        <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
+        <span style={{ color: '#34d399', fontWeight: 700, background: 'rgba(16, 185, 129, 0.15)', padding: '1px 7px', borderRadius: '4px' }}>
+          1. Record / Listen & Determine Language
+        </span>
+        <span style={{ opacity: 0.5 }}>→</span>
+        <span style={{ color: '#38bdf8', fontWeight: 600 }}>2. Transcribe Audio</span>
+        <span style={{ opacity: 0.5 }}>→</span>
+        <span style={{ color: 'var(--text-secondary)' }}>3. Raw Transcription</span>
+        <span style={{ opacity: 0.5 }}>→</span>
+        <span style={{ color: 'var(--text-secondary)' }}>4. Template Fillup via Skills</span>
+      </div>
+
       {/* FRONT SCREEN: One Block Record, One Block Upload -- Nothing Else */}
       <div
         style={{

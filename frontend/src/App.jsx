@@ -670,6 +670,8 @@ export default function App() {
         <Transcripts
           transcript={transcript}
           setTranscript={setTranscript}
+          onSummarize={handleSummarizeTranscript}
+          isSummarizing={isSummarizing}
         />
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}

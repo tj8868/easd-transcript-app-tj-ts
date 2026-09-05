@@ -4,6 +4,8 @@ import { FileText, Copy, Check, Download, Trash2, Mic, Radio, Sparkles, User, Us
 export default function Transcripts({
   transcript = '',
   setTranscript,
+  onSummarize,
+  isSummarizing = false,
   // Backward-compatibility props if needed
   banglaTranscript,
   setBanglaTranscript,
@@ -125,6 +127,34 @@ export default function Transcripts({
 
   return (
     <div className="card" id="section-transcripts" style={{ border: isRecording ? '1.5px solid var(--accent-color)' : '1.5px solid var(--border-color)', transition: 'border-color 0.25s ease' }}>
+      {/* 4-Layer Architecture Workflow Tracker */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '8px',
+          padding: '6px 14px',
+          background: 'rgba(255, 255, 255, 0.03)',
+          border: '1px solid rgba(255, 255, 255, 0.06)',
+          borderRadius: '8px',
+          marginBottom: '12px',
+          fontSize: '0.74rem',
+          color: 'var(--text-secondary)',
+          flexWrap: 'wrap'
+        }}
+      >
+        <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
+        <span style={{ color: 'var(--text-secondary)' }}>1. Record / Listen & Determine Language</span>
+        <span style={{ opacity: 0.5 }}>→</span>
+        <span style={{ color: 'var(--text-secondary)' }}>2. Transcribe Audio</span>
+        <span style={{ opacity: 0.5 }}>→</span>
+        <span style={{ color: '#34d399', fontWeight: 700, background: 'rgba(16, 185, 129, 0.15)', padding: '1px 7px', borderRadius: '4px' }}>
+          3. Raw Transcription (Active)
+        </span>
+        <span style={{ opacity: 0.5 }}>→</span>
+        <span style={{ color: '#facc15', fontWeight: 600 }}>4. Template Fillup via Skills</span>
+      </div>
+
       {/* Header & Controls Toolbar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
         <div>
@@ -183,8 +213,31 @@ export default function Transcripts({
 
         {/* Action Buttons */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Layer 4 Trigger: Fill Active Template */}
           <button
             className="btn btn-primary btn-sm"
+            onClick={() => onSummarize && onSummarize(currentText)}
+            disabled={!currentText.trim() || isSummarizing}
+            title="Layer 4: Fill active template and synthesize document using skills & directives"
+            style={{
+              fontSize: '0.8rem',
+              fontWeight: 700,
+              padding: '5px 12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+              border: '1px solid #38bdf8',
+              color: '#ffffff',
+              boxShadow: '0 2px 8px rgba(14, 165, 233, 0.25)'
+            }}
+          >
+            <Sparkles size={14} color="#facc15" />
+            {isSummarizing ? 'Filling Template...' : '⚡ Fill Active Template with AI'}
+          </button>
+
+          <button
+            className="btn btn-secondary btn-sm"
             onClick={handleDownload}
             disabled={!currentText}
             title="Download raw transcript (.txt)"
