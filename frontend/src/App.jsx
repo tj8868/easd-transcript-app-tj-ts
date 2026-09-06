@@ -305,10 +305,10 @@ export default function App() {
             transcriptionModel: s.transcription_model || prev.transcriptionModel || 'whisper-large-v3-turbo',
             summarizationProvider: s.summarization_provider || prev.summarizationProvider || 'gemini',
             summarizationApiKey: s.summarization_api_key || s.gemini_api_key || prev.summarizationApiKey || '',
-            summarizationModel: s.summarization_model || prev.summarizationModel || 'gemini-3.5-flash',
+            summarizationModel: s.summarization_model || prev.summarizationModel || 'gemini-3.7-flash',
             provider: s.summarization_provider || prev.provider || 'gemini',
             apiKey: s.summarization_api_key || s.gemini_api_key || prev.apiKey || '',
-            modelName: s.summarization_model || prev.modelName || 'gemini-3.5-flash'
+            modelName: s.summarization_model || prev.modelName || 'gemini-3.7-flash'
           }));
         }
       })
@@ -409,17 +409,20 @@ export default function App() {
     }
 
     setIsProcessing(true);
+    const sttKey = (aiConfig.transcriptionApiKey || getSavedKeyForProvider('groq') || (aiConfig.apiKey && aiConfig.apiKey.startsWith('gsk_') ? aiConfig.apiKey : '')).trim();
+    const sumKey = (aiConfig.summarizationApiKey || getSavedKeyForProvider('gemini') || (aiConfig.apiKey && !aiConfig.apiKey.startsWith('gsk_') ? aiConfig.apiKey : '')).trim();
+
     const formData = new FormData();
     formData.append('provider', aiConfig.provider);
-    formData.append('api_key', aiConfig.apiKey.trim());
+    formData.append('api_key', (aiConfig.provider === 'gemini' ? sumKey : (aiConfig.provider === 'groq' ? sttKey : aiConfig.apiKey)).trim());
     formData.append('base_url', aiConfig.baseUrl.trim());
-    formData.append('model_name', aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.5-flash');
+    formData.append('model_name', aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.7-flash');
     formData.append('transcription_provider', aiConfig.transcriptionProvider || (aiConfig.transcriptionModel?.includes('whisper') ? 'groq' : 'gemini'));
-    formData.append('transcription_api_key', (aiConfig.transcriptionApiKey || aiConfig.apiKey || '').trim());
+    formData.append('transcription_api_key', sttKey);
     formData.append('transcription_model', aiConfig.transcriptionModel || 'whisper-large-v3-turbo');
     formData.append('summarization_provider', aiConfig.summarizationProvider || 'gemini');
-    formData.append('summarization_api_key', (aiConfig.summarizationApiKey || aiConfig.apiKey || '').trim());
-    formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.5-flash');
+    formData.append('summarization_api_key', sumKey);
+    formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.7-flash');
     formData.append('org_context', orgContext);
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
     
@@ -470,7 +473,7 @@ export default function App() {
       chosenModelName = 'llama-3.3-70b-versatile';
     } else if (selectedModel === 'gemini') {
       chosenProvider = 'gemini';
-      chosenModelName = 'gemini-3.5-flash';
+      chosenModelName = 'gemini-3.7-flash';
     } else if (selectedModel === 'claude') {
       chosenProvider = 'anthropic';
       chosenModelName = 'claude-3-5-sonnet-20241022';
@@ -479,10 +482,15 @@ export default function App() {
       chosenModelName = 'gpt-4o';
     }
 
+    const geminiKey = (aiConfig.summarizationApiKey || getSavedKeyForProvider('gemini') || (aiConfig.apiKey && !aiConfig.apiKey.startsWith('gsk_') ? aiConfig.apiKey : '')).trim();
+    const effectiveKey = chosenProvider === 'gemini' ? geminiKey : (chosenProvider === 'groq' ? (aiConfig.transcriptionApiKey || getSavedKeyForProvider('groq') || aiConfig.apiKey) : aiConfig.apiKey).trim();
+
     const formData = new FormData();
     formData.append('transcript', transcriptText);
     formData.append('provider', chosenProvider);
-    formData.append('api_key', aiConfig.apiKey.trim());
+    formData.append('api_key', effectiveKey);
+    formData.append('summarization_api_key', geminiKey);
+    formData.append('summarization_provider', chosenProvider);
     formData.append('base_url', aiConfig.baseUrl.trim());
     formData.append('model_name', chosenModelName);
     formData.append('summarization_model', chosenModelName);

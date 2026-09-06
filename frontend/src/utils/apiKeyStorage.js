@@ -7,8 +7,8 @@ export const PROVIDERS = [
     shortName: 'Gemini',
     tag: '⭐ Recommended (Default)',
     badgeColor: '#0284c7',
-    defaultSTT: 'gemini-3.5-flash',
-    defaultLLM: 'gemini-3.5-flash',
+    defaultSTT: 'gemini-3.5-flash-lite',
+    defaultLLM: 'gemini-3.7-flash',
     defaultBaseUrl: '',
     placeholder: 'Paste Google Gemini key (e.g. AIzaSy...)',
     keyPrefix: 'AIzaSy',
@@ -59,7 +59,7 @@ export const PROVIDERS = [
     shortName: 'Claude',
     tag: 'Executive Reasoning',
     badgeColor: '#d97706',
-    defaultSTT: 'gemini-2.5-flash',
+    defaultSTT: 'gemini-3.5-flash-lite',
     defaultLLM: 'claude-3-5-sonnet-20241022',
     defaultBaseUrl: '',
     placeholder: 'Paste Anthropic key (e.g. sk-ant-api03-...)',
@@ -321,15 +321,14 @@ export const activateProvider = (providerId, setAiConfig) => {
 
 export const QUICK_STT_MODELS = [
   { id: 'whisper-large-v3-turbo', label: 'Groq Whisper Turbo', shortLabel: 'Groq Whisper Turbo', provider: 'groq', icon: '🎙️' },
-  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', shortLabel: 'Gemini 3.5 STT', provider: 'gemini', icon: '🎙️' },
+  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', shortLabel: 'Gemini 3.5 STT', provider: 'gemini', icon: '🎙️' },
   { id: 'whisper-large-v3', label: 'Whisper Large v3', shortLabel: 'Whisper Large v3', provider: 'groq', icon: '🎙️' },
   { id: 'whisper-1', label: 'OpenAI Whisper', shortLabel: 'OpenAI Whisper', provider: 'openai', icon: '🎙️' }
 ];
 
 export const QUICK_LLM_MODELS = [
-  { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', shortLabel: 'Gemini 3.5 Flash', provider: 'gemini', icon: '⚡' },
-  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash', shortLabel: 'Gemini 3.8 Flash', provider: 'gemini', icon: '⚡' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', shortLabel: 'Gemini 2.5 Flash', provider: 'gemini', icon: '⚡' },
+  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash (⭐ Recommended)', shortLabel: 'Gemini 3.7 Flash', provider: 'gemini', icon: '⚡' },
+  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite (Fast)', shortLabel: 'Gemini 3.5 Lite', provider: 'gemini', icon: '⚡' },
   { id: 'llama-3.3-70b-versatile', label: 'Groq Llama 3.3', shortLabel: 'Groq Llama 3.3', provider: 'groq', icon: '⚡' },
   { id: 'gpt-4o', label: 'GPT-4o', shortLabel: 'GPT-4o', provider: 'openai', icon: '⚡' }
 ];

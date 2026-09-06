@@ -13,17 +13,14 @@ import {
 export const MODEL_OPTIONS_BY_PROVIDER = {
   gemini: {
     stt: [
-      { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash (⭐ Recommended - High Quality Multilingual STT)' },
-      { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (Fast Multilingual Audio STT)' },
-      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Ultra Fast & Lightweight STT)' },
-      { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro (Deep Multimodal Audio Understanding)' },
+      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (⭐ Recommended - Fast Multilingual STT)' },
+      { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (Deep Multimodal Audio STT)' },
       { value: 'custom', label: '✏️ Type Custom STT Model...' }
     ],
     llm: [
-      { value: 'gemini-3.5-flash', label: 'gemini-3.5-flash (⭐ Recommended - High Speed Synthesis & Minutes)' },
-      { value: 'gemini-3.8-flash', label: 'gemini-3.8-flash (⭐ High-Speed Flagship Synthesis)' },
-      { value: 'gemini-2.5-flash', label: 'gemini-2.5-flash (Balanced Speed & Quality)' },
-      { value: 'gemini-2.5-pro', label: 'gemini-2.5-pro (Comprehensive Institutional Briefs)' },
+      { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (⭐ Recommended - GA Flash Synthesis)' },
+      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Fast Low-Latency Synthesis)' },
+      { value: 'gemini-3.6-flash', label: 'gemini-3.6-flash (Balanced Multimodal)' },
       { value: 'custom', label: '✏️ Type Custom LLM Model...' }
     ]
   },

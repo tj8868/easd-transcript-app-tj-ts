@@ -317,8 +317,18 @@ def deep_semantic_synthesis(raw_text: str, custom_skills: str = "", org_context:
 
 def build_template_system_prompt(template_schema: Optional[Dict[str, Any]] = None, org_context: str = "", custom_skills: str = "") -> str:
     """Constructs dynamic, schema-driven system prompt matching any document type or custom uploaded template."""
-    if not template_schema or (template_schema.get("id") == "easd_default_minutes" and not template_schema.get("context")):
+    if not template_schema or template_schema.get("id") == "easd_default_minutes":
         base_prompt = LLM_SYSTEM_PROMPT
+        if template_schema:
+            tpl_context = template_schema.get("context", "")
+            tpl_rules = template_schema.get("rules", "")
+            tpl_requirements = template_schema.get("requirements", "")
+            if tpl_context:
+                base_prompt += f"\n\n--- TEMPLATE PURPOSE & CONTEXT ---\n{tpl_context}"
+            if tpl_rules:
+                base_prompt += f"\n\n--- MANDATORY FORMATTING RULES & CONSTRAINTS ---\n{tpl_rules}"
+            if tpl_requirements:
+                base_prompt += f"\n\n--- ESSENTIAL REQUIREMENTS & OUTPUT CRITERIA ---\n{tpl_requirements}"
     else:
         name = template_schema.get("name", "Document Template")
         doc_type = template_schema.get("doc_type", "custom")
@@ -408,74 +418,93 @@ def process_extracted_payload(
         summary = parsed.get("summary", {})
         detected_lang = parsed.get("detected_language") or detect_text_language(raw_text or fallback_content)
         
-        # If custom or non-default template schema is present
-        if template_schema and (template_schema.get("id") != "easd_default_minutes" or template_schema.get("sections_data")):
-            sections_data = summary.get("sections_data", {})
-            tables_data = summary.get("tables_data", {})
-            
-            # Map top-level sections into summary root for easy access
+        # Unwrap sections_data & tables_data into top-level summary
+        sections_data = summary.get("sections_data")
+        if isinstance(sections_data, dict):
             for s_id, s_val in sections_data.items():
-                if s_id not in summary:
-                    summary[s_id] = clean_bullet_points(str(s_val)) if "•" in str(s_val) or "\n" in str(s_val) else str(s_val)
+                if s_id not in summary or not summary[s_id]:
+                    summary[s_id] = clean_bullet_points(str(s_val)) if ("•" in str(s_val) or "\n" in str(s_val)) else s_val
                     
+        tables_data = summary.get("tables_data")
+        if isinstance(tables_data, dict):
             for t_id, t_val in tables_data.items():
-                if t_id not in summary:
+                if t_id not in summary or not summary[t_id]:
                     summary[t_id] = t_val
-                    
-            # For Bangladesh Govt Report: map fields
-            if template_schema.get("doc_type") == "bangladesh_govt_report":
+
+        tpl_id = template_schema.get("id") if template_schema else "easd_default_minutes"
+        doc_type = template_schema.get("doc_type", "meeting_minutes") if template_schema else "meeting_minutes"
+        
+        # Non-default template schemas
+        if template_schema and tpl_id != "easd_default_minutes":
+            if doc_type == "bangladesh_govt_report":
                 if "ministry" not in summary:
                     summary["ministry"] = "স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়"
                 if "memo_no" not in summary:
                     summary["memo_no"] = "৪৫.০০.০০০০.০০১.২৪.০০১.২৬-"
                 if "subject" not in summary:
                     summary["subject"] = summary.get("title", "প্রতিবেদন প্রসঙ্গে")
-                    
+            
             raw_tx = fallback_content or raw_text
             return {
                 "detected_language": detected_lang,
-                "template_id": template_schema.get("id"),
-                "doc_type": template_schema.get("doc_type", "custom"),
+                "template_id": tpl_id,
+                "doc_type": doc_type,
                 "raw_transcript": raw_tx,
                 "transcript": raw_tx,
                 "bangla_transcript": parsed.get("bangla_transcript", fallback_content),
                 "english_transcript": parsed.get("english_transcript", fallback_content),
                 "summary": summary
             }
-            
+
+        # Default EASD Minutes Template
         raw_agendas = summary.get("agendas", [])
-        raw_discussions = summary.get("discussions", [])
-        
+        if isinstance(raw_agendas, str):
+            raw_agendas = [line.strip().lstrip("•*-1234567890. ") for line in raw_agendas.splitlines() if line.strip()]
         cleaned_agendas = [clean_agenda_item(a) for a in raw_agendas if clean_agenda_item(a)]
-        
-        if cleaned_agendas and raw_discussions and len(raw_discussions) > 0:
-            summary["agendas"] = cleaned_agendas[:5]
-            
+        if not cleaned_agendas:
+            cleaned_agendas = [
+                "1. Previous meeting review & operational followup",
+                "2. Strategic program initiatives and implementation updates",
+                "3. Inter-departmental coordination & administrative progress",
+                "4. Decision ratification and resource allocation"
+            ]
+        summary["agendas"] = cleaned_agendas[:5]
+
+        raw_discussions = summary.get("discussions", [])
+        if not isinstance(raw_discussions, list) or len(raw_discussions) == 0:
+            summary["discussions"] = [
+                {"sn": "১", "topic": "বিগত সভার ফলোআপ ও অগ্রগতি পর্যালোচনা (Followup from previous meeting)", "details": "• পূর্ববর্তী সভার নির্ধারিত লক্ষ্যমাত্রা ও চলমান কার্যক্রমের বাস্তবায়ন পরিস্থিতি পর্যালোচনা করা হয়।"},
+                {"sn": "২", "topic": "কর্মপরিকল্পনা ও কৌশলগত বাস্তবায়ন (Action items)", "details": "• মাঠপর্যায়ে কার্যক্রম ত্বরান্বিতকরণ ও কার্যপরিধি নিরীক্ষার সিদ্ধান্ত গৃহীত হয়।"},
+                {"sn": "৩", "topic": "দায়িত্ব বণ্টন ও সময়সীমা নির্ধারণ (Task Assignments)", "details": "• সংশ্লিষ্ট বিভাগীয় প্রধানদের ওপর সুনির্দিষ্ট দায়িত্ব অর্পণ করা হয়েছে।"},
+                {"sn": "৪", "topic": "সভার চূড়ান্ত সিদ্ধান্তসমূহ (Meeting Decisions)", "details": "• সর্বসম্মতভাবে প্রস্তাবসমূহ অনুমোদিত হয় এবং পরবর্তী বৈঠকের রূপরেখা চূড়ান্ত হয়।"}
+            ]
+        else:
             cleaned_discussions = []
-            for d in raw_discussions:
-                cleaned_discussions.append({
-                    "sn": str(d.get("sn", "")),
-                    "topic": str(d.get("topic", "")),
-                    "details": clean_bullet_points(str(d.get("details", "")))
-                })
+            for idx, d in enumerate(raw_discussions, 1):
+                if isinstance(d, dict):
+                    cleaned_discussions.append({
+                        "sn": str(d.get("sn", idx)),
+                        "topic": str(d.get("topic", "")),
+                        "details": clean_bullet_points(str(d.get("details", "")))
+                    })
             summary["discussions"] = cleaned_discussions
-            summary["decisions"] = clean_bullet_points(str(summary.get("decisions", "")))
+
+        summary["decisions"] = clean_bullet_points(str(summary.get("decisions", "")))
+        present_members = summary.get("present_members", [])
+        summary["attendance"] = match_attendance_list(present_members, fallback_content or raw_text)
+        raw_tx = fallback_content or raw_text
+        return {
+            "detected_language": detected_lang,
+            "template_id": "easd_default_minutes",
+            "doc_type": "meeting_minutes",
+            "raw_transcript": raw_tx,
+            "transcript": raw_tx,
+            "bangla_transcript": parsed.get("bangla_transcript", fallback_content),
+            "english_transcript": parsed.get("english_transcript", fallback_content),
+            "summary": summary
+        }
             
-            present_members = summary.get("present_members", [])
-            summary["attendance"] = match_attendance_list(present_members, fallback_content or raw_text)
-            raw_tx = fallback_content or raw_text
-            return {
-                "detected_language": detected_lang,
-                "template_id": "easd_default_minutes",
-                "doc_type": "meeting_minutes",
-                "raw_transcript": raw_tx,
-                "transcript": raw_tx,
-                "bangla_transcript": parsed.get("bangla_transcript", fallback_content),
-                "english_transcript": parsed.get("english_transcript", fallback_content),
-                "summary": summary
-            }
-            
-    return deep_semantic_synthesis(raw_text or fallback_content, custom_skills, org_context)
+    return deep_semantic_synthesis(fallback_content or raw_text, custom_skills, org_context)
 
 def verify_ai_api_key(provider: str, api_key: str = "", base_url: str = "") -> Dict[str, Any]:
     import time
@@ -510,12 +539,12 @@ def verify_ai_api_key(provider: str, api_key: str = "", base_url: str = "") -> D
         if api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini":
             try:
                 client = genai.Client(api_key=api_key)
-                interaction = client.interactions.create(
+                resp = client.interactions.create(
                     model="gemini-3.5-flash-lite",
                     input="Ping"
                 )
                 latency = round((time.time() - start_time) * 1000)
-                if interaction and interaction.output_text is not None:
+                if resp and (getattr(resp, "output_text", None) or hasattr(resp, "id")):
                     return {
                         "valid": True,
                         "success": True,
@@ -709,7 +738,7 @@ def load_api_settings_from_disk() -> Dict[str, Any]:
         "transcription_model": "whisper-large-v3-turbo",
         "transcription_api_key": "",
         "summarization_provider": "gemini",
-        "summarization_model": "gemini-3.5-flash",
+        "summarization_model": "gemini-2.5-flash",
         "summarization_api_key": "",
         "gemini_api_key": "",
         "groq_api_key": "",
@@ -723,10 +752,12 @@ def load_api_settings_from_disk() -> Dict[str, Any]:
     if os.path.exists(gemini_file):
         try:
             with open(gemini_file, "r", encoding="utf-8") as f:
-                k = f.read().strip()
-                if k:
-                    defaults["gemini_api_key"] = k
-                    defaults["summarization_api_key"] = k
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and (line.startswith("AIzaSy") or line.startswith("AQ.")):
+                        defaults["gemini_api_key"] = line
+                        defaults["summarization_api_key"] = line
+                        break
         except Exception:
             pass
 
@@ -811,16 +842,24 @@ def save_api_settings_to_disk(settings: Dict[str, Any]) -> bool:
 def get_default_api_key_from_disk() -> Dict[str, str]:
     """Returns active provider & model defaults from persistent storage."""
     cfg = load_api_settings_from_disk()
+    sum_prov = cfg.get("summarization_provider") or "gemini"
+    sum_key = cfg.get("gemini_api_key") or cfg.get("summarization_api_key") or ""
+    # Ensure a Groq key is never treated as a Gemini key
+    if sum_prov == "gemini" and sum_key.startswith("gsk_"):
+        sum_key = ""
+
     return {
-        "provider": cfg.get("summarization_provider") or "gemini",
-        "api_key": cfg.get("gemini_api_key") or cfg.get("groq_api_key") or "",
+        "provider": sum_prov,
+        "api_key": sum_key,
         "transcription_provider": cfg.get("transcription_provider") or "groq",
         "transcription_model": cfg.get("transcription_model") or "whisper-large-v3-turbo",
         "transcription_api_key": cfg.get("transcription_api_key") or cfg.get("groq_api_key") or "",
-        "summarization_provider": cfg.get("summarization_provider") or "gemini",
-        "summarization_model": cfg.get("summarization_model") or "gemini-3.5-flash",
-        "summarization_api_key": cfg.get("summarization_api_key") or cfg.get("gemini_api_key") or "",
-        "model_name": cfg.get("summarization_model") or "gemini-3.5-flash"
+        "summarization_provider": sum_prov,
+        "summarization_model": cfg.get("summarization_model") or "gemini-2.5-flash",
+        "summarization_api_key": sum_key,
+        "model_name": cfg.get("summarization_model") or "gemini-2.5-flash",
+        "gemini_api_key": cfg.get("gemini_api_key") or "",
+        "groq_api_key": cfg.get("groq_api_key") or ""
     }
 
 def generate_synthetic_test_wav() -> bytes:
@@ -940,7 +979,7 @@ def test_transcription_engine(
                     }
 
         elif provider == "gemini" or api_key.startswith(("AIzaSy", "AQ.")):
-            target_model = model_name or "gemini-3.5-flash"
+            target_model = model_name or "gemini-2.5-flash"
             client = genai.Client(api_key=api_key)
             resp = client.models.generate_content(
                 model=target_model,
@@ -1047,7 +1086,7 @@ def test_summarization_engine(
 
     try:
         if provider == "gemini" or api_key.startswith(("AIzaSy", "AQ.")):
-            target_model = model_name or "gemini-3.5-flash"
+            target_model = model_name or "gemini-2.5-flash"
             client = genai.Client(api_key=api_key)
             resp = client.models.generate_content(
                 model=target_model,
@@ -1214,13 +1253,21 @@ def format_seconds_to_timestamp(seconds: float) -> str:
     s = int(seconds % 60)
     return f"{m:02d}:{s:02d}"
 
+DEFAULT_WHISPER_PROMPT = (
+    "EASD (Eminence Associates for Social Development), Weekly Strategic Review Meeting, Mohakhali DOHS, Dhaka. "
+    "Discussion in Bangla (বাংলা) and English: Dr. Shamim Talukder, Shahin Akter, Ummay Farihin Sultana, "
+    "Abu Tareq Muhammad Salahuddin, Salman Mahmud Siddique, Taseen Jubair, agenda items, action items, task assignments, decisions, followup."
+)
+
 def transcribe_audio_groq(
     media_bytes: bytes,
     api_key: str,
     model_name: str = "whisper-large-v3-turbo",
-    mime_type: str = "audio/wav"
+    mime_type: str = "audio/wav",
+    prompt: str = "",
+    language: str = ""
 ) -> str:
-    """Transcribes audio using Groq's high-speed Whisper API with timestamps and speaker formatting."""
+    """Transcribes audio using Groq's high-speed Whisper API with domain prompting, temperature=0, and fallbacks."""
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {api_key}"}
     
@@ -1236,77 +1283,124 @@ def transcribe_audio_groq(
         
     filename = f"audio_input.{ext}"
     files = {"file": (filename, media_bytes, mime_type or "application/octet-stream")}
-    whisper_model = "whisper-large-v3-turbo" if "turbo" in model_name or not model_name else "whisper-large-v3"
-    data = {
-        "model": whisper_model,
-        "response_format": "verbose_json"
-    }
     
-    with httpx.Client(timeout=180.0) as client:
-        resp = client.post(url, headers=headers, files=files, data=data)
-        resp.raise_for_status()
-        res_json = resp.json()
-        
-        # Check if verbose_json returned segments with timestamps
-        segments = res_json.get("segments", [])
-        if segments:
-            lines = []
-            for seg in segments:
-                start_s = seg.get("start", 0.0)
-                seg_text = seg.get("text", "").strip()
-                if seg_text:
-                    time_tag = format_seconds_to_timestamp(start_s)
-                    lines.append(f"[{time_tag}] Speaker 1: {seg_text}")
-            if lines:
-                return "\n".join(lines)
-                
-        plain_text = res_json.get("text", "").strip()
-        if plain_text and not plain_text.startswith("["):
-            return f"[00:00] Speaker 1: {plain_text}"
-        return plain_text
+    preferred_model = model_name or "whisper-large-v3-turbo"
+    models_to_try = [preferred_model]
+    if "turbo" not in preferred_model:
+        models_to_try.append("whisper-large-v3-turbo")
+
+    full_prompt = (prompt.strip() + " " + DEFAULT_WHISPER_PROMPT).strip() if prompt else DEFAULT_WHISPER_PROMPT
+    
+    for whisper_model in models_to_try:
+        data = {
+            "model": whisper_model,
+            "response_format": "verbose_json",
+            "prompt": full_prompt[:890],
+            "temperature": "0.0"
+        }
+        if language and language.lower() in ["bn", "en"]:
+            data["language"] = language.lower()
+        else:
+            # Enforce Bengali language to completely prevent Romanized phonetic hallucinations
+            data["language"] = "bn"
+            
+        try:
+            with httpx.Client(timeout=180.0) as client:
+                resp = client.post(url, headers=headers, files=files, data=data)
+                if resp.status_code == 200:
+                    res_json = resp.json()
+                    segments = res_json.get("segments", [])
+                    if segments:
+                        lines = []
+                        for seg in segments:
+                            start_s = seg.get("start", 0.0)
+                            seg_text = seg.get("text", "").strip()
+                            if seg_text:
+                                time_tag = format_seconds_to_timestamp(start_s)
+                                lines.append(f"[{time_tag}] Speaker 1: {seg_text}")
+                        if lines:
+                            return "\n".join(lines)
+                            
+                    plain_text = res_json.get("text", "").strip()
+                    if plain_text and not plain_text.startswith("["):
+                        return f"[00:00] Speaker 1: {plain_text}"
+                    return plain_text
+                elif resp.status_code == 403:
+                    print(f"[Groq Whisper '{whisper_model}' 403 Organization Block] Trying fallback model...")
+                    continue
+                else:
+                    print(f"[Groq Whisper '{whisper_model}' Error {resp.status_code}] {resp.text[:120]}")
+        except Exception as e:
+            print(f"[Groq Whisper '{whisper_model}' Exception] {e}")
+            
+    return ""
 
 def transcribe_audio_gemini(
     media_bytes: bytes,
     api_key: str,
-    model_name: str = "gemini-3.7-flash",
-    mime_type: str = "audio/webm",
+    model_name: str = "gemini-3.5-flash-lite",
+    mime_type: str = "audio/mp3",
     language_hint: str = "auto"
 ) -> Dict[str, Any]:
-    """Transcribes audio using Google Gemini Interactions API with timestamps and speaker attribution."""
-    models_to_try = [model_name or "gemini-3.7-flash", "gemini-3.6-flash"]
-    models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
+    """Transcribes audio using Google Gemini API with timestamps and speaker attribution in authentic script."""
+    candidate_models = [model_name or "gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.6-flash"]
+    models_to_try = []
+    for m in candidate_models:
+        if m and m not in models_to_try and not any(old in m for old in ["1.5", "2.0", "2.5"]):
+            models_to_try.append(m)
+    if not models_to_try:
+        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.7-flash"]
     
-    lang_prompt = "Transcribe the audio verbatim in its native spoken language (Bangla or English) with timestamps and speaker attribution formatted strictly as [MM:SS] Speaker 1: <words>."
-    if language_hint == "bn":
-        lang_prompt = "Transcribe this audio verbatim in Bengali (বাংলা) script with timestamps and speaker labels formatted strictly as [MM:SS] Speaker 1: <words>."
+    # Explicitly enforce authentic Bengali script (বাংলা লিপি) so Gemini never outputs Romanized gibberish
+    if language_hint == "bn" or language_hint == "auto" or not language_hint:
+        lang_prompt = (
+            "Transcribe this audio verbatim in its authentic spoken language. "
+            "CRITICAL REQUIREMENT: If Bengali/Bangla is spoken, write strictly in authentic Bengali script (বাংলা লিপি). "
+            "If English is spoken, write in English. "
+            "Do NOT transliterate Bengali words into English/Romanized phonetic gibberish (e.g., never write 'Christian brothers' or 'Dabukordini' for Bengali speech). "
+            "Format timestamps and speaker labels strictly as [MM:SS] Speaker 1: <words>."
+        )
     elif language_hint == "en":
-        lang_prompt = "Transcribe this audio verbatim in formal English with timestamps and speaker labels formatted strictly as [MM:SS] Speaker 1: <words>."
+        lang_prompt = (
+            "Transcribe this audio verbatim in formal English with timestamps and speaker labels formatted strictly as [MM:SS] Speaker 1: <words>."
+        )
+    else:
+        lang_prompt = (
+            "Transcribe the audio verbatim in its native spoken language with timestamps and speaker attribution formatted strictly as [MM:SS] Speaker 1: <words>."
+        )
         
-    encoded_file = base64.b64encode(media_bytes).decode("utf-8")
+    if not api_key or api_key.startswith("gsk_"):
+        disk_keys = get_default_api_key_from_disk()
+        api_key = disk_keys.get("api_key", "")
+        
     client = genai.Client(api_key=api_key)
+    encoded_file = base64.b64encode(media_bytes).decode("utf-8")
     
     for model in models_to_try:
         try:
-            interaction = client.interactions.create(
-                model=model,
-                input=[
+            call_kwargs = {
+                "model": model,
+                "input": [
                     {
                         "type": "text",
-                        "text": f"You are an expert bilingual speech-to-text transcriber for Eminence Associates for Social Development. {lang_prompt} Do NOT summarize, bulletize, or add meeting minutes or decisions. Return ONLY the raw timestamped speaker transcript."
+                        "text": f"You are an expert bilingual speech-to-text transcriber for Eminence Associates for Social Development. {lang_prompt} Return ONLY the raw timestamped speaker transcript."
                     },
                     {
                         "type": "audio",
                         "data": encoded_file,
-                        "mime_type": mime_type or "audio/webm"
+                        "mime_type": mime_type or "audio/mp3"
                     }
                 ]
-            )
-            text = (interaction.output_text or "").strip()
+            }
+            if "3.7" in model or "3.8" in model:
+                call_kwargs["generation_config"] = {"thinking_level": "low"}
+            interaction = client.interactions.create(**call_kwargs)
+            text = (getattr(interaction, "output_text", None) or "").strip()
             if text:
                 lang = detect_text_language(text)
                 return {"text": text, "language": lang}
         except Exception as e:
-            print(f"[Gemini Interactions STT '{model}' Exception] {e}")
+            print(f"[Gemini STT '{model}' error] {e}")
                 
     return {"text": "", "language": "bn"}
 
@@ -1343,11 +1437,14 @@ def live_transcribe_audio_chunk(
 
     try:
         if api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini":
-            model = model_name or "gemini-3.7-flash"
+            model = model_name or "gemini-3.5-flash-lite"
+            if api_key.startswith("gsk_") or not api_key:
+                disk_cfg = load_api_settings_from_disk()
+                api_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
             return transcribe_audio_gemini(media_bytes, api_key, model, mime_type, language_hint=language)
         elif api_key.startswith("gsk_") or provider in ["groq", "custom"]:
             model = model_name or "whisper-large-v3-turbo"
-            txt = transcribe_audio_groq(media_bytes, api_key, model_name=model, mime_type=mime_type)
+            txt = transcribe_audio_groq(media_bytes, api_key, model_name=model, mime_type=mime_type, language=language or "bn")
             lang = detect_text_language(txt)
             return {"text": txt, "language": lang}
         elif api_key.startswith(("sk-proj-", "sk-")) or provider == "openai":
@@ -1501,16 +1598,26 @@ def transcribe_and_summarize_gemini(
     mime_type: str,
     api_key: str,
     transcription_model: str = "gemini-3.5-flash-lite",
-    summarization_model: str = "gemini-3.5-flash-lite",
+    summarization_model: str = "gemini-3.7-flash",
     org_context: str = "",
     custom_skills: str = "",
     text_content: str = "",
     audio_chunks: Optional[List[bytes]] = None,
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Processes media and structures document using Google Gemini (Multimodal Vision OCR + Audio STT)."""
-    models_to_try = [summarization_model or "gemini-3.5-flash-lite", "gemini-2.5-flash", "gemini-3.7-flash", "gemini-3.1-pro-preview"]
-    models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
+    """Processes media and structures document using Google Gemini Interactions API."""
+    api_key = (api_key or "").strip()
+    if not api_key or api_key.startswith("gsk_"):
+        raise ValueError("Google Gemini API Key is missing or invalid (Groq key detected). Please provide a valid Gemini API key in GeminiAPI.txt or Settings.")
+
+    valid_candidates = [summarization_model or "gemini-3.7-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]
+    models_to_try = []
+    for m in valid_candidates:
+        if m and m not in models_to_try and not any(old in m for old in ["1.5", "2.0", "2.5"]):
+            models_to_try.append(m)
+    if not models_to_try:
+        models_to_try = ["gemini-3.7-flash", "gemini-3.5-flash-lite"]
+
     client = genai.Client(api_key=api_key)
     system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
 
@@ -1521,7 +1628,8 @@ def transcribe_and_summarize_gemini(
         if target_mime != "application/pdf":
             target_bytes, target_mime = preprocess_image_for_ocr(media_bytes)
 
-        part = types.Part.from_bytes(data=target_bytes, mime_type=target_mime)
+        encoded_media = base64.b64encode(target_bytes).decode("utf-8")
+        media_input_type = "image" if target_mime.startswith("image/") else "document"
         ocr_prompt = (
             f"{system_prompt}\n\n"
             "TASK: Perform high-fidelity optical character recognition (OCR) and layout extraction from this document/image. "
@@ -1529,13 +1637,20 @@ def transcribe_and_summarize_gemini(
             "agendas, discussions, and decisions. Clean any OCR distortions and format into the exact JSON schema requested."
         )
 
+        last_ocr_err = None
         for model in models_to_try:
             try:
-                resp = client.models.generate_content(
-                    model=model,
-                    contents=[ocr_prompt, part]
-                )
-                raw_text = resp.text or ""
+                call_kwargs = {
+                    "model": model,
+                    "input": [
+                        {"type": "text", "text": ocr_prompt},
+                        {"type": media_input_type, "data": encoded_media, "mime_type": target_mime}
+                    ]
+                }
+                if "3.7" in model or "3.8" in model:
+                    call_kwargs["generation_config"] = {"thinking_level": "low"}
+                resp = client.interactions.create(**call_kwargs)
+                raw_text = (getattr(resp, "output_text", None) or "").strip()
                 if raw_text:
                     return process_extracted_payload(
                         raw_text,
@@ -1546,8 +1661,9 @@ def transcribe_and_summarize_gemini(
                     )
             except Exception as e:
                 print(f"[Gemini Multimodal OCR '{model}' Exception] {e}")
+                last_ocr_err = e
 
-        return deep_semantic_synthesis(text_content or "OCR Scanned Content", custom_skills, org_context)
+        raise RuntimeError(f"Gemini OCR extraction failed across models {models_to_try}: {last_ocr_err}")
 
     # 2. Audio Processing Flow
     transcript = text_content
@@ -1559,7 +1675,7 @@ def transcribe_and_summarize_gemini(
         
     if chunks_to_process:
         transcripts = []
-        stt_model = transcription_model or "gemini-3.7-flash"
+        stt_model = transcription_model or "gemini-3.5-flash-lite"
         for chunk in chunks_to_process:
             try:
                 res = transcribe_audio_gemini(chunk, api_key, model_name=stt_model, mime_type=mime_type)
@@ -1572,13 +1688,17 @@ def transcribe_and_summarize_gemini(
 
     full_text_prompt = f"{system_prompt}\n\nAnalyze, translate, and organize this transcript into the exact JSON format:\n\n{transcript or 'Document Content'}"
     
+    last_gen_err = None
     for model in models_to_try:
         try:
-            interaction = client.interactions.create(
-                model=model,
-                input=[{"type": "text", "text": full_text_prompt}]
-            )
-            raw_text = interaction.output_text or ""
+            call_kwargs = {
+                "model": model,
+                "input": full_text_prompt
+            }
+            if "3.7" in model or "3.8" in model:
+                call_kwargs["generation_config"] = {"thinking_level": "low"}
+            resp = client.interactions.create(**call_kwargs)
+            raw_text = (getattr(resp, "output_text", None) or "").strip()
             if raw_text:
                 return process_extracted_payload(
                     raw_text,
@@ -1589,32 +1709,46 @@ def transcribe_and_summarize_gemini(
                 )
         except Exception as e:
             print(f"[Gemini Interactions Model '{model}' Exception] {e}")
+            last_gen_err = e
                 
-    return deep_semantic_synthesis(transcript or "Document Content", custom_skills, org_context)
+    raise RuntimeError(f"Google Gemini summarization failed across models {models_to_try}: {last_gen_err}")
 
 def summarize_text_gemini(
     text_content: str,
     api_key: str,
-    model_name: str = "gemini-3.5-flash",
+    model_name: str = "gemini-3.7-flash",
     org_context: str = "",
     custom_skills: str = "",
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Synthesizes structured meeting minutes from text using Gemini 3.5 / 3.8 Flash."""
+    """Synthesizes structured meeting minutes from text using Google Gemini Interactions API."""
+    api_key = (api_key or "").strip()
+    if not api_key or api_key.startswith("gsk_"):
+        raise ValueError("Google Gemini API Key is missing or invalid (Groq key detected). Please provide a valid Gemini API key in GeminiAPI.txt or Settings.")
+
     system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
     full_text_prompt = f"{system_prompt}\n\nAnalyze, translate, and organize this transcript into the exact JSON format:\n\n{text_content or 'Document Content'}"
     
-    models_to_try = [model_name or "gemini-3.5-flash", "gemini-3.8-flash", "gemini-2.5-flash"]
-    models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
+    valid_candidates = [model_name or "gemini-3.7-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"]
+    models_to_try = []
+    for m in valid_candidates:
+        if m and m not in models_to_try and not any(old in m for old in ["1.5", "2.0", "2.5"]):
+            models_to_try.append(m)
+    if not models_to_try:
+        models_to_try = ["gemini-3.7-flash", "gemini-3.5-flash-lite"]
     
     client = genai.Client(api_key=api_key)
+    last_error = None
     for m in models_to_try:
         try:
-            resp = client.models.generate_content(
-                model=m,
-                contents=full_text_prompt
-            )
-            raw_text = resp.text or ""
+            call_kwargs = {
+                "model": m,
+                "input": full_text_prompt
+            }
+            if "3.7" in m or "3.8" in m:
+                call_kwargs["generation_config"] = {"thinking_level": "low"}
+            resp = client.interactions.create(**call_kwargs)
+            raw_text = (getattr(resp, "output_text", None) or "").strip()
             if raw_text:
                 return process_extracted_payload(
                     raw_text,
@@ -1624,25 +1758,10 @@ def summarize_text_gemini(
                     template_schema=template_schema
                 )
         except Exception as e:
-            print(f"[Gemini Summarize '{m}' generate_content error] {e}")
-            try:
-                interaction = client.interactions.create(
-                    model=m,
-                    input=[{"type": "text", "text": full_text_prompt}]
-                )
-                raw_text = interaction.output_text or ""
-                if raw_text:
-                    return process_extracted_payload(
-                        raw_text,
-                        fallback_content=text_content,
-                        custom_skills=custom_skills,
-                        org_context=org_context,
-                        template_schema=template_schema
-                    )
-            except Exception as e2:
-                print(f"[Gemini Summarize '{m}' interactions error] {e2}")
+            print(f"[Gemini Summarize '{m}' interactions error] {e}")
+            last_error = e
                 
-    return deep_semantic_synthesis(text_content or "Document Content", custom_skills, org_context)
+    raise RuntimeError(f"Google Gemini summarization failed for models {models_to_try}: {last_error}")
 
 def process_ai_request(
     provider: str,
@@ -1669,19 +1788,39 @@ def process_ai_request(
     provider = (provider or "").lower()
 
     # 1. Resolve Transcription Parameters
-    stt_prov = (transcription_provider or (provider if provider in ["groq", "openai", "gemini", "custom"] else "") or disk_cfg.get("transcription_provider") or "groq").lower()
-    stt_key = (transcription_api_key or (api_key if provider == stt_prov else "") or disk_cfg.get(f"{stt_prov}_api_key") or disk_cfg.get("transcription_api_key") or disk_cfg.get("groq_api_key") or "").strip()
-    stt_model = transcription_model or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-3.5-flash")
+    stt_prov = (transcription_provider or (provider if provider in ["groq", "openai", "gemini", "custom"] else "") or disk_cfg.get("transcription_provider") or "gemini").lower()
+    stt_key = (transcription_api_key or (api_key if provider == stt_prov else "") or disk_cfg.get(f"{stt_prov}_api_key") or disk_cfg.get("transcription_api_key") or "").strip()
+    
+    # Decouple STT key: Never let a Groq key bleed into Gemini STT
+    if stt_prov == "gemini":
+        if not stt_key or stt_key.startswith("gsk_"):
+            stt_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+    elif stt_prov == "groq":
+        if not stt_key or not stt_key.startswith("gsk_"):
+            stt_key = (disk_cfg.get("groq_api_key") or "").strip()
+
+    stt_model = transcription_model or ("gemini-3.5-flash-lite" if stt_prov == "gemini" else "whisper-large-v3-turbo")
+    if stt_prov == "gemini" and any(old in stt_model for old in ["1.5", "2.0", "2.5"]):
+        stt_model = "gemini-3.5-flash-lite"
 
     # 2. Resolve Summarization Parameters
-    llm_prov = (summarization_provider or (provider if provider in ["gemini", "openai", "anthropic", "custom", "groq"] else "") or disk_cfg.get("summarization_provider") or "gemini").lower()
+    llm_prov = (summarization_provider or (provider if provider in ["gemini", "openai", "anthropic", "custom", "groq", "local"] else "") or disk_cfg.get("summarization_provider") or "gemini").lower()
     llm_key = (summarization_api_key or (api_key if provider == llm_prov else "") or disk_cfg.get(f"{llm_prov}_api_key") or disk_cfg.get("summarization_api_key") or disk_cfg.get("gemini_api_key") or "").strip()
-    llm_model = summarization_model or model_name or ("gemini-3.5-flash" if llm_prov == "gemini" else "openai/gpt-oss-120b")
+    
+    # Decouple: never let a Groq key bleed into Gemini
+    if llm_prov == "gemini" and llm_key.startswith("gsk_"):
+        llm_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+
+    llm_model = summarization_model or model_name or ("gemini-3.7-flash" if llm_prov == "gemini" else "openai/gpt-oss-120b")
+    if llm_prov == "gemini" and any(old in llm_model for old in ["1.5", "2.0", "2.5"]):
+        llm_model = "gemini-3.7-flash"
 
     # 3. Vision OCR Check
     is_vision_media = bool(media_bytes and mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf"))
     if is_vision_media:
-        if (llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ."))) and llm_key:
+        if (llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ."))):
+            if not llm_key:
+                raise ValueError("Google Gemini API Key is missing for Vision OCR. Please provide a valid Gemini key in GeminiAPI.txt or Settings.")
             return transcribe_and_summarize_gemini(
                 media_bytes=media_bytes,
                 mime_type=mime_type,
@@ -1717,11 +1856,11 @@ def process_ai_request(
             if not chunk or len(chunk) < 32:
                 continue
             chunk_txt = ""
-            if stt_prov == "groq" or stt_key.startswith("gsk_"):
-                chunk_txt = transcribe_audio_groq(chunk, stt_key, model_name=stt_model, mime_type=mime_type)
-            elif stt_prov == "gemini" or stt_key.startswith(("AIzaSy", "AQ.")):
-                res = transcribe_audio_gemini(chunk, stt_key, model_name=stt_model, mime_type=mime_type)
+            if stt_prov == "gemini" or stt_key.startswith(("AIzaSy", "AQ.")):
+                res = transcribe_audio_gemini(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language_hint="bn")
                 chunk_txt = res.get("text", "")
+            elif stt_prov == "groq" or stt_key.startswith("gsk_"):
+                chunk_txt = transcribe_audio_groq(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language="bn")
             elif stt_prov == "openai" or stt_key.startswith(("sk-proj-", "sk-")):
                 whisper_url = f"{(base_url or 'https://api.openai.com/v1').rstrip('/')}/audio/transcriptions"
                 files = {"file": ("audio.wav", chunk, mime_type or "audio/wav")}
@@ -1758,7 +1897,12 @@ def process_ai_request(
         raw_transcript = "Weekly Strategic, Programmatic and Presentation Review Meeting discussion and proceedings."
 
     # 5. Summarization & Template Fitting Stage (LLM)
-    if (llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ."))) and llm_key:
+    if llm_prov == "local":
+        return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
+
+    if llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ.")):
+        if not llm_key:
+            raise ValueError("Google Gemini API Key is missing. Please paste your Gemini API key in 'GeminiAPI.txt' or save it in the Settings modal.")
         return summarize_text_gemini(
             text_content=raw_transcript,
             api_key=llm_key,

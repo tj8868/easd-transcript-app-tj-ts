@@ -572,5 +572,344 @@
     "rules": "1. Write in formal institutional tone.\n2. Keep bullet points clear with single bullets ('• ').",
     "requirements": "- Complete all mandatory sections.\n- Ensure accurate metadata fields.",
     "doc_type": "custom"
+  },
+  {
+    "id": "custom_tpl_69003a35",
+    "name": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+    "doc_type": "custom",
+    "description": "Custom uploaded template extracted from 'EASD Meeting minutes - Template.docx' with 4 sections and 2 tables.",
+    "category": "Custom Templates",
+    "is_default": false,
+    "is_builtin": false,
+    "docx_filename": "custom_tpl_69003a35.docx",
+    "context": "Custom institutional document generated from the template 'Easd Meeting Minutes   Template'. Designed to organize spoken notes, meeting transcripts, and project data into a structured report for executive and operational stakeholders.",
+    "rules": "1. Produce clear, professional prose matching the template sections.\n2. Maintain bilingual accuracy (Bangla and English where applicable).\n3. Format bullet lists with single bullets ('• ').\n4. Do not invent facts; synthesize strictly from the provided input audio/text.",
+    "requirements": "- Populate all extracted sections: Weekly Strategic, Programmatic and Presentation Review Meeting, Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY, Meeting Agenda (4-5 Points max):, Agenda-Wise Meeting Discussions.\n- Ensure metadata fields (Document Title, Date / Period) are accurately filled.\n- Maintain table structures (Table 1, Table 2) if relevant data is present.",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Document Title",
+        "type": "text",
+        "default": "Weekly Strategic, Programmatic and Presentation Review Meeting"
+      },
+      {
+        "key": "date",
+        "label": "Date / Period",
+        "type": "text",
+        "default": ""
+      }
+    ],
+    "sections": [
+      {
+        "id": "weekly_strategic__progra",
+        "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Weekly Strategic, Programmatic and Presentation Review Meeting' in formal prose."
+      },
+      {
+        "id": "date__22_august__2026___",
+        "title": "Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY' in formal prose."
+      },
+      {
+        "id": "meeting_agenda__4_5_poin",
+        "title": "Meeting Agenda (4-5 Points max):",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Meeting Agenda (4-5 Points max):' in formal prose."
+      },
+      {
+        "id": "agenda_wise_meeting_disc",
+        "title": "Agenda-Wise Meeting Discussions",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Agenda-Wise Meeting Discussions' in formal prose."
+      }
+    ],
+    "tables": [
+      {
+        "id": "table_0",
+        "title": "Table 1",
+        "columns": [
+          "SN",
+          "Discussion Points",
+          "Major Discussions"
+        ]
+      },
+      {
+        "id": "table_1",
+        "title": "Table 2",
+        "columns": [
+          "Serial",
+          "Name",
+          "Participation"
+        ]
+      }
+    ],
+    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements."
+  },
+  {
+    "id": "custom_tpl_5aac2420",
+    "name": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+    "doc_type": "custom",
+    "description": "Custom uploaded template extracted from 'EASD Meeting minutes - Template.docx' with 4 sections and 2 tables.",
+    "category": "Custom Templates",
+    "is_default": false,
+    "is_builtin": false,
+    "docx_filename": "custom_tpl_5aac2420.docx",
+    "context": "Custom institutional document generated from the template 'Easd Meeting Minutes   Template'. Designed to organize spoken notes, meeting transcripts, and project data into a structured report for executive and operational stakeholders.",
+    "rules": "1. Produce clear, professional prose matching the template sections.\n2. Maintain bilingual accuracy (Bangla and English where applicable).\n3. Format bullet lists with single bullets ('• ').\n4. Do not invent facts; synthesize strictly from the provided input audio/text.",
+    "requirements": "- Populate all extracted sections: Weekly Strategic, Programmatic and Presentation Review Meeting, Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY, Meeting Agenda (4-5 Points max):, Agenda-Wise Meeting Discussions.\n- Ensure metadata fields (Document Title, Date / Period) are accurately filled.\n- Maintain table structures (Table 1, Table 2) if relevant data is present.",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Document Title",
+        "type": "text",
+        "default": "Weekly Strategic, Programmatic and Presentation Review Meeting"
+      },
+      {
+        "key": "date",
+        "label": "Date / Period",
+        "type": "text",
+        "default": ""
+      }
+    ],
+    "sections": [
+      {
+        "id": "weekly_strategic__progra",
+        "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Weekly Strategic, Programmatic and Presentation Review Meeting' in formal prose."
+      },
+      {
+        "id": "date__22_august__2026___",
+        "title": "Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY' in formal prose."
+      },
+      {
+        "id": "meeting_agenda__4_5_poin",
+        "title": "Meeting Agenda (4-5 Points max):",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Meeting Agenda (4-5 Points max):' in formal prose."
+      },
+      {
+        "id": "agenda_wise_meeting_disc",
+        "title": "Agenda-Wise Meeting Discussions",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Agenda-Wise Meeting Discussions' in formal prose."
+      }
+    ],
+    "tables": [
+      {
+        "id": "table_0",
+        "title": "Table 1",
+        "columns": [
+          "SN",
+          "Discussion Points",
+          "Major Discussions"
+        ]
+      },
+      {
+        "id": "table_1",
+        "title": "Table 2",
+        "columns": [
+          "Serial",
+          "Name",
+          "Participation"
+        ]
+      }
+    ],
+    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements."
+  },
+  {
+    "id": "custom_tpl_d1863b6a",
+    "name": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+    "doc_type": "custom",
+    "description": "Custom uploaded template extracted from 'EASD Meeting minutes - Template.docx' with 2 sections and 2 tables.",
+    "category": "Custom Templates",
+    "is_default": false,
+    "is_builtin": false,
+    "docx_filename": "custom_tpl_d1863b6a.docx",
+    "context": "Custom institutional document generated from the template 'Easd Meeting Minutes   Template'. Designed to organize spoken notes, meeting transcripts, and project data into a structured report for executive and operational stakeholders.",
+    "rules": "1. Produce clear, professional prose matching the template sections.\n2. Maintain bilingual accuracy (Bangla and English where applicable).\n3. Format bullet lists with single bullets ('• ').\n4. Do not invent facts; synthesize strictly from the provided input audio/text.",
+    "requirements": "- Populate all extracted sections: Meeting Agenda (4-5 Points max):, Agenda-Wise Meeting Discussions.\n- Ensure metadata fields (Document Title, Date / Period) are accurately filled.\n- Maintain table structures (Agenda & Discussion Matrix, Meeting Attendance List) if relevant data is present.",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Document Title",
+        "type": "text",
+        "default": "Weekly Strategic, Programmatic and Presentation Review Meeting"
+      },
+      {
+        "key": "date",
+        "label": "Date / Period",
+        "type": "text",
+        "default": ""
+      }
+    ],
+    "sections": [
+      {
+        "id": "sec_1_meeting_agenda_45_",
+        "title": "Meeting Agenda (4-5 Points max):",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Meeting Agenda (4-5 Points max):' in formal prose."
+      },
+      {
+        "id": "sec_2_agendawise_meeting",
+        "title": "Agenda-Wise Meeting Discussions",
+        "type": "text",
+        "prompt": "Synthesize information regarding 'Agenda-Wise Meeting Discussions' in formal prose."
+      }
+    ],
+    "tables": [
+      {
+        "id": "table_0",
+        "title": "Agenda & Discussion Matrix",
+        "columns": [
+          "SN",
+          "Discussion Points",
+          "Major Discussions"
+        ],
+        "sample_rows": [
+          [
+            "1",
+            "Followup from previous meeting",
+            ""
+          ],
+          [
+            "2",
+            "Action items",
+            "burdens from the 5x5 framework, while the multi-sectoral governance mapping failed to capture the"
+          ],
+          [
+            "3",
+            "Task Assignments",
+            ""
+          ],
+          [
+            "4",
+            "Meeting Decisions",
+            ""
+          ]
+        ]
+      },
+      {
+        "id": "table_1",
+        "title": "Meeting Attendance List",
+        "columns": [
+          "Serial",
+          "Name",
+          "Participation"
+        ],
+        "sample_rows": [
+          [
+            "1",
+            "Md. Shamim Hayder Talukder",
+            "Yes"
+          ],
+          [
+            "2",
+            "Shahin Akter",
+            "Yes"
+          ],
+          [
+            "3",
+            "Ummay Farihin Sultana",
+            "Yes"
+          ],
+          [
+            "4",
+            "Abu Tareq Muhammad Salahuddin",
+            "Yes"
+          ],
+          [
+            "5",
+            "Md. Robiul Islam",
+            "Yes"
+          ],
+          [
+            "6",
+            "Salman Mahmud Siddique",
+            "Yes"
+          ],
+          [
+            "7",
+            "Md. Saddam Hossain",
+            "Yes"
+          ],
+          [
+            "8",
+            "Abhijeet Kumar Singh",
+            "Yes"
+          ],
+          [
+            "9",
+            "Suman Sikder",
+            "Yes"
+          ],
+          [
+            "10",
+            "H M Taseen Jubair Bhuiyan",
+            "Yes"
+          ],
+          [
+            "11",
+            "Safkat Faruk Sezan",
+            "Yes"
+          ],
+          [
+            "12",
+            "Md Shahazin Rhaman Mayen",
+            "Yes"
+          ],
+          [
+            "13",
+            "Pew Roy Chowdhury",
+            "Yes"
+          ],
+          [
+            "14",
+            "Esha Sanjida",
+            "Yes"
+          ],
+          [
+            "15",
+            "Jaima Nooren Zia",
+            "Yes"
+          ],
+          [
+            "16",
+            "Maruf Hasan",
+            "Yes"
+          ],
+          [
+            "17",
+            "Kartik Bala",
+            "Yes"
+          ],
+          [
+            "18",
+            "MD Ismail Hossain Sabbir",
+            "No"
+          ],
+          [
+            "19",
+            "Md Apon Munshi",
+            "No"
+          ],
+          [
+            "20",
+            "MD Jahidul Mia",
+            "Yes"
+          ],
+          [
+            "21",
+            "Nurrunnahar Begum",
+            "No"
+          ]
+        ]
+      }
+    ],
+    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements."
   }
 ]

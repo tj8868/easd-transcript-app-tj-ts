@@ -51,7 +51,7 @@ export default function SettingsModal({
   setTheme,
   settings,
   setSettings,
-  aiConfig = { provider: 'gemini', model: 'gemini-2.5-flash', apiKey: '' },
+  aiConfig = { provider: 'gemini', model: 'gemini-3.7-flash', apiKey: '' },
   setAiConfig = () => {}
 }) {
   const [activeTab, setActiveTab] = useState('keys');
@@ -114,7 +114,7 @@ export default function SettingsModal({
       gemini_api_key: clean,
       summarization_api_key: clean,
       summarization_provider: 'gemini',
-      summarization_model: aiConfig?.summarizationModel || 'gemini-3.5-flash'
+      summarization_model: aiConfig?.summarizationModel || 'gemini-3.7-flash'
     });
     setGeminiFeedback('✅ Google Gemini saved and activated as default engine!');
     setTimeout(() => setGeminiFeedback(''), 4000);
@@ -442,7 +442,7 @@ export default function SettingsModal({
                     {getActiveApiDisplayName(aiConfig)}
                   </h4>
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                    Provider: <strong>{aiConfig.provider?.toUpperCase()}</strong> • Model: <code>{aiConfig.summarizationModel || aiConfig.modelName || 'gemini-2.5-flash'}</code>
+                    Provider: <strong>{aiConfig.provider?.toUpperCase()}</strong> • Model: <code>{aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.7-flash'}</code>
                     {aiConfig.baseUrl && <> • Endpoint: <code>{aiConfig.baseUrl}</code></>}
                   </div>
                 </div>
@@ -505,7 +505,7 @@ export default function SettingsModal({
                       Google Gemini API (Default Engine)
                     </h4>
                     <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-                      High-speed Gemini 2.5 Flash for audio transcription and executive synthesis.
+                      High-speed Gemini 3.7 Flash for executive synthesis and Gemini 3.5 Flash Lite for audio transcription.
                     </span>
                   </div>
                 </div>

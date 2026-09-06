@@ -1,5 +1,13 @@
+import sys
 import os
 import io
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 import json
 import base64
 import uuid
@@ -214,7 +222,7 @@ def test_engine_endpoint(payload: TestEnginePayload):
     if payload.test_type in ["stt", "both"]:
         stt_prov = payload.stt_provider or cfg.get("transcription_provider") or "groq"
         stt_key = payload.stt_api_key or cfg.get(f"{stt_prov}_api_key") or cfg.get("transcription_api_key") or ""
-        stt_mod = payload.stt_model or cfg.get("transcription_model") or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-3.5-flash")
+        stt_mod = payload.stt_model or cfg.get("transcription_model") or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-2.5-flash")
         stt_res = test_transcription_engine(
             provider=stt_prov,
             api_key=stt_key,
@@ -229,7 +237,7 @@ def test_engine_endpoint(payload: TestEnginePayload):
     if payload.test_type in ["llm", "both"]:
         llm_prov = payload.llm_provider or cfg.get("summarization_provider") or "gemini"
         llm_key = payload.llm_api_key or cfg.get(f"{llm_prov}_api_key") or cfg.get("summarization_api_key") or ""
-        llm_mod = payload.llm_model or cfg.get("summarization_model") or ("gemini-3.5-flash" if llm_prov == "gemini" else "llama-3.3-70b-versatile")
+        llm_mod = payload.llm_model or cfg.get("summarization_model") or ("gemini-2.5-flash" if llm_prov == "gemini" else "llama-3.3-70b-versatile")
         llm_res = test_summarization_engine(
             provider=llm_prov,
             api_key=llm_key,
@@ -252,6 +260,19 @@ def get_env_keys_endpoint():
     anthropic_env = bool(os.getenv("ANTHROPIC_API_KEY"))
     base_dir = os.path.dirname(os.path.abspath(__file__))
     groq_file = os.path.exists(os.path.join(base_dir, "GroqAPI.txt"))
+    gemini_file = False
+    gem_path = os.path.join(base_dir, "GeminiAPI.txt")
+    if os.path.exists(gem_path):
+        try:
+            with open(gem_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    c = line.split("#")[0].strip()
+                    if c and (c.startswith("AIzaSy") or c.startswith("AQ.")):
+                        gemini_file = True
+                        break
+        except Exception:
+            pass
+
     return JSONResponse(content={
         "status": "success",
         "env_keys": {
@@ -260,8 +281,8 @@ def get_env_keys_endpoint():
                 "preview": "Set in GroqAPI.txt / ENV" if (groq_env or groq_file) else "Not configured"
             },
             "GEMINI_API_KEY": {
-                "configured": bool(gemini_env),
-                "preview": "Set in environment" if gemini_env else "Not configured"
+                "configured": bool(gemini_env or gemini_file),
+                "preview": "Set in GeminiAPI.txt / ENV" if (gemini_env or gemini_file) else "Not configured"
             },
             "OPENAI_API_KEY": {
                 "configured": bool(openai_env),
@@ -713,6 +734,92 @@ async def websocket_live_transcribe(websocket: WebSocket):
             await websocket.send_json({"type": "error", "message": str(e)})
         except Exception:
             pass
+
+@app.post("/api/live_transcribe_chunk")
+async def live_transcribe_chunk_endpoint(
+    chunk: Optional[UploadFile] = File(None),
+    file: Optional[UploadFile] = File(None),
+    provider: str = Form("gemini"),
+    api_key: str = Form(""),
+    model_name: str = Form("gemini-3.5-flash-lite"),
+    language: str = Form("bn")
+):
+    """
+    HTTP streaming endpoint for live audio slices during recording.
+    Transcribes the audio slice in real-time and returns text with language.
+    """
+    try:
+        uploaded = chunk or file
+        if not uploaded:
+            raise HTTPException(status_code=400, detail="No audio chunk provided")
+        content = await uploaded.read()
+        if len(content) < 32:
+            return JSONResponse(content={"status": "success", "text": "", "language": "bn"})
+            
+        mime = uploaded.content_type or "audio/webm"
+        res = live_transcribe_audio_chunk(
+            media_bytes=content,
+            api_key=api_key,
+            provider=provider,
+            model_name=model_name or "gemini-3.5-flash-lite",
+            mime_type=mime,
+            language=language or "bn"
+        )
+        return JSONResponse(content={"status": "success", "text": res.get("text", ""), "language": res.get("language", "bn")})
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "text": "", "detail": str(e)}, status_code=200)
+
+@app.post("/api/transcribe_take")
+async def transcribe_take_endpoint(
+    file: UploadFile = File(...),
+    provider: str = Form("gemini"),
+    api_key: str = Form(""),
+    model_name: str = Form("gemini-3.5-flash-lite"),
+    language: str = Form("bn")
+):
+    """
+    Instant auto-transcription for a completed recorded take.
+    Ensures that when a user finishes recording, an authentic Bengali transcript is generated immediately.
+    """
+    try:
+        content = await file.read()
+        if len(content) < 32:
+            return JSONResponse(content={"status": "success", "transcript": "", "language": "bn"})
+            
+        mime = file.content_type or "audio/webm"
+        cfg = load_api_settings_from_disk()
+        key = api_key or cfg.get("gemini_api_key") or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
+        
+        from ai_providers import transcribe_audio_gemini, transcribe_audio_groq, detect_text_language
+        
+        chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
+        if chosen_prov == "gemini" or key.startswith(("AIzaSy", "AQ.")):
+            res = transcribe_audio_gemini(
+                media_bytes=content,
+                api_key=key,
+                model_name=model_name or "gemini-3.5-flash-lite",
+                mime_type=mime,
+                language_hint=language or "bn"
+            )
+            transcript = res.get("text", "")
+            lang = res.get("language", "bn")
+        else:
+            transcript = transcribe_audio_groq(
+                media_bytes=content,
+                api_key=key,
+                model_name=model_name or "whisper-large-v3-turbo",
+                mime_type=mime,
+                language=language or "bn"
+            )
+            lang = detect_text_language(transcript)
+            
+        return JSONResponse(content={
+            "status": "success",
+            "transcript": transcript,
+            "language": lang
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/generate_docx")
 async def generate_docx(payload: MeetingDocPayload):

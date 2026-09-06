@@ -36,7 +36,7 @@ export default function Header({
           <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '4px 0 0 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span>Eminence Associates for Social Development</span>
             <span style={{ opacity: 0.4 }}>•</span>
-            <span style={{ color: 'var(--eminence-cerulean)', fontWeight: 600 }}>Gemini 2.5 Flash & Dual Language Executive Minutes</span>
+            <span style={{ color: 'var(--eminence-cerulean)', fontWeight: 600 }}>Gemini 3.7 Flash & Dual Language Executive Minutes</span>
           </p>
         </div>
       </div>

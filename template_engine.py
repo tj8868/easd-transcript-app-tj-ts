@@ -317,25 +317,42 @@ def analyze_and_generalize_docx(docx_bytes: bytes, filename: str, doc_type: str 
             })
 
     section_counter = 1
+    meta_keywords = ["date", "time", "venue", "location", "memo", "ref", "স্মারক", "তারিখ", "স্থান", "উপস্থিত"]
+    
     for p in doc.paragraphs:
         txt = p.text.strip()
-        if not txt:
+        if not txt or len(txt) < 3:
             continue
+        
+        # Skip if matches detected title or pure metadata line
+        if txt.lower() == detected_title.lower():
+            continue
+        if re.match(r'^(?:date|time|venue|location|meeting date|place)\b', txt, re.IGNORECASE):
+            continue
+        if any(txt.lower().startswith(kw) for kw in ["date:", "time:", "venue:", "location:", "তারিখ:", "স্থান:"]):
+            continue
+            
         is_heading = False
         if p.style and p.style.name.startswith("Heading"):
             is_heading = True
-        elif len(txt) < 80 and (txt.isupper() or re.match(r'^\d+[\.\)]\s+[A-Z\u0980-\u09FF]', txt) or (len(p.runs) > 0 and p.runs[0].bold)):
+        elif len(txt) < 80 and (
+            txt.isupper() 
+            or re.match(r'^\d+[\.\)]\s+[A-Z\u0980-\u09FF]', txt)
+            or (len(p.runs) > 0 and p.runs[0].bold and not any(kw in txt.lower() for kw in meta_keywords))
+        ):
             is_heading = True
             
-        if is_heading and len(txt) > 3:
+        if is_heading:
             clean_head = re.sub(r'^\d+[\.\)]\s*', '', txt).strip()
-            sec_id = re.sub(r'[^a-zA-Z0-9_]', '_', clean_head.lower())[:24] or f"section_{section_counter}"
+            # Clean slug to avoid collisions on non-ASCII/Bengali text
+            ascii_slug = re.sub(r'[^a-zA-Z0-9_]', '', clean_head.lower().replace(" ", "_"))[:18]
+            sec_id = f"sec_{section_counter}_{ascii_slug}" if ascii_slug else f"sec_{section_counter}"
             
             if not any(s["id"] == sec_id for s in detected_sections):
                 detected_sections.append({
                     "id": sec_id,
                     "title": txt,
-                    "type": "bullets" if any(w in txt.lower() for w in ["action", "finding", "decision", "recommendation", "সিদ্ধান্ত", "সুপারিশ"]) else "text",
+                    "type": "bullets" if any(w in txt.lower() for w in ["action", "finding", "decision", "recommendation", "সিদ্ধান্ত", "সুপারিশ", "আলোচনা"]) else "text",
                     "prompt": f"Synthesize information regarding '{clean_head}' in formal prose."
                 })
                 section_counter += 1
@@ -351,12 +368,34 @@ def analyze_and_generalize_docx(docx_bytes: bytes, filename: str, doc_type: str 
         if len(table.rows) > 0:
             header_cells = [c.text.strip().replace("\n", " ") for c in table.rows[0].cells if c.text.strip()]
             if header_cells:
+                # Deduplicate consecutive identical cells if merged
+                dedup_cols = []
+                for c in header_cells:
+                    if not dedup_cols or dedup_cols[-1] != c:
+                        dedup_cols.append(c)
+                
+                col_str = " ".join(dedup_cols).lower()
                 t_title = f"Table {t_idx + 1}"
-                detected_tables.append({
+                if any(w in col_str for w in ["topic", "discussion", "decision"]):
+                    t_title = "Agenda & Discussion Matrix"
+                elif any(w in col_str for w in ["name", "designation", "present", "absent", "participation"]):
+                    t_title = "Meeting Attendance List"
+
+                # Extract sample / fixed rows (predefined discussion topics or attendance)
+                sample_rows = []
+                for row in table.rows[1:]:
+                    vals = [c.text.strip().replace("\n", " ") for c in row.cells]
+                    if any(v for v in vals):
+                        sample_rows.append(vals)
+
+                tbl_data = {
                     "id": f"table_{t_idx}",
                     "title": t_title,
-                    "columns": header_cells
-                })
+                    "columns": dedup_cols
+                }
+                if sample_rows:
+                    tbl_data["sample_rows"] = sample_rows[:25]
+                detected_tables.append(tbl_data)
 
     sections_summary = ", ".join([s["title"] for s in detected_sections])
     tables_summary = ", ".join([t["title"] for t in detected_tables]) if detected_tables else "None"
@@ -505,6 +544,48 @@ def generate_custom_template_docx_bytes(template_info: Dict[str, Any], data: Dic
                                 for token in tokens:
                                     if token in cell.text:
                                         cell.text = cell.text.replace(token, val)
+
+            # Smart date/time replacement in paragraphs
+            date_val = str(data.get("date") or "")
+            time_val = str(data.get("time") or "")
+            title_val = str(data.get("title") or "")
+            location_val = str(data.get("location") or "")
+
+            if date_val or time_val:
+                for p in doc.paragraphs[:10]:
+                    if "Date:" in p.text and date_val:
+                        p.text = re.sub(r'Date:\s*[^\t\n\r]+', f"Date: {date_val}", p.text, count=1)
+                    if "Time:" in p.text and time_val:
+                        p.text = re.sub(r'Time:\s*[^\t\n\r]+', f"Time: {time_val}", p.text, count=1)
+
+            # Populate tables in the uploaded document (Discussions & Attendance)
+            discussions = data.get("discussions") or data.get("summary", {}).get("discussions", [])
+            attendance = data.get("attendance") or data.get("summary", {}).get("attendance", [])
+
+            for table in doc.tables:
+                if len(table.rows) > 1 and len(table.columns) >= 3:
+                    hdr_text = " ".join([c.text.lower() for c in table.rows[0].cells])
+                    # Discussion matrix table
+                    if any(w in hdr_text for w in ["topic", "discussion", "sn"]):
+                        for r_idx, row in enumerate(table.rows[1:]):
+                            if r_idx < len(discussions):
+                                d_item = discussions[r_idx]
+                                dt = d_item.get("details", "")
+                                if len(row.cells) >= 3 and dt:
+                                    row.cells[2].text = dt
+                                elif len(row.cells) == 2 and dt:
+                                    row.cells[1].text = dt
+                    # Attendance table
+                    elif any(w in hdr_text for w in ["name", "participation", "status", "present"]):
+                        for row in table.rows[1:]:
+                            if len(row.cells) >= 3:
+                                name_in_cell = row.cells[1].text.strip().lower()
+                                for att in attendance:
+                                    att_name = att.get("name", "").lower()
+                                    if att_name and (att_name in name_in_cell or name_in_cell in att_name):
+                                        st = att.get("status", "Present")
+                                        row.cells[2].text = "Yes" if "present" in st.lower() or "yes" in st.lower() else "No"
+                                        break
 
             sections = template_info.get("sections", [])
             for sec in sections:
@@ -671,13 +752,36 @@ def generate_custom_template_docx_bytes(template_info: Dict[str, Any], data: Dic
                 hdr_run.font.size = Pt(10)
                 
             rows_data = data.get(t_id) or data.get("tables_data", {}).get(t_id, [])
+            if not rows_data:
+                col_str = " ".join(cols).lower()
+                if any(w in col_str for w in ["topic", "discussion", "sn"]):
+                    rows_data = data.get("discussions") or data.get("summary", {}).get("discussions", [])
+                elif any(w in col_str for w in ["name", "present", "attendance", "participation"]):
+                    rows_data = data.get("attendance") or data.get("summary", {}).get("attendance", [])
+
             if rows_data and isinstance(rows_data, list):
                 for row_item in rows_data:
                     row_el = table_el.add_row()
                     for c_idx, col_name in enumerate(cols):
                         val = ""
+                        col_l = col_name.lower().strip()
                         if isinstance(row_item, dict):
-                            val = str(row_item.get(col_name) or row_item.get(col_name.lower()) or list(row_item.values())[min(c_idx, len(row_item)-1)])
+                            if any(s in col_l for s in ["sl", "sn", "no", "serial", "ক্রম"]):
+                                val = str(row_item.get("sn") or row_item.get("sl") or row_item.get("no") or "")
+                            elif any(s in col_l for s in ["topic", "agenda", "বিষয়", "বিষয়"]):
+                                val = str(row_item.get("topic") or row_item.get("agenda") or "")
+                            elif any(s in col_l for s in ["discuss", "detail", "আলোচনা", "বিবরণ"]):
+                                val = str(row_item.get("details") or row_item.get("discussion") or "")
+                            elif any(s in col_l for s in ["decision", "action", "সিদ্ধান্ত"]):
+                                val = str(row_item.get("decision") or row_item.get("decisions") or row_item.get("details") or "")
+                            elif any(s in col_l for s in ["name", "নাম"]):
+                                val = str(row_item.get("name") or "")
+                            elif any(s in col_l for s in ["designation", "পদবী", "পদবি"]):
+                                val = str(row_item.get("designation") or "")
+                            elif any(s in col_l for s in ["status", "present", "participation", "উপস্থিতি"]):
+                                val = str(row_item.get("status") or row_item.get("participation") or "Present")
+                            else:
+                                val = str(row_item.get(col_name) or row_item.get(col_l) or (list(row_item.values())[min(c_idx, len(row_item)-1)] if row_item else ""))
                         elif isinstance(row_item, (list, tuple)) and c_idx < len(row_item):
                             val = str(row_item[c_idx])
                         row_el.cells[c_idx].paragraphs[0].add_run(val)

@@ -42,3 +42,8 @@ api_settings.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local Model Weights (CTranslate2 Whisper models >100MB)
+models/
+*.bin
+

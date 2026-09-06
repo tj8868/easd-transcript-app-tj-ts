@@ -78,7 +78,8 @@ export default function LiveRecordStudio({
   // Recording & Live State
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [language, setLanguage] = useState('auto'); // 'auto', 'bn', 'en'
+  const [language, setLanguage] = useState('bn'); // Default to Bengali 'bn' ('bn-BD')
+  const [engineStatus, setEngineStatus] = useState('webkitSpeechRecognition (bn-BD)');
   const [activeSpeaker, setActiveSpeaker] = useState('Speaker 1');
   const activeSpeakerRef = useRef('Speaker 1');
   const [liveTranscript, setLiveTranscript] = useState('');
@@ -106,10 +107,13 @@ export default function LiveRecordStudio({
   const analyserRef = useRef(null);
   const animFrameRef = useRef(null);
   const timerIntervalRef = useRef(null);
+  const autoChunkTimerRef = useRef(null);
+  const isStreamingChunkRef = useRef(false);
   const currentTakeSecondsRef = useRef(0);
   const isRecordingRef = useRef(false);
   const isPausedRef = useRef(false);
   const isStartingRecognitionRef = useRef(false);
+  const languageRef = useRef('bn');
   const fileInputRef = useRef(null);
   const transcriptBottomRef = useRef(null);
   const liveTranscriptForTakeRef = useRef('');
@@ -118,6 +122,10 @@ export default function LiveRecordStudio({
     isRecordingRef.current = isRecording;
     isPausedRef.current = isPaused;
   }, [isRecording, isPaused]);
+
+  useEffect(() => {
+    languageRef.current = language;
+  }, [language]);
 
   useEffect(() => {
     liveTranscriptForTakeRef.current = liveTranscript;
@@ -209,7 +217,7 @@ export default function LiveRecordStudio({
       const res = await testAiEngine({
         test_type: 'llm',
         llm_provider: prov,
-        llm_model: aiConfig?.summarizationModel || 'gemini-3.5-flash',
+        llm_model: aiConfig?.summarizationModel || 'gemini-3.7-flash',
         llm_api_key: aiConfig?.summarizationApiKey || aiConfig?.apiKey || '',
         base_url: aiConfig?.baseUrl || ''
       });
@@ -288,66 +296,58 @@ export default function LiveRecordStudio({
 
   // --- webkitSpeechRecognition Speech Detection Setup ---
   const initSpeechRecognition = (langOverride = null) => {
-    // Explicitly prioritize webkitSpeechRecognition
-    const SpeechRecognition = window.webkitSpeechRecognition || window.SpeechRecognition;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      console.warn('webkitSpeechRecognition not supported in this browser. Please use Google Chrome, Microsoft Edge, or a Chromium-based browser for live speech recognition.');
-      setStatusText('webkitSpeechRecognition requires Chrome or Edge browser');
+      console.warn('SpeechRecognition not supported in this browser. Please use Google Chrome, Microsoft Edge, or a Chromium-based browser.');
+      setStatusText('SpeechRecognition requires Chrome or Edge browser');
       return null;
     }
     const recognition = new SpeechRecognition();
+    recognition.lang = (langOverride || language) === 'en' ? 'en-US' : 'bn-BD'; // Default to 'bn-BD'
     recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-
-    const activeLang = langOverride || language;
-    if (activeLang === 'bn') {
-      recognition.lang = 'bn-BD';
-    } else if (activeLang === 'en') {
-      recognition.lang = 'en-US';
-    } else {
-      const userLang = navigator.language || 'bn-BD';
-      recognition.lang = userLang.startsWith('bn') ? 'bn-BD' : 'en-US';
-    }
+    recognition.interimResults = true; // Enables live typing as you speak
 
     recognition.onstart = () => {
       isStartingRecognitionRef.current = false;
-      setStatusText(`webkitSpeechRecognition active (${recognition.lang})`);
+      setEngineStatus(`SpeechRecognition (${recognition.lang})`);
+      setStatusText(`Live speech recognition active (${recognition.lang})`);
     };
 
     recognition.onresult = (event) => {
-      let finalStr = '';
-      let interimStr = '';
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
+      let finalChunk = '';
+      let liveText = '';
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcriptPart = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalStr += transcriptPart + ' ';
+          finalChunk += transcriptPart;
         } else {
-          interimStr += transcriptPart;
+          liveText += transcriptPart;
         }
       }
-      if (finalStr.trim()) {
+
+      console.log("Live Text:", liveText || finalChunk);
+
+      if (finalChunk.trim()) {
         const timeTag = formatTime(currentTakeSecondsRef.current || 0);
         const speaker = activeSpeakerRef.current || 'Speaker 1';
-        const formattedLine = `[${timeTag}] ${speaker}: ${finalStr.trim()}`;
+        const formattedLine = `[${timeTag}] ${speaker}: ${finalChunk.trim()}`;
         setLiveTranscript((prev) => {
           const updated = prev ? `${prev}\n${formattedLine}` : formattedLine;
-          if (onLiveTranscriptSync) {
-            onLiveTranscriptSync(updated);
-          }
-          if (onAppendToTranscript) {
-            onAppendToTranscript(formattedLine);
-          }
+          if (onLiveTranscriptSync) onLiveTranscriptSync(updated);
+          if (onAppendToTranscript) onAppendToTranscript(formattedLine);
           return updated;
         });
       }
-      setInterimText(interimStr);
+
+      setInterimText(liveText);
     };
 
     recognition.onerror = (event) => {
       isStartingRecognitionRef.current = false;
       if (event.error === 'no-speech') return;
       console.warn('Speech recognition notice:', event.error);
+      setEngineStatus(`Speech Notice: ${event.error} — Auto-Preview active`);
     };
 
     recognition.onend = () => {
@@ -439,6 +439,46 @@ export default function LiveRecordStudio({
         });
       }, 1000);
 
+      // Start periodic live audio chunk auto-previewing via backend Gemini STT
+      autoChunkTimerRef.current = setInterval(async () => {
+        if (!isRecordingRef.current || isPausedRef.current) return;
+        if (isStreamingChunkRef.current) return;
+        if (currentChunksRef.current.length === 0) return;
+
+        // If browser speech recognition hasn't caught text or only caught silence, stream chunk to backend
+        if (!liveTranscriptForTakeRef.current || liveTranscriptForTakeRef.current.trim().length < 5) {
+          try {
+            isStreamingChunkRef.current = true;
+            const mime = mimeType || 'audio/webm';
+            const chunkBlob = new Blob(currentChunksRef.current, { type: mime });
+            if (chunkBlob.size > 2000) {
+              const formData = new FormData();
+              const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
+              formData.append('chunk', chunkBlob, `live_stream.${ext}`);
+              formData.append('language', languageRef.current || 'bn');
+              formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
+              formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-flash-lite');
+
+              const res = await axios.post('/api/live_transcribe_chunk', formData);
+              if (res.data && res.data.text && res.data.text.trim()) {
+                const chunkTxt = res.data.text.trim();
+                const speaker = activeSpeakerRef.current || 'Speaker 1';
+                const formatted = chunkTxt.startsWith('[') ? chunkTxt : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${chunkTxt}`;
+                setLiveTranscript(formatted);
+                liveTranscriptForTakeRef.current = formatted;
+                setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
+                if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
+                if (onAppendToTranscript) onAppendToTranscript(formatted);
+              }
+            }
+          } catch (err) {
+            console.warn('Live chunk auto-preview notice:', err);
+          } finally {
+            isStreamingChunkRef.current = false;
+          }
+        }
+      }, 4500);
+
       // Start MediaRecorder
       const mimeType = getSupportedMimeType();
       const options = mimeType ? { mimeType } : undefined;
@@ -451,16 +491,17 @@ export default function LiveRecordStudio({
         }
       };
 
-      mediaRecorder.onstop = () => {
+      mediaRecorder.onstop = async () => {
         const mime = mimeType || 'audio/webm';
         const blob = new Blob(currentChunksRef.current, { type: mime });
         const url = URL.createObjectURL(blob);
         const durationSec = currentTakeSecondsRef.current || 1;
         const takeNum = recordingsQueue.length + 1;
-        const capturedTranscript = (liveTranscriptForTakeRef.current || '').trim();
+        let capturedTranscript = (liveTranscriptForTakeRef.current || '').trim();
+        const takeId = 'take_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
 
         const newTake = {
-          id: 'take_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+          id: takeId,
           name: `Take #${takeNum}`,
           blob: blob,
           url: url,
@@ -468,14 +509,55 @@ export default function LiveRecordStudio({
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           size: (blob.size / (1024 * 1024)).toFixed(2) + ' MB',
           transcript: capturedTranscript,
-          isUpload: false
+          isUpload: false,
+          isAutoTranscribing: !capturedTranscript || capturedTranscript.length < 5
         };
 
         setRecordingsQueue((prev) => [...prev, newTake]);
         if (capturedTranscript && onLiveTranscriptSync) {
           onLiveTranscriptSync(capturedTranscript);
         }
-        setStatusText(`✓ Take #${takeNum} saved automatically to queue!`);
+
+        // AUTO-PREVIEW: If client speech recognition did not capture words, auto-transcribe take with Gemini
+        if (!capturedTranscript || capturedTranscript.length < 5) {
+          setStatusText(`⚡ Auto-transcribing Take #${takeNum} with Gemini AI in Bengali...`);
+          try {
+            const formData = new FormData();
+            const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
+            formData.append('file', blob, `take_${takeNum}.${ext}`);
+            formData.append('language', languageRef.current || 'bn');
+            formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
+            formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-flash-lite');
+
+            const res = await axios.post('/api/transcribe_take', formData);
+            if (res.data && res.data.transcript && res.data.transcript.trim()) {
+              const aiTranscript = res.data.transcript.trim();
+              setLiveTranscript((prev) => prev ? `${prev}\n${aiTranscript}` : aiTranscript);
+              liveTranscriptForTakeRef.current = aiTranscript;
+              setEngineStatus('Gemini AI Take Transcriber (bn)');
+              if (onLiveTranscriptSync) onLiveTranscriptSync(aiTranscript);
+              if (onAppendToTranscript) onAppendToTranscript(aiTranscript);
+
+              setRecordingsQueue((prev) =>
+                prev.map((t) => (t.id === takeId ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
+              );
+              setStatusText(`✓ Take #${takeNum} auto-transcribed in authentic Bengali!`);
+            } else {
+              setRecordingsQueue((prev) =>
+                prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
+              );
+              setStatusText(`✓ Take #${takeNum} saved to queue`);
+            }
+          } catch (err) {
+            console.warn('Take auto-transcribe error:', err);
+            setRecordingsQueue((prev) =>
+              prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
+            );
+            setStatusText(`✓ Take #${takeNum} saved to queue`);
+          }
+        } else {
+          setStatusText(`✓ Take #${takeNum} saved automatically to queue!`);
+        }
       };
 
       mediaRecorder.start(250);
@@ -536,6 +618,10 @@ export default function LiveRecordStudio({
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
+    }
+    if (autoChunkTimerRef.current) {
+      clearInterval(autoChunkTimerRef.current);
+      autoChunkTimerRef.current = null;
     }
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
@@ -651,17 +737,34 @@ export default function LiveRecordStudio({
     setIsTranscribing(true);
     setStatusText(`⚡ Sending ${recordingsQueue.length} takes to AI Transcription...`);
 
+    const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
+    const resolvedSumProv = aiConfig?.summarizationProvider || 'gemini';
+
+    const sttKey = (
+      aiConfig?.transcriptionApiKey ||
+      getSavedKeyForProvider(resolvedSttProv) ||
+      (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
+      (aiConfig?.apiKey || '')
+    ).trim();
+
+    const sumKey = (
+      aiConfig?.summarizationApiKey ||
+      getSavedKeyForProvider(resolvedSumProv) ||
+      getSavedKeyForProvider('gemini') ||
+      (aiConfig?.apiKey || '')
+    ).trim();
+
     const formData = new FormData();
-    formData.append('provider', aiConfig?.provider || 'groq');
-    formData.append('api_key', (aiConfig?.apiKey || '').trim());
+    formData.append('provider', resolvedSumProv);
+    formData.append('api_key', sumKey || sttKey);
     formData.append('base_url', (aiConfig?.baseUrl || '').trim());
-    formData.append('model_name', aiConfig?.summarizationModel || aiConfig?.modelName || 'gemini-3.5-flash');
-    formData.append('transcription_provider', aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'groq' : 'gemini'));
-    formData.append('transcription_api_key', (aiConfig?.transcriptionApiKey || aiConfig?.apiKey || '').trim());
-    formData.append('transcription_model', aiConfig?.transcriptionModel || 'whisper-large-v3-turbo');
-    formData.append('summarization_provider', aiConfig?.summarizationProvider || 'gemini');
-    formData.append('summarization_api_key', (aiConfig?.summarizationApiKey || aiConfig?.apiKey || '').trim());
-    formData.append('summarization_model', aiConfig?.summarizationModel || 'gemini-3.5-flash');
+    formData.append('model_name', aiConfig?.summarizationModel || 'gemini-3.7-flash');
+    formData.append('transcription_provider', resolvedSttProv);
+    formData.append('transcription_api_key', sttKey);
+    formData.append('transcription_model', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-flash-lite' : 'whisper-large-v3-turbo'));
+    formData.append('summarization_provider', resolvedSumProv);
+    formData.append('summarization_api_key', sumKey);
+    formData.append('summarization_model', aiConfig?.summarizationModel || 'gemini-3.7-flash');
     formData.append('org_context', orgContext || '');
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
 
@@ -803,7 +906,7 @@ export default function LiveRecordStudio({
                 border: '1px solid rgba(2, 132, 199, 0.3)'
               }}
             >
-              STT: {aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.5-flash'}
+              STT: {aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.7-flash'}
             </span>
           </div>
 
@@ -995,14 +1098,14 @@ export default function LiveRecordStudio({
               <Cpu size={14} color="var(--accent-color)" /> ⚡ Summary LLM Model:
             </label>
             <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-              Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.summarizationModel || 'gemini-3.5-flash'}</strong>
+              Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.summarizationModel || 'gemini-3.7-flash'}</strong>
             </span>
           </div>
 
           {/* Quick Segmented Buttons for LLM */}
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
             {QUICK_LLM_MODELS.map((item) => {
-              const isSelected = (aiConfig?.summarizationModel || 'gemini-3.5-flash') === item.id;
+              const isSelected = (aiConfig?.summarizationModel || 'gemini-3.7-flash') === item.id;
               return (
                 <button
                   key={item.id}
@@ -1035,10 +1138,10 @@ export default function LiveRecordStudio({
             <select
               className="form-control"
               style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-              value={aiConfig?.summarizationModel || 'gemini-3.5-flash'}
+              value={aiConfig?.summarizationModel || 'gemini-3.7-flash'}
               onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
             >
-              <option value="gemini-3.5-flash">More LLM options...</option>
+              <option value="gemini-3.7-flash">More LLM options...</option>
               {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm || []).map((opt) => (
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
@@ -1548,34 +1651,46 @@ export default function LiveRecordStudio({
                   );
                 })}
               </div>
-            ) : (
+            ) : !interimText ? (
               <span style={{ color: 'rgba(148, 163, 184, 0.75)', fontStyle: 'italic', fontSize: '1.05rem' }}>
                 {isRecording
-                  ? '🎙️ Listening... Speak naturally into your microphone. Exactly what you say streams here word-by-word with timestamp and speaker attribution.'
-                  : 'Click Record above to start live speech recognition. Words stream here in real time by speaker and time.'}
+                  ? '🎙️ Listening... Speak naturally into your microphone. Words appear here live as you speak in authentic Bengali (বাংলা).'
+                  : 'Click Record above to start live speech recognition. Words stream here in real time as you speak.'}
               </span>
-            )}
+            ) : null}
 
             {interimText && (
-              <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: '#94a3b8', fontSize: '0.92rem', fontFamily: 'monospace' }}>
+              <div style={{ marginTop: liveTranscript ? '8px' : '0px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ color: '#38bdf8', fontSize: '0.98rem', fontFamily: 'monospace', fontWeight: 700 }}>
                   [{formatTime(currentTakeSecondsRef.current || 0)}]
                 </span>
-                <span style={{ color: '#a7f3d0', fontWeight: 700, fontSize: '0.98rem' }}>
+                <span style={{ color: '#34d399', fontWeight: 700, fontSize: '1.08rem' }}>
                   {activeSpeaker}:
                 </span>
                 <span
                   style={{
-                    color: '#34d399',
-                    background: 'rgba(16, 185, 129, 0.15)',
-                    padding: '2px 8px',
+                    color: '#f8fafc',
+                    background: 'rgba(56, 189, 248, 0.12)',
+                    padding: '3px 10px',
                     borderRadius: '6px',
-                    border: '1px solid rgba(16, 185, 129, 0.35)',
+                    border: '1px solid rgba(56, 189, 248, 0.35)',
                     fontWeight: 600,
-                    animation: 'pulse 1.4s infinite'
+                    fontSize: '1.25rem',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px'
                   }}
                 >
                   {interimText}
+                  <span
+                    style={{
+                      display: 'inline-block',
+                      width: '2px',
+                      height: '1.15rem',
+                      background: '#38bdf8',
+                      animation: 'pulse 0.8s infinite'
+                    }}
+                  />
                 </span>
               </div>
             )}
@@ -1590,10 +1705,10 @@ export default function LiveRecordStudio({
             </span>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span id="speech-engine-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                ⚡ Engine: <strong style={{ color: 'var(--text-primary)' }}>webkitSpeechRecognition</strong>
+                ⚡ Engine: <strong style={{ color: 'var(--text-primary)' }}>{engineStatus}</strong>
               </span>
               <span>
-                {liveTranscript.trim() ? liveTranscript.trim().split(/\s+/).length : 0} words captured
+                {((liveTranscript || '') + ' ' + (interimText || '')).trim() ? ((liveTranscript || '') + ' ' + (interimText || '')).trim().split(/\s+/).length : 0} words captured
               </span>
             </div>
           </div>
@@ -1744,21 +1859,40 @@ export default function LiveRecordStudio({
                         style={{ fontSize: '0.82rem', padding: '6px' }}
                       />
                     </div>
+                  ) : item.isAutoTranscribing ? (
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        fontSize: '0.82rem',
+                        color: '#38bdf8',
+                        background: 'rgba(56, 189, 248, 0.1)',
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        border: '1px solid rgba(56, 189, 248, 0.25)'
+                      }}
+                    >
+                      <Sparkles size={14} className="spin" />
+                      <span>⚡ Auto-transcribing take with Gemini AI in authentic Bengali script...</span>
+                    </div>
                   ) : (
                     item.transcript && (
                       <div
                         style={{
-                          fontSize: '0.8rem',
-                          color: 'var(--text-secondary)',
-                          background: 'rgba(0,0,0,0.2)',
-                          padding: '6px 10px',
+                          fontSize: '0.86rem',
+                          color: '#f8fafc',
+                          background: 'rgba(0,0,0,0.25)',
+                          padding: '8px 12px',
                           borderRadius: '6px',
                           whiteSpace: 'pre-wrap',
-                          maxHeight: '60px',
-                          overflowY: 'auto'
+                          maxHeight: '80px',
+                          overflowY: 'auto',
+                          fontFamily: "'Hind Siliguri', 'Inter', sans-serif",
+                          lineHeight: '1.6'
                         }}
                       >
-                        <strong style={{ color: 'var(--accent-color)' }}>Captured Speech: </strong>
+                        <strong style={{ color: 'var(--accent-color)', marginRight: '6px' }}>Captured Speech: </strong>
                         {item.transcript}
                       </div>
                     )
