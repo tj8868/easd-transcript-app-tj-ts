@@ -93,6 +93,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def app_startup_warmup():
+    try:
+        import local_whisper_engine
+        local_whisper_engine.warm_up_local_whisper_in_background()
+    except Exception as e:
+        print(f"[Whisper Startup Event] {e}")
+
 class DiscussionItem(BaseModel):
     sn: Optional[str] = "1"
     topic: Optional[str] = "Discussion Point"
@@ -792,8 +800,18 @@ async def transcribe_take_endpoint(
         
         from ai_providers import transcribe_audio_gemini, transcribe_audio_groq, detect_text_language
         
-        chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
-        if chosen_prov == "gemini" or key.startswith(("AIzaSy", "AQ.")):
+        chosen_prov = (provider or cfg.get("transcription_provider") or "local_whisper").lower()
+        if chosen_prov in ["local_whisper", "local", "whisper_local"]:
+            import local_whisper_engine
+            res = local_whisper_engine.transcribe_local_audio(
+                media_input=content,
+                language=language or "auto",
+                beam_size=2,
+                temperature=0.0
+            )
+            transcript = res.get("raw_transcript") or res.get("clean_text", "")
+            lang = res.get("detected_language", "bn")
+        elif chosen_prov == "gemini" or key.startswith(("AIzaSy", "AQ.")):
             res = transcribe_audio_gemini(
                 media_bytes=content,
                 api_key=key,
@@ -803,6 +821,10 @@ async def transcribe_take_endpoint(
             )
             transcript = res.get("text", "")
             lang = res.get("language", "bn")
+            if not transcript:
+                import local_whisper_engine
+                r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
+                transcript = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
         else:
             transcript = transcribe_audio_groq(
                 media_bytes=content,
@@ -812,6 +834,10 @@ async def transcribe_take_endpoint(
                 language=language or "bn"
             )
             lang = detect_text_language(transcript)
+            if not transcript:
+                import local_whisper_engine
+                r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
+                transcript = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
             
         return JSONResponse(content={
             "status": "success",

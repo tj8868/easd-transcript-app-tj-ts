@@ -2,6 +2,19 @@
 
 export const PROVIDERS = [
   {
+    id: 'local_whisper',
+    name: 'Local Whisper (Offline & Free)',
+    shortName: 'Local Whisper',
+    tag: '⚡ 100% Free / Auto-Detects Bangla & English',
+    badgeColor: '#10b981',
+    defaultSTT: 'whisper-small-int8',
+    defaultLLM: 'gemini-3.7-flash',
+    defaultBaseUrl: '',
+    placeholder: 'No API Key required (Offline Engine)',
+    keyPrefix: '',
+    docsUrl: ''
+  },
+  {
     id: 'gemini',
     name: 'Google Gemini',
     shortName: 'Gemini',
@@ -320,8 +333,9 @@ export const activateProvider = (providerId, setAiConfig) => {
 // --- QUICK SELECTION BUTTON CONFIGURATIONS ---
 
 export const QUICK_STT_MODELS = [
-  { id: 'whisper-large-v3-turbo', label: 'Groq Whisper Turbo', shortLabel: 'Groq Whisper Turbo', provider: 'groq', icon: '🎙️' },
+  { id: 'whisper-small-int8', label: '⚡ Local Whisper Small (Offline & Free)', shortLabel: 'Local Whisper', provider: 'local_whisper', icon: '🎙️' },
   { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite', shortLabel: 'Gemini 3.5 STT', provider: 'gemini', icon: '🎙️' },
+  { id: 'whisper-large-v3-turbo', label: 'Groq Whisper Turbo', shortLabel: 'Groq Whisper Turbo', provider: 'groq', icon: '🎙️' },
   { id: 'whisper-large-v3', label: 'Whisper Large v3', shortLabel: 'Whisper Large v3', provider: 'groq', icon: '🎙️' },
   { id: 'whisper-1', label: 'OpenAI Whisper', shortLabel: 'OpenAI Whisper', provider: 'openai', icon: '🎙️' }
 ];
