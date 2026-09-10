@@ -331,8 +331,6 @@ def transcribe_local_audio(
             initial_prompt=init_prompt,
             language=lang_code,
             condition_on_previous_text=False,
-            repetition_penalty=1.15,
-            no_repeat_ngram_size=3,
             vad_filter=False  # 100% offline, zero network requests
         )
 

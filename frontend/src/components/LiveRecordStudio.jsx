@@ -83,8 +83,8 @@ export default function LiveRecordStudio({
   // Recording & Live State
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
-  const [language, setLanguage] = useState('bn'); // Default to Bengali 'bn' ('bn-BD')
-  const [engineStatus, setEngineStatus] = useState('webkitSpeechRecognition (bn-BD)');
+  const [language, setLanguage] = useState('auto'); // Default to 'auto' for any language (Bengali, English, Hindi, Arabic, etc.)
+  const [engineStatus, setEngineStatus] = useState('webkitSpeechRecognition (Auto)');
   const [activeSpeaker, setActiveSpeaker] = useState('Speaker 1');
   const activeSpeakerRef = useRef('Speaker 1');
   const [liveTranscript, setLiveTranscript] = useState('');
@@ -118,7 +118,7 @@ export default function LiveRecordStudio({
   const isRecordingRef = useRef(false);
   const isPausedRef = useRef(false);
   const isStartingRecognitionRef = useRef(false);
-  const languageRef = useRef('bn');
+  const languageRef = useRef('auto');
   const restartTimerRef = useRef(null);
   const lastSpeechTimestampRef = useRef(Date.now());
   const fileInputRef = useRef(null);
@@ -353,7 +353,14 @@ export default function LiveRecordStudio({
     }
     const recognition = new SpeechRecognition();
     const activeLang = langOverride || languageRef.current || language;
-    recognition.lang = activeLang === 'en' ? 'en-US' : 'bn-BD'; // Default to 'bn-BD'
+    if (activeLang === 'bn') {
+      recognition.lang = 'bn-BD';
+    } else if (activeLang === 'en') {
+      recognition.lang = 'en-US';
+    } else {
+      // Auto / Multilingual: use user's browser locale or fallback to English/Bengali bilingual detection
+      recognition.lang = navigator.language || 'en-US';
+    }
     recognition.continuous = true;
     recognition.interimResults = true; // Enables live typing as you speak
     recognition.maxAlternatives = 1;
@@ -602,20 +609,28 @@ export default function LiveRecordStudio({
         setStatusText(`⚡ Auto-transcribing Take #${takeNum} (100% Raw Speech • Diarization • Timestamps)...`);
         try {
           const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
-          const sttKey = (
+          let sttKey = (
             aiConfig?.transcriptionApiKey ||
             getSavedKeyForProvider(resolvedSttProv) ||
             (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
             (aiConfig?.apiKey || '')
           ).trim();
 
+          // Ensure HuggingFace token never bleeds into Gemini calls
+          if (resolvedSttProv === 'gemini' && sttKey.startsWith('hf_')) {
+            sttKey = getSavedKeyForProvider('gemini') || '';
+          }
+
+          const defaultSttModel = resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : (resolvedSttProv === 'whisperx' ? 'pyannote/speaker-diarization-community-1' : 'whisper-large-v3-turbo');
+          const chosenSttModel = aiConfig?.transcriptionModel || defaultSttModel;
+
           const formData = new FormData();
           const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
           formData.append('file', blob, `take_${takeNum}.${ext}`);
-          formData.append('language', languageRef.current || 'bn');
+          formData.append('language', languageRef.current || 'auto');
           formData.append('provider', resolvedSttProv);
           formData.append('api_key', sttKey);
-          formData.append('model_name', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.6-flash' : 'whisper-large-v3-turbo'));
+          formData.append('model_name', chosenSttModel);
 
           const res = await axios.post('/api/transcribe_take', formData);
           if (res.data && res.data.transcript && res.data.transcript.trim()) {
@@ -1442,9 +1457,10 @@ export default function LiveRecordStudio({
                 <Globe size={13} /> Spoken:
               </span>
               {[
-                { id: 'auto', label: 'Auto' },
+                { id: 'auto', label: '🌐 Auto (Any Language)' },
                 { id: 'bn', label: '🇧🇩 বাংলা' },
-                { id: 'en', label: '🇬🇧 English' }
+                { id: 'en', label: '🇬🇧 English' },
+                { id: 'multilingual', label: '🌍 Multilingual' }
               ].map((pill) => {
                 const isSelected = language === pill.id;
                 return (

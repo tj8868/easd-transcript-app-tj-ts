@@ -1435,79 +1435,137 @@ def transcribe_audio_groq(
 def transcribe_audio_gemini(
     media_bytes: bytes,
     api_key: str,
-    model_name: str = "gemini-2.5-flash",
+    model_name: str = "gemini-3.5-transcribe",
     mime_type: str = "audio/mp3",
     language_hint: str = "auto"
 ) -> Dict[str, Any]:
     """
     Transcribes audio using Google Gemini API into a 100% RAW, VERBATIM TRANSCRIPT
-    with precise SPEAKER DIARIZATION and TIMESTAMPS.
+    with precise SPEAKER DIARIZATION and TIMESTAMPS across any spoken language.
+    Primary engine: gemini-3.5-transcribe (dedicated speech-to-text model).
+    Fallback engine: gemini-3.6-flash / gemini-3.7-flash.
     """
-    candidate_models = []
-    if model_name and not any(bad in model_name for bad in ["3.5-transcribe", "3.5-live", "turbo"]):
-        candidate_models.append(model_name)
-    for m in ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro"]:
-        if m not in candidate_models:
-            candidate_models.append(m)
+    if not media_bytes or len(media_bytes) < 32:
+        return {"text": "", "language": "bn"}
 
-    diarization_prompt = (
+    # Clean and resolve API key - never allow Hugging Face or Groq keys to bleed into Gemini
+    clean_key = (api_key or "").strip()
+    if not clean_key or clean_key.startswith("gsk_") or clean_key.startswith("hf_"):
+        disk_cfg = load_api_settings_from_disk()
+        clean_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+
+    if not clean_key:
+        print("[Gemini STT Warning] No valid Gemini API key found on disk or request.")
+        return {"text": "", "language": "bn"}
+
+    client = genai.Client(api_key=clean_key)
+    audio_mime = mime_type or "audio/mp3"
+
+    # Strategy 1: Dedicated gemini-3.5-transcribe with native AudioTranscriptionConfig
+    target_model = (model_name or "gemini-3.5-transcribe").strip()
+    if "3.5-transcribe" in target_model or target_model == "gemini-3.5-transcribe":
+        for attempt in range(2):
+            try:
+                cfg = types.GenerateContentConfig(
+                    audio_transcription_config=types.AudioTranscriptionConfig(
+                        diarization=True,
+                        word_timestamp=True
+                    )
+                )
+                resp = client.models.generate_content(
+                    model="gemini-3.5-transcribe",
+                    contents=[
+                        types.Part.from_bytes(data=media_bytes, mime_type=audio_mime)
+                    ],
+                    config=cfg
+                )
+                lines = []
+                if resp.candidates and len(resp.candidates) > 0 and resp.candidates[0].content:
+                    for p in resp.candidates[0].content.parts:
+                        if hasattr(p, "audio_transcription") and p.audio_transcription:
+                            at = p.audio_transcription
+                            txt = (at.text or "").strip()
+                            if not txt:
+                                continue
+                            spk = at.speaker_label or "spk:0"
+                            spk_num = 1
+                            if spk.startswith("spk:"):
+                                try:
+                                    spk_num = int(spk.split(":")[1]) + 1
+                                except Exception:
+                                    pass
+                            ts_str = "[00:00]"
+                            if at.words and len(at.words) > 0 and hasattr(at.words[0], "start_offset"):
+                                try:
+                                    sec_val = float(str(at.words[0].start_offset).rstrip("s"))
+                                    m = int(sec_val // 60)
+                                    s = int(sec_val % 60)
+                                    ts_str = f"[{m:02d}:{s:02d}]"
+                                except Exception:
+                                    pass
+                            lines.append(f"{ts_str} Speaker {spk_num}: {txt}")
+                        elif hasattr(p, "text") and p.text and p.text.strip():
+                            t_txt = p.text.strip()
+                            if t_txt.startswith("["):
+                                lines.append(t_txt)
+                            else:
+                                lines.append(f"[00:00] Speaker 1: {t_txt}")
+
+                raw_t = "\n".join(lines).strip()
+                if raw_t:
+                    detected_lang = detect_text_language(raw_t)
+                    return {"text": raw_t, "language": detected_lang}
+            except Exception as e_transcribe:
+                print(f"[Gemini 3.5 Transcribe attempt {attempt+1} notice] {e_transcribe}")
+                time.sleep(1)
+
+    # Strategy 2: Multimodal Gemini STT with general prompt across ANY language
+    multilingual_diarization_prompt = (
         "You are an expert audio transcriptionist and acoustic speaker diarization engine for Eminence Associates for Social Development (EASD).\n"
         "Generate a 100% RAW, VERBATIM TRANSCRIPT with precise SPEAKER DIARIZATION and START TIMESTAMPS.\n\n"
         "STRICT MANDATORY RULES:\n"
         "1. 100% RAW & VERBATIM: Transcribe every spoken word exactly as spoken. Do NOT summarize, sanitize, skip, or edit any speech.\n"
-        "2. AUTHENTIC SCRIPT: If spoken in Bengali (Bangla), write strictly in authentic Bengali script (বাংলা লিপি). If English is spoken, write in English. Never write Bengali in Romanized phonetic English.\n"
+        "2. AUTHENTIC NATIVE SCRIPT FOR ANY LANGUAGE: Transcribe any spoken language accurately in its authentic native script (e.g. Bengali in বাংলা লিপি, English in English, Hindi in Devanagari, Arabic in Arabic script, Urdu, Spanish, French, German, etc.). Never translate, summarize, or Romanize speech phonetically — write each spoken sentence in the authentic writing system of the language being spoken.\n"
         "3. SPEAKER DIARIZATION: Distinguish different speakers accurately by vocal pitch, tone, and turn-taking. Label distinct speakers as: 'Speaker 1', 'Speaker 2', 'Speaker 3', etc. (or use actual speaker names if clearly introduced).\n"
         "4. TIMESTAMPS: Every speaker turn MUST begin with a start timestamp in [MM:SS] format.\n"
         "5. EXACT FORMAT FOR EVERY TURN: [MM:SS] Speaker X: <exact spoken words>\n\n"
         "Return ONLY the raw timestamped speaker transcript without any extra commentary, headers, or markdown fencing."
     )
-        
-    if not api_key or api_key.startswith("gsk_"):
-        disk_keys = get_default_api_key_from_disk()
-        api_key = disk_keys.get("api_key", "")
-        
-    client = genai.Client(api_key=api_key)
+
+    fallback_models = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite"]
     encoded_file = base64.b64encode(media_bytes).decode("utf-8")
-    audio_mime = mime_type or "audio/mp3"
-    
-    for model in candidate_models[:2]:
-        # 1. Try modern client.models.generate_content
+
+    for model in fallback_models:
         try:
             resp = client.models.generate_content(
                 model=model,
                 contents=[
                     types.Part.from_bytes(data=media_bytes, mime_type=audio_mime),
-                    diarization_prompt
+                    multilingual_diarization_prompt
                 ]
             )
             text = (getattr(resp, "text", None) or "").strip()
-            lang = detect_text_language(text) if text else "bn"
-            return {"text": text, "language": lang}
+            if text:
+                lang = detect_text_language(text)
+                return {"text": text, "language": lang}
         except Exception as e1:
-            print(f"[Gemini STT '{model}' error] generate_content: {e1}")
-            # 2. Fallback to client.interactions.create
+            print(f"[Gemini STT fallback '{model}' error] generate_content: {e1}")
             try:
                 call_kwargs = {
                     "model": model,
                     "input": [
-                        {
-                            "type": "text",
-                            "text": diarization_prompt
-                        },
-                        {
-                            "type": "audio",
-                            "data": encoded_file,
-                            "mime_type": audio_mime
-                        }
+                        {"type": "text", "text": multilingual_diarization_prompt},
+                        {"type": "audio", "data": encoded_file, "mime_type": audio_mime}
                     ]
                 }
                 interaction = client.interactions.create(**call_kwargs)
                 text = (getattr(interaction, "output_text", None) or "").strip()
-                lang = detect_text_language(text) if text else "bn"
-                return {"text": text, "language": lang}
+                if text:
+                    lang = detect_text_language(text)
+                    return {"text": text, "language": lang}
             except Exception as e2:
-                print(f"[Gemini STT '{model}' error] interactions: {e2}")
-                
+                print(f"[Gemini STT fallback '{model}' error] interactions: {e2}")
+
     return {"text": "", "language": "bn"}
 
 def live_transcribe_audio_chunk(
@@ -1917,27 +1975,27 @@ def process_ai_request(
     provider = (provider or "").lower()
 
     # 1. Resolve Transcription Parameters
-    stt_prov = (transcription_provider or (provider if provider in ["groq", "openai", "gemini", "custom"] else "") or disk_cfg.get("transcription_provider") or "gemini").lower()
+    stt_prov = (transcription_provider or (provider if provider in ["groq", "openai", "gemini", "custom", "local_whisper", "whisperx"] else "") or disk_cfg.get("transcription_provider") or "gemini").lower()
     stt_key = (transcription_api_key or (api_key if provider == stt_prov else "") or disk_cfg.get(f"{stt_prov}_api_key") or disk_cfg.get("transcription_api_key") or "").strip()
     
-    # Decouple STT key: Never let a Groq key bleed into Gemini STT
+    # Decouple STT key: Never let a Groq or Hugging Face key bleed into Gemini STT
     if stt_prov == "gemini":
-        if not stt_key or stt_key.startswith("gsk_"):
+        if not stt_key or stt_key.startswith("gsk_") or stt_key.startswith("hf_"):
             stt_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
     elif stt_prov == "groq":
         if not stt_key or not stt_key.startswith("gsk_"):
             stt_key = (disk_cfg.get("groq_api_key") or "").strip()
 
-    stt_model = transcription_model or ("gemini-3.6-flash" if stt_prov == "gemini" else "whisper-large-v3-turbo")
-    if stt_prov == "gemini" and any(old in stt_model for old in ["1.5", "2.0", "3.5-transcribe"]):
-        stt_model = "gemini-3.6-flash"
+    stt_model = transcription_model or ("gemini-3.5-transcribe" if stt_prov == "gemini" else "whisper-large-v3-turbo")
+    if stt_prov == "gemini" and any(old in stt_model for old in ["1.5", "2.0", "2.5"]):
+        stt_model = "gemini-3.5-transcribe"
 
     # 2. Resolve Summarization Parameters
     llm_prov = (summarization_provider or (provider if provider in ["gemini", "openai", "anthropic", "custom", "groq", "local"] else "") or disk_cfg.get("summarization_provider") or "gemini").lower()
     llm_key = (summarization_api_key or (api_key if provider == llm_prov else "") or disk_cfg.get(f"{llm_prov}_api_key") or disk_cfg.get("summarization_api_key") or disk_cfg.get("gemini_api_key") or "").strip()
     
-    # Decouple: never let a Groq key bleed into Gemini
-    if llm_prov == "gemini" and llm_key.startswith("gsk_"):
+    # Decouple: never let a Groq or HF key bleed into Gemini LLM
+    if llm_prov == "gemini" and (llm_key.startswith("gsk_") or llm_key.startswith("hf_") or not llm_key):
         llm_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
 
     llm_model = summarization_model or model_name or ("gemini-3.7-flash" if llm_prov == "gemini" else "openai/gpt-oss-120b")
@@ -2011,21 +2069,21 @@ def process_ai_request(
                 except Exception as e:
                     print(f"[WhisperX STT Error] {e}")
             elif stt_prov == "gemini" or stt_key.startswith(("AIzaSy", "AQ.")):
-                res = transcribe_audio_gemini(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language_hint="bn")
+                res = transcribe_audio_gemini(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language_hint="auto")
                 chunk_txt = res.get("text", "")
                 if not chunk_txt:
                     try:
                         import local_whisper_engine
-                        r_loc = local_whisper_engine.transcribe_local_audio(chunk, language="bn")
+                        r_loc = local_whisper_engine.transcribe_local_audio(chunk, language="auto")
                         chunk_txt = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
                     except Exception:
                         pass
             elif stt_prov == "groq" or stt_key.startswith("gsk_"):
-                chunk_txt = transcribe_audio_groq(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language="bn")
+                chunk_txt = transcribe_audio_groq(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language="auto")
                 if not chunk_txt:
                     try:
                         import local_whisper_engine
-                        r_loc = local_whisper_engine.transcribe_local_audio(chunk, language="bn")
+                        r_loc = local_whisper_engine.transcribe_local_audio(chunk, language="auto")
                         chunk_txt = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
                     except Exception:
                         pass

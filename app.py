@@ -778,8 +778,8 @@ async def live_transcribe_chunk_endpoint(
     file: Optional[UploadFile] = File(None),
     provider: str = Form("gemini"),
     api_key: str = Form(""),
-    model_name: str = Form("gemini-3.5-flash-lite"),
-    language: str = Form("bn")
+    model_name: str = Form("gemini-3.5-transcribe"),
+    language: str = Form("auto")
 ):
     """
     HTTP streaming endpoint for live audio slices during recording.
@@ -791,18 +791,29 @@ async def live_transcribe_chunk_endpoint(
             raise HTTPException(status_code=400, detail="No audio chunk provided")
         content = await uploaded.read()
         if len(content) < 32:
-            return JSONResponse(content={"status": "success", "text": "", "language": "bn"})
+            return JSONResponse(content={"status": "success", "text": "", "language": "auto"})
             
         mime = uploaded.content_type or "audio/webm"
+        cfg = load_api_settings_from_disk()
+        chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
+        
+        # Clean API key resolution
+        clean_key = api_key.strip() if api_key else ""
+        if chosen_prov == "gemini":
+            if not clean_key or clean_key.startswith(("hf_", "gsk_")):
+                clean_key = cfg.get("gemini_api_key") or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key", "")
+                if clean_key.startswith(("hf_", "gsk_")):
+                    clean_key = get_default_api_key_from_disk().get("api_key", "")
+
         res = live_transcribe_audio_chunk(
             media_bytes=content,
-            api_key=api_key,
-            provider=provider,
-            model_name=model_name or "gemini-3.5-flash-lite",
+            api_key=clean_key,
+            provider=chosen_prov,
+            model_name=model_name or "gemini-3.5-transcribe",
             mime_type=mime,
-            language=language or "bn"
+            language=language or "auto"
         )
-        return JSONResponse(content={"status": "success", "text": res.get("text", ""), "language": res.get("language", "bn")})
+        return JSONResponse(content={"status": "success", "text": res.get("text", ""), "language": res.get("language", "auto")})
     except Exception as e:
         return JSONResponse(content={"status": "error", "text": "", "detail": str(e)}, status_code=200)
 
@@ -811,17 +822,17 @@ async def transcribe_take_endpoint(
     file: UploadFile = File(...),
     provider: str = Form("gemini"),
     api_key: str = Form(""),
-    model_name: str = Form("gemini-3.5-flash-lite"),
-    language: str = Form("bn")
+    model_name: str = Form("gemini-3.5-transcribe"),
+    language: str = Form("auto")
 ):
     """
     Instant auto-transcription for a completed recorded take.
-    Ensures that when a user finishes recording, an authentic Bengali transcript is generated immediately.
+    Ensures that when a user finishes recording, an authentic transcript in any spoken language is generated immediately.
     """
     try:
         content = await file.read()
         if len(content) < 32:
-            return JSONResponse(content={"status": "success", "transcript": "", "language": "bn"})
+            return JSONResponse(content={"status": "success", "transcript": "", "language": "auto"})
             
         mime = file.content_type or "audio/webm"
         if not mime or mime == "application/octet-stream":
@@ -839,48 +850,56 @@ async def transcribe_take_endpoint(
 
         def _do_transcribe():
             chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
+            clean_key = api_key.strip() if api_key else ""
+
             if chosen_prov == "gemini":
-                key = api_key if (api_key and not api_key.startswith("gsk_")) else (cfg.get("gemini_api_key") or (get_default_api_key_from_disk().get("api_key") if not get_default_api_key_from_disk().get("api_key", "").startswith("gsk_") else ""))
+                if not clean_key or clean_key.startswith(("hf_", "gsk_")):
+                    clean_key = cfg.get("gemini_api_key") or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key", "")
+                    if clean_key.startswith(("hf_", "gsk_")):
+                        clean_key = get_default_api_key_from_disk().get("api_key", "")
+                key = clean_key
             elif chosen_prov == "groq":
-                key = api_key if (api_key and api_key.startswith("gsk_")) else (cfg.get("groq_api_key") or cfg.get("transcription_api_key") or "")
+                key = clean_key if (clean_key and clean_key.startswith("gsk_")) else (cfg.get("groq_api_key") or "")
             else:
-                key = api_key or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
+                key = clean_key or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
+
+            target_lang = language if language and language not in ["auto", "detect", ""] else "auto"
 
             if chosen_prov in ["local_whisper", "local", "whisper_local"]:
                 import local_whisper_engine
                 res = local_whisper_engine.transcribe_local_audio(
                     media_input=content,
-                    language=language or "auto",
+                    language=None if target_lang == "auto" else target_lang,
                     beam_size=2,
                     temperature=0.0
                 )
-                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", "bn")
+                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", target_lang)
             elif chosen_prov in ["whisperx", "huggingface", "hf"]:
                 import whisperx_diarization_engine
-                hf_tok = api_key or cfg.get("hf_token") or os.getenv("HF_TOKEN") or ""
+                hf_tok = key or cfg.get("hf_token") or os.getenv("HF_TOKEN") or ""
                 diar_model = cfg.get("whisperx_model") or "pyannote/speaker-diarization-community-1"
                 res = whisperx_diarization_engine.transcribe_with_diarization(
                     audio_bytes=content,
                     hf_token=hf_tok,
-                    whisper_model_name="small",
+                    whisper_model_name="base",
                     diarize_model_name=diar_model,
-                    language=language or "bn"
+                    language="bn" if target_lang in ["bn", "auto"] else target_lang
                 )
-                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("language", "bn")
+                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("language", target_lang)
             elif chosen_prov == "gemini" or (key and key.startswith(("AIzaSy", "AQ."))):
-                target_gem_stt = model_name if model_name and not any(bad in model_name for bad in ["3.5-transcribe", "3.5-live", "turbo", "2.0-flash"]) else "gemini-3.6-flash"
+                target_gem_stt = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
                 res = transcribe_audio_gemini(
                     media_bytes=content,
                     api_key=key,
                     model_name=target_gem_stt,
                     mime_type=mime,
-                    language_hint=language or "bn"
+                    language_hint=target_lang
                 )
                 t = res.get("text", "")
-                l = res.get("language", "bn")
+                l = res.get("language", target_lang)
                 if not t:
                     import local_whisper_engine
-                    r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
+                    r_loc = local_whisper_engine.transcribe_local_audio(content, language=None if target_lang == "auto" else target_lang)
                     t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
                 return t, l
             else:
@@ -889,12 +908,12 @@ async def transcribe_take_endpoint(
                     api_key=key,
                     model_name=model_name or "whisper-large-v3-turbo",
                     mime_type=mime,
-                    language=language or "bn"
+                    language=target_lang if target_lang != "auto" else "bn"
                 )
                 l = detect_text_language(t)
                 if not t:
                     import local_whisper_engine
-                    r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
+                    r_loc = local_whisper_engine.transcribe_local_audio(content, language=None if target_lang == "auto" else target_lang)
                     t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
                 return t, l
 

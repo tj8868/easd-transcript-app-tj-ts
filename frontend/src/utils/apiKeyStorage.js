@@ -20,7 +20,7 @@ export const PROVIDERS = [
     shortName: 'Gemini',
     tag: '⭐ Recommended (Default)',
     badgeColor: '#0284c7',
-    defaultSTT: 'gemini-3.6-flash',
+    defaultSTT: 'gemini-3.5-transcribe',
     defaultLLM: 'gemini-3.7-flash',
     defaultBaseUrl: '',
     placeholder: 'Paste Google Gemini key (e.g. AIzaSy...)',
@@ -347,11 +347,11 @@ export const activateProvider = (providerId, setAiConfig) => {
 // --- QUICK SELECTION BUTTON CONFIGURATIONS ---
 
 export const QUICK_STT_MODELS = [
+  { id: 'gemini-3.5-transcribe', label: 'Gemini 3.5 Transcribe STT (⭐ Recommended)', shortLabel: 'Gemini 3.5 Transcribe', provider: 'gemini', icon: '🎙️' },
   { id: 'whisper-small-int8', label: '⚡ Local Whisper Small (Offline & Free)', shortLabel: 'Local Whisper', provider: 'local_whisper', icon: '🎙️' },
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash STT (⭐ Recommended)', shortLabel: 'Gemini 3.6 STT', provider: 'gemini', icon: '🎙️' },
+  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash STT', shortLabel: 'Gemini 3.6 STT', provider: 'gemini', icon: '🎙️' },
   { id: 'pyannote/speaker-diarization-community-1', label: 'WhisperX Diarization (Hugging Face)', shortLabel: 'WhisperX Diarize', provider: 'whisperx', icon: '👥' },
   { id: 'whisper-large-v3-turbo', label: 'Groq Whisper Turbo', shortLabel: 'Groq Whisper Turbo', provider: 'groq', icon: '🎙️' },
-  { id: 'whisper-large-v3', label: 'Whisper Large v3', shortLabel: 'Whisper Large v3', provider: 'groq', icon: '🎙️' },
   { id: 'whisper-1', label: 'OpenAI Whisper', shortLabel: 'OpenAI Whisper', provider: 'openai', icon: '🎙️' }
 ];
 
