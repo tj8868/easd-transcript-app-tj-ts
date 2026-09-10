@@ -6,13 +6,15 @@ export default function Transcripts({
   setTranscript,
   onSummarize,
   isSummarizing = false,
+  isAutoTranscribing = false,
   // Backward-compatibility props if needed
   banglaTranscript,
   setBanglaTranscript,
   englishTranscript,
   setEnglishTranscript,
   isRecording = false,
-  activeTakeCount = 0
+  activeTakeCount = 0,
+  interimText = ''
 }) {
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
@@ -144,12 +146,12 @@ export default function Transcripts({
         }}
       >
         <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
-        <span style={{ color: 'var(--text-secondary)' }}>1. Record / Listen & Determine Language</span>
+        <span style={{ color: 'var(--text-secondary)' }}>1. Record / Upload</span>
         <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: 'var(--text-secondary)' }}>2. Transcribe Audio</span>
+        <span style={{ color: 'var(--text-secondary)' }}>2. STT Engine</span>
         <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: '#34d399', fontWeight: 700, background: 'rgba(16, 185, 129, 0.15)', padding: '1px 7px', borderRadius: '4px' }}>
-          3. Raw Transcription (Active)
+        <span style={{ color: '#34d399', fontWeight: 800, background: 'rgba(16, 185, 129, 0.2)', padding: '2px 8px', borderRadius: '5px', border: '1px solid rgba(16, 185, 129, 0.4)' }}>
+          3. Initial Raw Transcript (Auto-Activated • Diarized • Timestamps)
         </span>
         <span style={{ opacity: 0.5 }}>→</span>
         <span style={{ color: '#facc15', fontWeight: 600 }}>4. Template Fillup via Skills</span>
@@ -160,10 +162,79 @@ export default function Transcripts({
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', gap: '8px', alignItems: 'center', margin: 0 }}>
-              <FileText size={20} color="var(--accent-color)" /> Raw Meeting Transcript (By Speaker & Time)
+              <FileText size={20} color="var(--accent-color)" /> Initial Raw Transcript (100% Verbatim • Speaker Diarization • Timestamps)
             </h2>
 
-            {isRecording ? (
+            {/* Quality & Verbatim Verification Badges */}
+            <span
+              style={{
+                fontSize: '0.72rem',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                background: 'rgba(16, 185, 129, 0.15)',
+                color: '#34d399',
+                border: '1px solid rgba(16, 185, 129, 0.35)',
+                fontWeight: 700
+              }}
+            >
+              ✓ 100% Raw Speech
+            </span>
+
+            <span
+              style={{
+                fontSize: '0.72rem',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                background: 'rgba(56, 189, 248, 0.15)',
+                color: '#38bdf8',
+                border: '1px solid rgba(56, 189, 248, 0.35)',
+                fontWeight: 700
+              }}
+            >
+              👥 Speaker Diarization Active
+            </span>
+
+            <span
+              style={{
+                fontSize: '0.72rem',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                background: 'rgba(168, 85, 247, 0.15)',
+                color: '#c084fc',
+                border: '1px solid rgba(168, 85, 247, 0.35)',
+                fontWeight: 700
+              }}
+            >
+              ⏱️ Timestamps [MM:SS]
+            </span>
+
+            {isAutoTranscribing ? (
+              <span
+                style={{
+                  fontSize: '0.75rem',
+                  padding: '3px 10px',
+                  borderRadius: '20px',
+                  background: 'rgba(56, 189, 248, 0.2)',
+                  color: '#38bdf8',
+                  border: '1.5px solid rgba(56, 189, 248, 0.5)',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontWeight: 700
+                }}
+              >
+                <span
+                  style={{
+                    width: '8px',
+                    height: '8px',
+                    borderRadius: '50%',
+                    backgroundColor: '#38bdf8',
+                    animation: 'pulse 1s infinite'
+                  }}
+                />
+                ⚡ Auto-Transcribing Diarized Speech...
+              </span>
+            ) : isRecording ? (
               <span
                 style={{
                   fontSize: '0.75rem',
@@ -207,7 +278,7 @@ export default function Transcripts({
           </div>
 
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '4px', marginBottom: 0 }}>
-            Verbatim speech conversation stream. AI synthesized minutes, agendas & decisions compile separately below.
+            Verbatim spoken conversation stream with speaker diarization & timestamps. 100% raw speech — never summarized or synthesized.
           </p>
         </div>
 
@@ -322,6 +393,22 @@ export default function Transcripts({
         </button>
         <button
           type="button"
+          onClick={() => handleInsertTag('[00:00] Speaker 3:')}
+          style={{
+            padding: '3px 9px',
+            borderRadius: '12px',
+            fontSize: '0.72rem',
+            fontWeight: 600,
+            background: 'rgba(251, 191, 36, 0.15)',
+            border: '1px solid rgba(251, 191, 36, 0.3)',
+            color: '#fbbf24',
+            cursor: 'pointer'
+          }}
+        >
+          + Speaker 3
+        </button>
+        <button
+          type="button"
           onClick={() => {
             const now = new Date();
             const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
@@ -364,6 +451,94 @@ export default function Transcripts({
         </button>
       </div>
 
+      {/* Auto-Activation Active Indicator Banner */}
+      {isAutoTranscribing && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '12px 16px',
+            background: 'linear-gradient(135deg, rgba(2, 132, 199, 0.18) 0%, rgba(14, 165, 233, 0.08) 100%)',
+            border: '1.5px solid rgba(56, 189, 248, 0.5)',
+            borderRadius: '10px',
+            marginBottom: '12px',
+            color: '#38bdf8',
+            fontSize: '0.86rem'
+          }}
+        >
+          <span
+            style={{
+              width: '18px',
+              height: '18px',
+              borderRadius: '50%',
+              border: '2.5px solid #38bdf8',
+              borderTopColor: 'transparent',
+              display: 'inline-block',
+              animation: 'spin 0.9s linear infinite',
+              flexShrink: 0
+            }}
+          />
+          <div>
+            <strong style={{ color: '#ffffff', display: 'block', marginBottom: '2px' }}>
+              ⚡ Initial Transcript Auto-Activated:
+            </strong>
+            Transcribing audio stream into 100% raw verbatim speech with speaker diarization (Speaker 1, Speaker 2...) and start timestamps ([MM:SS])...
+          </div>
+        </div>
+      )}
+
+      {/* Real-time speech preview banner while speaker is actively talking */}
+      {isRecording && (
+        <div
+          id="live-interim-preview-bar"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            padding: '12px 16px',
+            background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.16) 0%, rgba(6, 78, 59, 0.28) 100%)',
+            border: '1.5px solid rgba(16, 185, 129, 0.55)',
+            borderRadius: '10px',
+            marginBottom: '12px',
+            color: '#34d399',
+            fontSize: '0.92rem',
+            boxShadow: '0 0 20px rgba(16, 185, 129, 0.15)'
+          }}
+        >
+          <Radio size={16} color="#10b981" style={{ animation: 'pulse 1s infinite', flexShrink: 0 }} />
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <span style={{ fontWeight: 800, color: '#ffffff', marginRight: '8px' }}>
+              🎙️ Live Audio Instant Preview:
+            </span>
+            <span
+              style={{
+                color: interimText ? '#f8fafc' : 'rgba(255, 255, 255, 0.7)',
+                fontWeight: interimText ? 600 : 400,
+                fontSize: '1rem',
+                fontFamily: "'Hind Siliguri', 'Inter', sans-serif"
+              }}
+            >
+              {interimText || 'Listening... Words preview here in real time as you speak and store immediately into the transcription box below.'}
+            </span>
+          </div>
+          <span
+            style={{
+              fontSize: '0.72rem',
+              fontWeight: 700,
+              padding: '2px 8px',
+              borderRadius: '6px',
+              background: 'rgba(16, 185, 129, 0.25)',
+              border: '1px solid rgba(16, 185, 129, 0.4)',
+              color: '#34d399',
+              flexShrink: 0
+            }}
+          >
+            AUTO-SYNCING
+          </span>
+        </div>
+      )}
+
       {/* Single Unified Raw Transcript Area */}
       <div className="form-group" style={{ marginBottom: 0 }}>
         <textarea
@@ -377,15 +552,21 @@ export default function Transcripts({
             padding: '16px',
             borderRadius: '12px',
             background: 'var(--bg-secondary)',
-            border: isRecording ? '1.5px solid rgba(16, 185, 129, 0.45)' : '1px solid var(--border-color)',
+            border: isAutoTranscribing
+              ? '1.5px solid #38bdf8'
+              : isRecording
+              ? '1.5px solid rgba(16, 185, 129, 0.45)'
+              : '1px solid var(--border-color)',
             color: 'var(--text-primary)',
             transition: 'all 0.2s ease',
             resize: 'vertical'
           }}
           placeholder={
-            isRecording
+            isAutoTranscribing
+              ? '⚡ Auto-activating initial transcript: Processing speech into 100% raw verbatim text with speaker diarization & timestamps...'
+              : isRecording
               ? '🎙️ Listening... Real-time speech streams here in [MM:SS] Speaker X: <words> format...'
-              : '[00:00] Speaker 1: Speak into microphone or paste raw spoken conversation here by speaker and time...'
+              : '[00:00] Speaker 1: Speak into microphone or upload audio to auto-generate 100% raw verbatim transcript with speaker diarization & timestamps...'
           }
           value={currentText}
           onChange={(e) => handleTextChange(e.target.value)}

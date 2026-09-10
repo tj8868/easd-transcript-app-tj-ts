@@ -55,6 +55,8 @@ export default function LiveRecordStudio({
   onAppendToTranscript,
   onSendToBangla,
   onSendToEnglish,
+  onRecordingStateChange,
+  onLiveInterimChange,
   scrollToSection,
   onOpenSettings,
   directText = '',
@@ -62,7 +64,9 @@ export default function LiveRecordStudio({
   selectedFile,
   setSelectedFile,
   onProcessAi,
-  isProcessing = false
+  isProcessing = false,
+  isAutoTranscribing = false,
+  setIsAutoTranscribing
 }) {
   // Engine Verification & Direct Text State
   const [verifying, setVerifying] = useState(false);
@@ -74,6 +78,7 @@ export default function LiveRecordStudio({
   const [sttTestResult, setSttTestResult] = useState(null);
   const [testingLLM, setTestingLLM] = useState(false);
   const [llmTestResult, setLlmTestResult] = useState(null);
+  const [showAdvancedEngineSettings, setShowAdvancedEngineSettings] = useState(false);
 
   // Recording & Live State
   const [isRecording, setIsRecording] = useState(false);
@@ -114,6 +119,8 @@ export default function LiveRecordStudio({
   const isPausedRef = useRef(false);
   const isStartingRecognitionRef = useRef(false);
   const languageRef = useRef('bn');
+  const restartTimerRef = useRef(null);
+  const lastSpeechTimestampRef = useRef(Date.now());
   const fileInputRef = useRef(null);
   const transcriptBottomRef = useRef(null);
   const liveTranscriptForTakeRef = useRef('');
@@ -144,6 +151,10 @@ export default function LiveRecordStudio({
   useEffect(() => {
     return () => {
       stopLiveInternal();
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       recordingsQueue.forEach((item) => {
         if (item.url) URL.revokeObjectURL(item.url);
       });
@@ -294,7 +305,45 @@ export default function LiveRecordStudio({
     return '';
   };
 
-  // --- webkitSpeechRecognition Speech Detection Setup ---
+  // --- Robust Continuous webkitSpeechRecognition Engine ---
+  const restartSpeechRecognition = (delay = 150) => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    restartTimerRef.current = setTimeout(() => {
+      if (!isRecordingRef.current || isPausedRef.current) return;
+      try {
+        if (recognitionRef.current) {
+          try {
+            recognitionRef.current.onend = null;
+            recognitionRef.current.onerror = null;
+            recognitionRef.current.onresult = null;
+            recognitionRef.current.abort();
+          } catch (e) {}
+          recognitionRef.current = null;
+        }
+        const rec = initSpeechRecognition(languageRef.current);
+        if (rec) {
+          recognitionRef.current = rec;
+          isStartingRecognitionRef.current = true;
+          rec.start();
+        }
+      } catch (e) {
+        console.warn('SpeechRecognition restart notice:', e);
+        isStartingRecognitionRef.current = false;
+        // Schedule fallback retry if still recording
+        if (isRecordingRef.current && !isPausedRef.current) {
+          restartTimerRef.current = setTimeout(() => {
+            if (isRecordingRef.current && !isPausedRef.current) {
+              restartSpeechRecognition(100);
+            }
+          }, 600);
+        }
+      }
+    }, delay);
+  };
+
   const initSpeechRecognition = (langOverride = null) => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -303,17 +352,21 @@ export default function LiveRecordStudio({
       return null;
     }
     const recognition = new SpeechRecognition();
-    recognition.lang = (langOverride || language) === 'en' ? 'en-US' : 'bn-BD'; // Default to 'bn-BD'
+    const activeLang = langOverride || languageRef.current || language;
+    recognition.lang = activeLang === 'en' ? 'en-US' : 'bn-BD'; // Default to 'bn-BD'
     recognition.continuous = true;
     recognition.interimResults = true; // Enables live typing as you speak
+    recognition.maxAlternatives = 1;
 
     recognition.onstart = () => {
       isStartingRecognitionRef.current = false;
+      lastSpeechTimestampRef.current = Date.now();
       setEngineStatus(`SpeechRecognition (${recognition.lang})`);
       setStatusText(`Live speech recognition active (${recognition.lang})`);
     };
 
     recognition.onresult = (event) => {
+      lastSpeechTimestampRef.current = Date.now();
       let finalChunk = '';
       let liveText = '';
 
@@ -338,27 +391,38 @@ export default function LiveRecordStudio({
           if (onAppendToTranscript) onAppendToTranscript(formattedLine);
           return updated;
         });
+        if (onLiveInterimChange) onLiveInterimChange('');
       }
 
       setInterimText(liveText);
+      if (onLiveInterimChange && liveText) {
+        const timeTag = formatTime(currentTakeSecondsRef.current || 0);
+        const speaker = activeSpeakerRef.current || 'Speaker 1';
+        onLiveInterimChange(`[${timeTag}] ${speaker}: ${liveText.trim()}`);
+      }
     };
 
     recognition.onerror = (event) => {
       isStartingRecognitionRef.current = false;
-      if (event.error === 'no-speech') return;
+      if (event.error === 'no-speech') {
+        // 'no-speech' is a normal silence pause fired by Chrome before onend
+        return;
+      }
+      if (event.error === 'aborted') {
+        return;
+      }
       console.warn('Speech recognition notice:', event.error);
-      setEngineStatus(`Speech Notice: ${event.error} — Auto-Preview active`);
+      setEngineStatus(`Speech Notice: ${event.error} — Reconnecting`);
+      if (isRecordingRef.current && !isPausedRef.current) {
+        restartSpeechRecognition(300);
+      }
     };
 
     recognition.onend = () => {
       isStartingRecognitionRef.current = false;
       if (isRecordingRef.current && !isPausedRef.current) {
-        try {
-          isStartingRecognitionRef.current = true;
-          recognition.start();
-        } catch (e) {
-          isStartingRecognitionRef.current = false;
-        }
+        // Seamlessly auto-restart using fresh SpeechRecognition instance after micro-pause
+        restartSpeechRecognition(150);
       }
     };
 
@@ -367,21 +431,20 @@ export default function LiveRecordStudio({
 
   const handleLanguageChange = (newLang) => {
     setLanguage(newLang);
-    if (isRecordingRef.current && recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {}
-      setTimeout(() => {
-        if (isRecordingRef.current && !isPausedRef.current) {
-          const rec = initSpeechRecognition(newLang);
-          if (rec) {
-            recognitionRef.current = rec;
-            try {
-              rec.start();
-            } catch (err) {}
-          }
-        }
-      }, 100);
+    languageRef.current = newLang;
+    if (isRecordingRef.current) {
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onend = null;
+          recognitionRef.current.abort();
+        } catch (e) {}
+        recognitionRef.current = null;
+      }
+      restartSpeechRecognition(100);
     }
   };
 
@@ -427,9 +490,11 @@ export default function LiveRecordStudio({
 
       currentChunksRef.current = [];
       currentTakeSecondsRef.current = 0;
+      lastSpeechTimestampRef.current = Date.now();
       setRecordingSeconds(0);
       setLiveTranscript('');
       setInterimText('');
+      liveTranscriptForTakeRef.current = '';
 
       timerIntervalRef.current = setInterval(() => {
         setRecordingSeconds((prev) => {
@@ -439,14 +504,22 @@ export default function LiveRecordStudio({
         });
       }, 1000);
 
-      // Start periodic live audio chunk auto-previewing via backend Gemini STT
+      // Start periodic live audio chunk auto-previewing via backend Gemini STT as a safety net
       autoChunkTimerRef.current = setInterval(async () => {
         if (!isRecordingRef.current || isPausedRef.current) return;
         if (isStreamingChunkRef.current) return;
         if (currentChunksRef.current.length === 0) return;
 
+        const silenceDuration = Date.now() - (lastSpeechTimestampRef.current || 0);
+        const isRecognitionStalled = (!liveTranscriptForTakeRef.current || liveTranscriptForTakeRef.current.trim().length < 5);
+
+        // Keep browser recognition alive if stalled or silent
+        if ((isRecognitionStalled || silenceDuration > 5000) && !isStartingRecognitionRef.current) {
+          restartSpeechRecognition(100);
+        }
+
         // If browser speech recognition hasn't caught text or only caught silence, stream chunk to backend
-        if (!liveTranscriptForTakeRef.current || liveTranscriptForTakeRef.current.trim().length < 5) {
+        if (isRecognitionStalled) {
           try {
             isStreamingChunkRef.current = true;
             const mime = mimeType || 'audio/webm';
@@ -457,14 +530,17 @@ export default function LiveRecordStudio({
               formData.append('chunk', chunkBlob, `live_stream.${ext}`);
               formData.append('language', languageRef.current || 'bn');
               formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
-              formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-flash-lite');
+              formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-transcribe');
 
               const res = await axios.post('/api/live_transcribe_chunk', formData);
               if (res.data && res.data.text && res.data.text.trim()) {
                 const chunkTxt = res.data.text.trim();
                 const speaker = activeSpeakerRef.current || 'Speaker 1';
                 const formatted = chunkTxt.startsWith('[') ? chunkTxt : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${chunkTxt}`;
-                setLiveTranscript(formatted);
+                setLiveTranscript((prev) => {
+                  if (prev && prev.includes(chunkTxt)) return prev;
+                  return prev ? `${prev}\n${formatted}` : formatted;
+                });
                 liveTranscriptForTakeRef.current = formatted;
                 setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
                 if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
@@ -510,68 +586,98 @@ export default function LiveRecordStudio({
           size: (blob.size / (1024 * 1024)).toFixed(2) + ' MB',
           transcript: capturedTranscript,
           isUpload: false,
-          isAutoTranscribing: !capturedTranscript || capturedTranscript.length < 5
+          isAutoTranscribing: true
         };
 
         setRecordingsQueue((prev) => [...prev, newTake]);
-        if (capturedTranscript && onLiveTranscriptSync) {
-          onLiveTranscriptSync(capturedTranscript);
+
+        // AUTOACTIVATE: Immediately activate and scroll to Initial Transcript section
+        if (scrollToSection) {
+          scrollToSection('section-transcripts');
+        }
+        if (setIsAutoTranscribing) {
+          setIsAutoTranscribing(true);
         }
 
-        // AUTO-PREVIEW: If client speech recognition did not capture words, auto-transcribe take with Gemini
-        if (!capturedTranscript || capturedTranscript.length < 5) {
-          setStatusText(`⚡ Auto-transcribing Take #${takeNum} with Gemini AI in Bengali...`);
-          try {
-            const formData = new FormData();
-            const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
-            formData.append('file', blob, `take_${takeNum}.${ext}`);
-            formData.append('language', languageRef.current || 'bn');
-            formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
-            formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-flash-lite');
+        setStatusText(`⚡ Auto-transcribing Take #${takeNum} (100% Raw Speech • Diarization • Timestamps)...`);
+        try {
+          const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
+          const sttKey = (
+            aiConfig?.transcriptionApiKey ||
+            getSavedKeyForProvider(resolvedSttProv) ||
+            (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
+            (aiConfig?.apiKey || '')
+          ).trim();
 
-            const res = await axios.post('/api/transcribe_take', formData);
-            if (res.data && res.data.transcript && res.data.transcript.trim()) {
-              const aiTranscript = res.data.transcript.trim();
-              setLiveTranscript((prev) => prev ? `${prev}\n${aiTranscript}` : aiTranscript);
-              liveTranscriptForTakeRef.current = aiTranscript;
-              setEngineStatus('Gemini AI Take Transcriber (bn)');
-              if (onLiveTranscriptSync) onLiveTranscriptSync(aiTranscript);
-              if (onAppendToTranscript) onAppendToTranscript(aiTranscript);
+          const formData = new FormData();
+          const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
+          formData.append('file', blob, `take_${takeNum}.${ext}`);
+          formData.append('language', languageRef.current || 'bn');
+          formData.append('provider', resolvedSttProv);
+          formData.append('api_key', sttKey);
+          formData.append('model_name', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.6-flash' : 'whisper-large-v3-turbo'));
 
-              setRecordingsQueue((prev) =>
-                prev.map((t) => (t.id === takeId ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
-              );
-              setStatusText(`✓ Take #${takeNum} auto-transcribed in authentic Bengali!`);
-            } else {
-              setRecordingsQueue((prev) =>
-                prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
-              );
-              setStatusText(`✓ Take #${takeNum} saved to queue`);
+          const res = await axios.post('/api/transcribe_take', formData);
+          if (res.data && res.data.transcript && res.data.transcript.trim()) {
+            const aiTranscript = res.data.transcript.trim();
+            setLiveTranscript((prev) => (prev ? `${prev}\n\n${aiTranscript}` : aiTranscript));
+            liveTranscriptForTakeRef.current = aiTranscript;
+            setEngineStatus(`${resolvedSttProv.toUpperCase()} Raw Diarized STT`);
+            if (onAppendToTranscript) {
+              onAppendToTranscript(aiTranscript);
+            } else if (onLiveTranscriptSync) {
+              onLiveTranscriptSync(aiTranscript);
             }
-          } catch (err) {
-            console.warn('Take auto-transcribe error:', err);
+
+            setRecordingsQueue((prev) =>
+              prev.map((t) => (t.id === takeId ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
+            );
+            setStatusText(`✓ Take #${takeNum} auto-transcribed with speaker diarization & timestamps!`);
+          } else {
+            if (capturedTranscript) {
+              if (onAppendToTranscript) onAppendToTranscript(capturedTranscript);
+              else if (onLiveTranscriptSync) onLiveTranscriptSync(capturedTranscript);
+            }
             setRecordingsQueue((prev) =>
               prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
             );
             setStatusText(`✓ Take #${takeNum} saved to queue`);
           }
-        } else {
-          setStatusText(`✓ Take #${takeNum} saved automatically to queue!`);
+        } catch (err) {
+          console.warn('Take auto-transcribe error:', err);
+          if (capturedTranscript) {
+            if (onAppendToTranscript) onAppendToTranscript(capturedTranscript);
+            else if (onLiveTranscriptSync) onLiveTranscriptSync(capturedTranscript);
+          }
+          setRecordingsQueue((prev) =>
+            prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
+          );
+          setStatusText(`✓ Take #${takeNum} saved to queue`);
+        } finally {
+          if (setIsAutoTranscribing) {
+            setIsAutoTranscribing(false);
+          }
         }
       };
 
       mediaRecorder.start(250);
 
       // Start Live Speech Recognition
-      const recognition = initSpeechRecognition();
+      const recognition = initSpeechRecognition(languageRef.current);
       if (recognition) {
         recognitionRef.current = recognition;
         isStartingRecognitionRef.current = true;
-        recognition.start();
+        try {
+          recognition.start();
+        } catch (e) {
+          console.warn('Immediate recognition start notice, scheduling restart:', e);
+          restartSpeechRecognition(200);
+        }
       }
 
       setIsRecording(true);
       setIsPaused(false);
+      if (onRecordingStateChange) onRecordingStateChange(true);
       setStatusText('● Recording & live transcribing in progress...');
     } catch (err) {
       console.error('Error starting live record:', err);
@@ -586,23 +692,30 @@ export default function LiveRecordStudio({
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'paused') {
         mediaRecorderRef.current.resume();
       }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.start();
-        } catch (e) {}
-      }
       setIsPaused(false);
+      isPausedRef.current = false;
+      if (onRecordingStateChange) onRecordingStateChange(true);
+      restartSpeechRecognition(100);
       setStatusText('● Recording & live transcribing resumed');
     } else {
+      if (restartTimerRef.current) {
+        clearTimeout(restartTimerRef.current);
+        restartTimerRef.current = null;
+      }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.pause();
       }
       if (recognitionRef.current) {
         try {
-          recognitionRef.current.stop();
+          recognitionRef.current.onend = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.abort();
         } catch (e) {}
+        recognitionRef.current = null;
       }
       setIsPaused(true);
+      isPausedRef.current = true;
+      if (onRecordingStateChange) onRecordingStateChange(false);
       setStatusText('⏸ Recording paused');
     }
   };
@@ -611,10 +724,16 @@ export default function LiveRecordStudio({
     stopLiveInternal();
     setIsRecording(false);
     setIsPaused(false);
+    if (onRecordingStateChange) onRecordingStateChange(false);
+    if (onLiveInterimChange) onLiveInterimChange('');
     setStatusText('Processing recorded take...');
   };
 
   const stopLiveInternal = () => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
@@ -629,7 +748,9 @@ export default function LiveRecordStudio({
     }
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
+        recognitionRef.current.onend = null;
+        recognitionRef.current.onerror = null;
+        recognitionRef.current.abort();
       } catch (e) {}
       recognitionRef.current = null;
     }
@@ -648,19 +769,32 @@ export default function LiveRecordStudio({
       } catch (e) {}
     }
     setAudioLevel(0);
+    setInterimText('');
+    if (onLiveInterimChange) onLiveInterimChange('');
+    if (onRecordingStateChange) onRecordingStateChange(false);
+    isStartingRecognitionRef.current = false;
   };
 
-  // --- Add Uploaded Audio/Video Files to Queue ---
-  const handleAddUploadedFiles = (files) => {
+  // --- Add Uploaded Audio/Video Files to Queue & Autoactivate Initial Transcript ---
+  const handleAddUploadedFiles = async (files) => {
     if (!files || files.length === 0) return;
     const newItems = [];
+    const mediaFiles = [];
+
     Array.from(files).forEach((file, fIdx) => {
       if (setSelectedFile && fIdx === 0) {
         setSelectedFile(file);
       }
+      const isMedia =
+        file.type.startsWith('audio/') ||
+        file.type.startsWith('video/') ||
+        /\.(mp3|wav|m4a|aac|ogg|webm|mp4|mov|mkv|flac)$/i.test(file.name);
+
       const url = URL.createObjectURL(file);
-      newItems.push({
-        id: 'upload_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7) + '_' + fIdx,
+      const itemId = 'upload_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7) + '_' + fIdx;
+
+      const itemObj = {
+        id: itemId,
         blob: file,
         url: url,
         duration: 0,
@@ -668,11 +802,88 @@ export default function LiveRecordStudio({
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         size: (file.size / (1024 * 1024)).toFixed(2) + ' MB',
         transcript: '',
-        isUpload: true
-      });
+        isUpload: true,
+        isAutoTranscribing: isMedia
+      };
+
+      newItems.push(itemObj);
+      if (isMedia) {
+        mediaFiles.push(itemObj);
+      }
+
+      // If text file (.txt), automatically read and append text
+      if (!isMedia && file.name.toLowerCase().endsWith('.txt')) {
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          const txt = ev.target?.result;
+          if (txt && typeof txt === 'string' && txt.trim()) {
+            if (onAppendToTranscript) onAppendToTranscript(txt.trim());
+            else if (onLiveTranscriptSync) onLiveTranscriptSync(txt.trim());
+          }
+        };
+        reader.readAsText(file);
+      }
     });
+
     setRecordingsQueue((prev) => [...prev, ...newItems]);
-    setStatusText(`✓ Added ${newItems.length} file(s) to multi-take queue`);
+
+    // AUTOACTIVATE: Immediately activate and scroll to Initial Transcript section!
+    if (scrollToSection) {
+      scrollToSection('section-transcripts');
+    }
+
+    if (mediaFiles.length > 0) {
+      if (setIsAutoTranscribing) setIsAutoTranscribing(true);
+      setStatusText(`⚡ Auto-transcribing ${mediaFiles.length} uploaded media file(s) into raw diarized transcript...`);
+
+      const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
+      const sttKey = (
+        aiConfig?.transcriptionApiKey ||
+        getSavedKeyForProvider(resolvedSttProv) ||
+        (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
+        (aiConfig?.apiKey || '')
+      ).trim();
+
+      for (const item of mediaFiles) {
+        try {
+          const formData = new FormData();
+          formData.append('file', item.blob, item.blob.name || `${item.name}.mp3`);
+          formData.append('language', languageRef.current || 'bn');
+          formData.append('provider', resolvedSttProv);
+          formData.append('api_key', sttKey);
+          formData.append('model_name', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.6-flash' : 'whisper-large-v3-turbo'));
+
+          const res = await axios.post('/api/transcribe_take', formData);
+          if (res.data && res.data.transcript && res.data.transcript.trim()) {
+            const aiTranscript = res.data.transcript.trim();
+            setLiveTranscript((prev) => (prev ? `${prev}\n\n${aiTranscript}` : aiTranscript));
+            if (onAppendToTranscript) {
+              onAppendToTranscript(aiTranscript);
+            } else if (onLiveTranscriptSync) {
+              onLiveTranscriptSync(aiTranscript);
+            }
+
+            setRecordingsQueue((prev) =>
+              prev.map((t) => (t.id === item.id ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
+            );
+            setStatusText(`✓ ${item.name} auto-transcribed with speaker diarization & timestamps!`);
+          } else {
+            setRecordingsQueue((prev) =>
+              prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false } : t))
+            );
+          }
+        } catch (err) {
+          console.warn('Upload auto-transcribe error for item:', item.name, err);
+          setRecordingsQueue((prev) =>
+            prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false } : t))
+          );
+        }
+      }
+      if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+      setStatusText(`✓ Uploaded media auto-transcribed into 100% raw initial transcript!`);
+    } else {
+      setStatusText(`✓ Added ${newItems.length} file(s) to queue`);
+    }
   };
 
   // --- Multi-Take Edit, Delete, Download ---
@@ -761,7 +972,7 @@ export default function LiveRecordStudio({
     formData.append('model_name', aiConfig?.summarizationModel || 'gemini-3.7-flash');
     formData.append('transcription_provider', resolvedSttProv);
     formData.append('transcription_api_key', sttKey);
-    formData.append('transcription_model', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-flash-lite' : 'whisper-large-v3-turbo'));
+    formData.append('transcription_model', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-2.5-flash' : (resolvedSttProv === 'whisperx' ? 'pyannote/speaker-diarization-community-1' : 'whisper-large-v3-turbo')));
     formData.append('summarization_provider', resolvedSumProv);
     formData.append('summarization_api_key', sumKey);
     formData.append('summarization_model', aiConfig?.summarizationModel || 'gemini-3.7-flash');
@@ -848,415 +1059,46 @@ export default function LiveRecordStudio({
 
   return (
     <div className="card" id="section-live" style={{ border: '1.5px solid var(--border-color)', position: 'relative' }}>
-      {/* 4-Layer Architecture Workflow Tracker Banner */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '6px 14px',
-          background: 'rgba(255, 255, 255, 0.03)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
-          borderRadius: '8px',
-          marginBottom: '16px',
-          fontSize: '0.74rem',
-          color: 'var(--text-secondary)',
-          flexWrap: 'wrap'
-        }}
-      >
-        <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
-        <span style={{ color: '#34d399', fontWeight: 700, background: 'rgba(16, 185, 129, 0.15)', padding: '1px 7px', borderRadius: '4px' }}>
-          1. Record / Listen & Determine Language
-        </span>
-        <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: '#38bdf8', fontWeight: 600 }}>2. Transcribe Audio</span>
-        <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: 'var(--text-secondary)' }}>3. Raw Transcription</span>
-        <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: 'var(--text-secondary)' }}>4. Template Fillup via Skills</span>
-      </div>
-
-      {/* INTEGRATED AI ENGINE COMMAND BAR */}
-      <div
-        style={{
-          background: 'var(--bg-secondary)',
-          border: '1.5px solid var(--border-color)',
-          borderRadius: '14px',
-          padding: '14px 18px',
-          marginBottom: '20px',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '12px'
-        }}
-      >
-        {/* Row 1: Engine Provider Badge, Status, Two-Way Test API & Configure Buttons */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span style={{ fontSize: '0.96rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)' }}>
-              <Cpu size={18} color="var(--accent-color)" /> Active AI Engine: {getActiveApiDisplayName(aiConfig)}
-            </span>
-            <span
-              style={{
-                fontSize: '0.74rem',
-                fontWeight: 700,
-                padding: '2px 8px',
-                borderRadius: '6px',
-                background: 'rgba(2, 132, 199, 0.15)',
-                color: 'var(--accent-color)',
-                border: '1px solid rgba(2, 132, 199, 0.3)'
-              }}
-            >
-              STT: {aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.7-flash'}
-            </span>
-          </div>
-
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Direct STT Engine Test Button */}
-            <button
-              id="frontPageTestSttBtn"
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={handleTestSTT}
-              disabled={testingSTT}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px',
-                fontWeight: 700,
-                fontSize: '0.78rem',
-                padding: '6px 12px',
-                background: sttTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(139, 92, 246, 0.12)',
-                borderColor: sttTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.3)'
-              }}
-              title="Actively send synthetic audio to test transcription model"
-            >
-              <Mic size={13} color="#8b5cf6" />
-              {testingSTT ? 'Testing STT...' : sttTestResult?.success ? `STT OK (${sttTestResult.latency_ms || 280}ms)` : '⚡ Test STT'}
-            </button>
-
-            {/* Direct LLM Engine Test Button */}
-            <button
-              id="frontPageTestLlmBtn"
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={handleTestLLM}
-              disabled={testingLLM}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px',
-                fontWeight: 700,
-                fontSize: '0.78rem',
-                padding: '6px 12px',
-                background: llmTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(2, 132, 199, 0.12)',
-                borderColor: llmTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(2, 132, 199, 0.3)'
-              }}
-              title="Actively send test prompt to verify summary model"
-            >
-              <Zap size={13} color="var(--accent-color)" />
-              {testingLLM ? 'Testing LLM...' : llmTestResult?.success ? `LLM OK (${llmTestResult.latency_ms || 320}ms)` : '⚡ Test LLM'}
-            </button>
-
-            {onOpenSettings && (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={onOpenSettings}
-                style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 700, fontSize: '0.78rem', padding: '6px 13px' }}
-              >
-                <Key size={13} /> Configure / Switch APIs
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Live Test Status Alerts */}
-        {(sttTestResult || llmTestResult || verifyStatus) && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            {sttTestResult && (
-              <div
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: '8px',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  background: sttTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                  color: sttTestResult.success ? '#10b981' : '#ef4444',
-                  border: sttTestResult.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                {sttTestResult.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
-                <span><strong>STT Test:</strong> {sttTestResult.message}</span>
-              </div>
-            )}
-            {llmTestResult && (
-              <div
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: '8px',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  background: llmTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                  color: llmTestResult.success ? '#10b981' : '#ef4444',
-                  border: llmTestResult.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                {llmTestResult.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
-                <span><strong>LLM Test:</strong> {llmTestResult.message}</span>
-              </div>
-            )}
-            {verifyStatus && (
-              <div
-                style={{
-                  padding: '7px 12px',
-                  borderRadius: '8px',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  background: verifyStatus.valid || verifyStatus.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                  color: verifyStatus.valid || verifyStatus.success ? '#10b981' : '#ef4444',
-                  border: verifyStatus.valid || verifyStatus.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                {verifyStatus.valid || verifyStatus.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
-                <span>{verifyStatus.message}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Row 2: Interactive STT Model Selection Buttons */}
-        <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-              <Mic size={14} color="#8b5cf6" /> 🎙️ Transcription STT Model:
-            </label>
-            <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-              Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}</strong>
-            </span>
-          </div>
-
-          {/* Quick Segmented Buttons for STT */}
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-            {QUICK_STT_MODELS.map((item) => {
-              const isSelected = (aiConfig?.transcriptionModel || 'whisper-large-v3-turbo') === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleSelectSTTModel(item)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 13px',
-                    borderRadius: '8px',
-                    fontSize: '0.78rem',
-                    fontWeight: isSelected ? 800 : 600,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    background: isSelected ? 'rgba(139, 92, 246, 0.22)' : 'rgba(255, 255, 255, 0.04)',
-                    color: isSelected ? '#a78bfa' : 'var(--text-secondary)',
-                    border: isSelected ? '1.5px solid #8b5cf6' : '1px solid var(--border-color)',
-                    boxShadow: isSelected ? '0 0 12px rgba(139, 92, 246, 0.35)' : 'none'
-                  }}
-                >
-                  <span>{item.icon}</span>
-                  <span>{item.shortLabel}</span>
-                  {isSelected && <Check size={13} color="#a78bfa" />}
-                </button>
-              );
-            })}
-
-            {/* STT Dropdown for other/custom models */}
-            <select
-              className="form-control"
-              style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-              value={aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}
-              onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: e.target.value })}
-            >
-              <option value="whisper-large-v3-turbo">More STT options...</option>
-              {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt || []).map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Row 3: Interactive Summary LLM Model Selection Buttons */}
-        <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-              <Cpu size={14} color="var(--accent-color)" /> ⚡ Summary LLM Model:
-            </label>
-            <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-              Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.summarizationModel || 'gemini-3.7-flash'}</strong>
-            </span>
-          </div>
-
-          {/* Quick Segmented Buttons for LLM */}
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-            {QUICK_LLM_MODELS.map((item) => {
-              const isSelected = (aiConfig?.summarizationModel || 'gemini-3.7-flash') === item.id;
-              return (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => handleSelectLLMModel(item)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 13px',
-                    borderRadius: '8px',
-                    fontSize: '0.78rem',
-                    fontWeight: isSelected ? 800 : 600,
-                    cursor: 'pointer',
-                    transition: 'all 0.2s ease',
-                    background: isSelected ? 'rgba(2, 132, 199, 0.22)' : 'rgba(255, 255, 255, 0.04)',
-                    color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
-                    border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
-                    boxShadow: isSelected ? '0 0 12px rgba(2, 132, 199, 0.35)' : 'none'
-                  }}
-                >
-                  <span>{item.icon}</span>
-                  <span>{item.shortLabel}</span>
-                  {isSelected && <Check size={13} color="var(--accent-color)" />}
-                </button>
-              );
-            })}
-
-            {/* LLM Dropdown for other/custom models */}
-            <select
-              className="form-control"
-              style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-              value={aiConfig?.summarizationModel || 'gemini-3.7-flash'}
-              onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
-            >
-              <option value="gemini-3.7-flash">More LLM options...</option>
-              {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm || []).map((opt) => (
-                <option key={opt.value} value={opt.value}>{opt.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Row 4: Target Document Template */}
-        {templates && templates.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', padding: '4px 2px' }}>
-            <label style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>
-              <FileCode size={13} color="var(--accent-color)" /> Official Target Template:
-            </label>
-            <select
-              className="form-control"
-              style={{ fontSize: '0.8rem', padding: '5px 10px', fontWeight: 600, flex: 1, maxWidth: '400px' }}
-              value={activeTemplateId || 'easd_default_minutes'}
-              onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
-            >
-              {templates.map((tpl) => (
-                <option key={tpl.id} value={tpl.id}>
-                  {tpl.name} {tpl.is_builtin ? '(Official EASD Standard)' : '(Custom)'}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
-
-      {/* FRONT SCREEN: One Block Record, One Block Upload */}
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))',
-          gap: '20px',
-          maxWidth: '720px',
-          margin: '0 auto 16px auto',
-          width: '100%',
-          boxSizing: 'border-box'
-        }}
-      >
-        {/* BLOCK 1: RECORD */}
-        <div
-          style={{
-            background: isRecording ? 'rgba(239, 68, 68, 0.08)' : 'var(--bg-secondary)',
-            border: isRecording ? '2px solid rgba(239, 68, 68, 0.45)' : '1.5px solid var(--border-color)',
-            borderRadius: '16px',
-            padding: '28px 20px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '14px',
-            boxShadow: isRecording ? '0 0 25px rgba(239, 68, 68, 0.25)' : 'var(--card-shadow)',
-            transition: 'all 0.25s ease',
-            boxSizing: 'border-box'
-          }}
-        >
+      {/* 1. HERO ACTION BUTTONS: RECORD & UPLOAD (FRONT & CENTER AT THE VERY TOP ON ALL DEVICES) */}
+      <div className="hero-actions-container">
+        {/* CARD 1: RECORD BUTTON */}
+        <div className={`hero-action-card record-card ${isRecording ? 'is-recording' : ''}`}>
+          {/* Top visual button */}
           {!isRecording ? (
             <button
+              type="button"
               onClick={handleStartRecording}
-              aria-label="Start recording"
-              style={{
-                width: '76px',
-                height: '76px',
-                borderRadius: '50%',
-                background: 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)',
-                border: 'none',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                boxShadow: '0 8px 30px rgba(239, 68, 68, 0.5), 0 0 0 6px rgba(239, 68, 68, 0.15)',
-                transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.08)')}
-              onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+              aria-label="Start recording meeting"
+              title="Click to start recording"
+              className="hero-action-circle-btn record-circle"
             >
-              <Mic size={34} color="#ffffff" strokeWidth={2.2} />
+              <Mic size={36} color="#ffffff" strokeWidth={2.4} />
             </button>
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
               <button
+                type="button"
                 onClick={handleStopAndSaveTake}
-                aria-label="Stop and save take"
-                style={{
-                  width: '76px',
-                  height: '76px',
-                  borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #dc2626 0%, #991b1b 100%)',
-                  border: 'none',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  boxShadow: '0 0 35px rgba(239, 68, 68, 0.7), 0 0 0 6px rgba(239, 68, 68, 0.25)',
-                  transition: 'all 0.2s ease',
-                  animation: 'pulse 1.5s infinite'
-                }}
-                title="Stop and save take"
+                aria-label="Stop recording and save take"
+                className="hero-action-circle-btn stop-circle"
+                title="Stop recording and save take"
               >
-                <Square size={28} fill="#ffffff" color="#ffffff" />
+                <Square size={26} fill="#ffffff" color="#ffffff" />
               </button>
 
               <button
+                type="button"
                 onClick={handleTogglePause}
                 className="btn btn-secondary"
                 style={{
-                  width: '46px',
-                  height: '46px',
+                  width: '42px',
+                  height: '42px',
                   borderRadius: '50%',
                   padding: 0,
                   display: 'flex',
                   alignItems: 'center',
-                  justifyContent: 'center'
+                  justifyContent: 'center',
+                  flexShrink: 0
                 }}
                 title={isPaused ? 'Resume recording' : 'Pause recording'}
               >
@@ -1265,19 +1107,37 @@ export default function LiveRecordStudio({
             </div>
           )}
 
-          <div style={{ textAlign: 'center' }}>
-            <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800, color: isRecording ? '#ef4444' : 'var(--text-primary)' }}>
-              {isRecording ? (isPaused ? 'Paused' : `Recording (${formatTime(recordingSeconds)})`) : 'Record'}
+          {/* Text Information */}
+          <div className="hero-action-text">
+            <h3 className="hero-action-title">
+              <span>Record</span>
+              {isRecording && (
+                <span
+                  style={{
+                    fontSize: '0.78rem',
+                    fontWeight: 700,
+                    padding: '2px 8px',
+                    borderRadius: '12px',
+                    background: isPaused ? 'rgba(245, 158, 11, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                    color: isPaused ? '#f59e0b' : '#ef4444'
+                  }}
+                >
+                  {isPaused ? 'PAUSED' : formatTime(recordingSeconds)}
+                </span>
+              )}
             </h3>
-            <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-              {isRecording ? 'Click stop square to save take' : 'Click to start live recording'}
+            <p className="hero-action-desc">
+              {isRecording
+                ? 'Microphone is active. Speak naturally, then click Stop when finished.'
+                : 'Speak live into your microphone to record consultations or meeting discussions.'}
             </p>
           </div>
 
+          {/* Audio Visualizer Level if recording */}
           {isRecording && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '4px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', width: '100%', justifyContent: 'center' }}>
               <Volume2 size={16} color="#ef4444" />
-              <div style={{ width: '120px', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
+              <div style={{ width: '130px', height: '6px', background: 'rgba(255,255,255,0.1)', borderRadius: '3px', overflow: 'hidden' }}>
                 <div
                   style={{
                     height: '100%',
@@ -1289,11 +1149,34 @@ export default function LiveRecordStudio({
               </div>
             </div>
           )}
+
+          {/* Primary Action Button (Doctor-Friendly) */}
+          <div className="hero-btn-container">
+            {!isRecording ? (
+              <button
+                type="button"
+                onClick={handleStartRecording}
+                className="btn hero-btn record-btn"
+              >
+                <Mic size={18} />
+                <span>Record</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleStopAndSaveTake}
+                className="btn hero-btn stop-btn"
+              >
+                <Square size={16} fill="#ffffff" />
+                <span>Stop & Save</span>
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* BLOCK 2: UNIVERSAL UPLOAD */}
+        {/* CARD 2: UPLOAD BUTTON */}
         <div
-          className={`drop-zone ${isDragging ? 'dragging' : ''}`}
+          className={`hero-action-card upload-card drop-zone ${isDragging ? 'dragging' : ''}`}
           onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }}
           onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(true); }}
           onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDragging(false); }}
@@ -1306,21 +1189,7 @@ export default function LiveRecordStudio({
             }
           }}
           onClick={() => fileInputRef.current?.click()}
-          style={{
-            cursor: 'pointer',
-            background: isDragging ? 'rgba(16, 185, 129, 0.16)' : 'var(--bg-secondary)',
-            border: isDragging ? '2px dashed #10b981' : '1.5px dashed var(--border-color)',
-            borderRadius: '16px',
-            padding: '28px 20px',
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '14px',
-            boxShadow: isDragging ? '0 0 25px rgba(16, 185, 129, 0.35)' : 'var(--card-shadow)',
-            transition: 'all 0.25s ease',
-            boxSizing: 'border-box'
-          }}
+          style={{ cursor: 'pointer' }}
         >
           <input
             ref={fileInputRef}
@@ -1331,36 +1200,67 @@ export default function LiveRecordStudio({
             onChange={(e) => handleAddUploadedFiles(e.target.files)}
           />
 
-          <div
-            style={{
-              width: '76px',
-              height: '76px',
-              borderRadius: '50%',
-              background: 'linear-gradient(135deg, #0284c7 0%, #004b87 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              boxShadow: '0 8px 30px rgba(2, 132, 199, 0.4), 0 0 0 6px rgba(2, 132, 199, 0.15)',
-              transition: 'all 0.25s cubic-bezier(0.4, 0, 0.2, 1)'
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.08)')}
-            onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
-          >
-            <UploadCloud size={34} color="#ffffff" strokeWidth={2.2} />
+          {/* Top visual button */}
+          <div className="hero-action-circle-btn upload-circle">
+            <UploadCloud size={36} color="#ffffff" strokeWidth={2.4} />
           </div>
 
-          <div style={{ textAlign: 'center' }}>
-            <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-              Universal Upload
+          {/* Text Information */}
+          <div className="hero-action-text">
+            <h3 className="hero-action-title">
+              <span>Upload</span>
             </h3>
-            <p style={{ margin: '4px 0 0 0', fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-              {isDragging ? 'Drop audio, video, OCR photos or PDFs here!' : 'Audio, Video, Photos & OCR, PDFs & Docs'}
+            <p className="hero-action-desc">
+              {isDragging
+                ? 'Drop your audio recording, voice memo or document here!'
+                : 'Select an audio file, iPhone voice memo, or meeting document.'}
             </p>
+          </div>
+
+          {/* File Support Tag */}
+          <div className="hero-file-tag">
+            MP3, WAV, M4A, Voice Memos & Docs
+          </div>
+
+          {/* Primary Action Button (Doctor-Friendly) */}
+          <div className="hero-btn-container">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                fileInputRef.current?.click();
+              }}
+              className="btn hero-btn upload-btn"
+            >
+              <UploadCloud size={18} />
+              <span>Upload</span>
+            </button>
           </div>
         </div>
       </div>
 
-      {/* DIRECT DRAFT TEXT & DOCUMENT SYNTHESIS DRAWER */}
+      {/* 2. TARGET DOCUMENT FORMAT SELECTOR (COMPACT SUB-BAR) */}
+      {templates && templates.length > 0 && (
+        <div className="hero-format-bar">
+          <label className="hero-format-label">
+            <FileCode size={15} color="var(--accent-color)" />
+            <span>Document Format:</span>
+          </label>
+          <select
+            className="form-control hero-format-select"
+            value={activeTemplateId || 'easd_default_minutes'}
+            onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
+          >
+            {templates.map((tpl) => (
+              <option key={tpl.id} value={tpl.id}>
+                {tpl.name} {tpl.is_builtin ? '(Standard Official Template)' : '(Custom)'}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* 3. DIRECT DRAFT TEXT & DOCUMENT SYNTHESIS DRAWER */}
       <div style={{ maxWidth: '720px', margin: '0 auto 18px auto', width: '100%', boxSizing: 'border-box' }}>
         <div style={{ display: 'flex', justifyContent: 'center' }}>
           <button
@@ -1410,7 +1310,7 @@ export default function LiveRecordStudio({
               placeholder="Paste raw conversation notes, bullet points, or draft text here..."
               style={{ fontSize: '0.84rem', padding: '8px' }}
             />
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
               <button
                 type="button"
                 className="btn btn-primary btn-sm"
@@ -1903,6 +1803,339 @@ export default function LiveRecordStudio({
           </div>
         </div>
       )}
+
+      {/* ADVANCED AI ENGINE SETTINGS (COLLAPSED BY DEFAULT FOR DOCTORS & NON-TECHNICAL USERS) */}
+      <div style={{ marginTop: '22px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <button
+            type="button"
+            onClick={() => setShowAdvancedEngineSettings((prev) => !prev)}
+            style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-secondary)',
+              fontSize: '0.78rem',
+              fontWeight: 600,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 14px',
+              borderRadius: '20px',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <Cpu size={13} color="var(--accent-color)" />
+            {showAdvancedEngineSettings ? 'Hide AI Engine Settings ▲' : '⚙️ Advanced AI Engine Settings (For Administrators) ▼'}
+          </button>
+        </div>
+
+        {showAdvancedEngineSettings && (
+          <div style={{ marginTop: '12px' }}>
+            {/* INTEGRATED AI ENGINE COMMAND BAR */}
+            <div
+              style={{
+                background: 'var(--bg-secondary)',
+                border: '1.5px solid var(--border-color)',
+                borderRadius: '14px',
+                padding: '14px 18px',
+                marginBottom: '14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '12px'
+              }}
+            >
+              {/* Row 1: Engine Provider Badge, Status, Two-Way Test API & Configure Buttons */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.96rem', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-primary)' }}>
+                    <Cpu size={18} color="var(--accent-color)" /> Active AI Engine: {getActiveApiDisplayName(aiConfig)}
+                  </span>
+                  <span
+                    style={{
+                      fontSize: '0.74rem',
+                      fontWeight: 700,
+                      padding: '2px 8px',
+                      borderRadius: '6px',
+                      background: 'rgba(2, 132, 199, 0.15)',
+                      color: 'var(--accent-color)',
+                      border: '1px solid rgba(2, 132, 199, 0.3)'
+                    }}
+                  >
+                    STT: {aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.7-flash'}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {/* Direct STT Engine Test Button */}
+                  <button
+                    id="frontPageTestSttBtn"
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleTestSTT}
+                    disabled={testingSTT}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      fontWeight: 700,
+                      fontSize: '0.78rem',
+                      padding: '6px 12px',
+                      background: sttTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(139, 92, 246, 0.12)',
+                      borderColor: sttTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.3)'
+                    }}
+                    title="Actively send synthetic audio to test transcription model"
+                  >
+                    <Mic size={13} color="#8b5cf6" />
+                    {testingSTT ? 'Testing STT...' : sttTestResult?.success ? `STT OK (${sttTestResult.latency_ms || 280}ms)` : '⚡ Test STT'}
+                  </button>
+
+                  {/* Direct LLM Engine Test Button */}
+                  <button
+                    id="frontPageTestLlmBtn"
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleTestLLM}
+                    disabled={testingLLM}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      fontWeight: 700,
+                      fontSize: '0.78rem',
+                      padding: '6px 12px',
+                      background: llmTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(2, 132, 199, 0.12)',
+                      borderColor: llmTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(2, 132, 199, 0.3)'
+                    }}
+                    title="Actively send test prompt to verify summary model"
+                  >
+                    <Zap size={13} color="var(--accent-color)" />
+                    {testingLLM ? 'Testing LLM...' : llmTestResult?.success ? `LLM OK (${llmTestResult.latency_ms || 320}ms)` : '⚡ Test LLM'}
+                  </button>
+
+                  {onOpenSettings && (
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={onOpenSettings}
+                      style={{ display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 700, fontSize: '0.78rem', padding: '6px 13px' }}
+                    >
+                      <Key size={13} /> Configure / Switch APIs
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Live Test Status Alerts */}
+              {(sttTestResult || llmTestResult || verifyStatus) && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {sttTestResult && (
+                    <div
+                      style={{
+                        padding: '7px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: 600,
+                        background: sttTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                        color: sttTestResult.success ? '#10b981' : '#ef4444',
+                        border: sttTestResult.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}
+                    >
+                      {sttTestResult.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                      <span><strong>STT Test:</strong> {sttTestResult.message}</span>
+                    </div>
+                  )}
+                  {llmTestResult && (
+                    <div
+                      style={{
+                        padding: '7px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: 600,
+                        background: llmTestResult.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                        color: llmTestResult.success ? '#10b981' : '#ef4444',
+                        border: llmTestResult.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}
+                    >
+                      {llmTestResult.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                      <span><strong>LLM Test:</strong> {llmTestResult.message}</span>
+                    </div>
+                  )}
+                  {verifyStatus && (
+                    <div
+                      style={{
+                        padding: '7px 12px',
+                        borderRadius: '8px',
+                        fontSize: '0.8rem',
+                        fontWeight: 600,
+                        background: verifyStatus.valid || verifyStatus.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                        color: verifyStatus.valid || verifyStatus.success ? '#10b981' : '#ef4444',
+                        border: verifyStatus.valid || verifyStatus.success ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px'
+                      }}
+                    >
+                      {verifyStatus.valid || verifyStatus.success ? <CheckCircle size={14} /> : <AlertTriangle size={14} />}
+                      <span>{verifyStatus.message}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Row 2: Interactive STT Model Selection Buttons */}
+              <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                    <Mic size={14} color="#8b5cf6" /> 🎙️ Transcription STT Model:
+                  </label>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                    Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}</strong>
+                  </span>
+                </div>
+
+                {/* Quick Segmented Buttons for STT */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  {QUICK_STT_MODELS.map((item) => {
+                    const isSelected = (aiConfig?.transcriptionModel || 'whisper-large-v3-turbo') === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleSelectSTTModel(item)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '6px 13px',
+                          borderRadius: '8px',
+                          fontSize: '0.78rem',
+                          fontWeight: isSelected ? 800 : 600,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          background: isSelected ? 'rgba(139, 92, 246, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                          color: isSelected ? '#a78bfa' : 'var(--text-secondary)',
+                          border: isSelected ? '1.5px solid #8b5cf6' : '1px solid var(--border-color)',
+                          boxShadow: isSelected ? '0 0 12px rgba(139, 92, 246, 0.35)' : 'none'
+                        }}
+                      >
+                        <span>{item.icon}</span>
+                        <span>{item.shortLabel}</span>
+                        {isSelected && <Check size={13} color="#a78bfa" />}
+                      </button>
+                    );
+                  })}
+
+                  {/* STT Dropdown for other/custom models */}
+                  <select
+                    className="form-control"
+                    style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
+                    value={aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}
+                    onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: e.target.value })}
+                  >
+                    <option value="whisper-large-v3-turbo">More STT options...</option>
+                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt || []).map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Row 3: Interactive Summary LLM Model Selection Buttons */}
+              <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                    <Cpu size={14} color="var(--accent-color)" /> ⚡ Summary LLM Model:
+                  </label>
+                  <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                    Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.summarizationModel || 'gemini-3.7-flash'}</strong>
+                  </span>
+                </div>
+
+                {/* Quick Segmented Buttons for LLM */}
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                  {QUICK_LLM_MODELS.map((item) => {
+                    const isSelected = (aiConfig?.summarizationModel || 'gemini-3.7-flash') === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => handleSelectLLMModel(item)}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '6px 13px',
+                          borderRadius: '8px',
+                          fontSize: '0.78rem',
+                          fontWeight: isSelected ? 800 : 600,
+                          cursor: 'pointer',
+                          transition: 'all 0.2s ease',
+                          background: isSelected ? 'rgba(2, 132, 199, 0.22)' : 'rgba(255, 255, 255, 0.04)',
+                          color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
+                          border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+                          boxShadow: isSelected ? '0 0 12px rgba(2, 132, 199, 0.35)' : 'none'
+                        }}
+                      >
+                        <span>{item.icon}</span>
+                        <span>{item.shortLabel}</span>
+                        {isSelected && <Check size={13} color="var(--accent-color)" />}
+                      </button>
+                    );
+                  })}
+
+                  {/* LLM Dropdown for other/custom models */}
+                  <select
+                    className="form-control"
+                    style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
+                    value={aiConfig?.summarizationModel || 'gemini-3.7-flash'}
+                    onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
+                  >
+                    <option value="gemini-3.7-flash">More LLM options...</option>
+                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm || []).map((opt) => (
+                      <option key={opt.value} value={opt.value}>{opt.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* 4-Layer Architecture Workflow Tracker Banner */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '6px 14px',
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '8px',
+                marginBottom: '8px',
+                fontSize: '0.74rem',
+                color: 'var(--text-secondary)',
+                flexWrap: 'wrap'
+              }}
+            >
+              <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
+              <span style={{ color: '#34d399', fontWeight: 700, background: 'rgba(16, 185, 129, 0.15)', padding: '1px 7px', borderRadius: '4px' }}>
+                1. Record / Listen & Determine Language
+              </span>
+              <span style={{ opacity: 0.5 }}>→</span>
+              <span style={{ color: '#38bdf8', fontWeight: 600 }}>2. Transcribe Audio</span>
+              <span style={{ opacity: 0.5 }}>→</span>
+              <span style={{ color: 'var(--text-secondary)' }}>3. Raw Transcription</span>
+              <span style={{ opacity: 0.5 }}>→</span>
+              <span style={{ color: 'var(--text-secondary)' }}>4. Template Fillup via Skills</span>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

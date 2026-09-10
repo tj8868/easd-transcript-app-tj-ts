@@ -13,7 +13,10 @@ import {
 export const MODEL_OPTIONS_BY_PROVIDER = {
   gemini: {
     stt: [
-      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (⭐ Recommended - Fast Multilingual STT)' },
+      { value: 'gemini-3.5-transcribe', label: 'gemini-3.5-transcribe (⭐ Recommended - Gemini Audio STT)' },
+      { value: 'gemini-3.5-transcribe-live', label: 'gemini-3.5-transcribe-live (Live Streaming Audio STT)' },
+      { value: 'gemini-3.5-live-translate-preview', label: 'gemini-3.5-live-translate-preview (Live Speech Translation)' },
+      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Fast Multimodal Audio STT)' },
       { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (Deep Multimodal Audio STT)' },
       { value: 'custom', label: '✏️ Type Custom STT Model...' }
     ],
@@ -21,6 +24,20 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
       { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (⭐ Recommended - GA Flash Synthesis)' },
       { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Fast Low-Latency Synthesis)' },
       { value: 'gemini-3.6-flash', label: 'gemini-3.6-flash (Balanced Multimodal)' },
+      { value: 'custom', label: '✏️ Type Custom LLM Model...' }
+    ]
+  },
+  whisperx: {
+    stt: [
+      { value: 'pyannote/speaker-diarization-community-1', label: 'pyannote/speaker-diarization-community-1 (⭐ Hugging Face Diarization)' },
+      { value: 'pyannote/speaker-diarization-3.1', label: 'pyannote/speaker-diarization-3.1 (Pyannote 3.1 Neural Diarization)' },
+      { value: 'whisperx-small', label: 'WhisperX Small + Alignment + Diarization' },
+      { value: 'whisperx-large-v3', label: 'WhisperX Large v3 + Alignment + Diarization' },
+      { value: 'custom', label: '✏️ Type Custom Diarization Pipeline...' }
+    ],
+    llm: [
+      { value: 'gemini-3.7-flash', label: 'gemini-3.7-flash (⭐ Recommended LLM Synthesis)' },
+      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Fast Synthesis)' },
       { value: 'custom', label: '✏️ Type Custom LLM Model...' }
     ]
   },
@@ -255,7 +272,7 @@ export default function MediaInput({
       {/* File Input Card */}
       <div className="card" style={{ marginBottom: 0 }}>
         <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '8px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <UploadCloud size={20} color="var(--accent-color)" /> 1. Universal Media, OCR & Document Input
+          <UploadCloud size={20} color="var(--accent-color)" /> 1. Upload
         </h2>
         <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '16px' }}>
           Upload any Video (including <strong>HEVC/H.265</strong>, iPhone <strong>MOV/ProRes</strong>), Audio, <strong>Scanned Photos & Whiteboards (OCR)</strong>, or <strong>PDFs & Documents</strong> in Bangla + English.

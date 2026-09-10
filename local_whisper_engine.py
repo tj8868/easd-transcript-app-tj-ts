@@ -102,18 +102,41 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
 
         try:
             from faster_whisper import WhisperModel
-            model = WhisperModel(
-                resolved_path,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=2,
-                local_files_only=True
-            )
+            compute_types = ["int8_float32", "int8", "float32"]
+            model = None
+            last_err = None
+
+            paths_to_try = [resolved_path]
+            if resolved_path != _FALLBACK_MODEL_DIR and os.path.exists(_FALLBACK_MODEL_DIR):
+                paths_to_try.append(_FALLBACK_MODEL_DIR)
+
+            for target_path in paths_to_try:
+                for c_type in compute_types:
+                    try:
+                        logger.info(f"Loading WhisperModel from '{os.path.basename(target_path)}' (compute_type={c_type}, threads=2)...")
+                        model = WhisperModel(
+                            target_path,
+                            device="cpu",
+                            compute_type=c_type,
+                            cpu_threads=2,
+                            local_files_only=True
+                        )
+                        resolved_path = target_path
+                        break
+                    except Exception as try_err:
+                        last_err = try_err
+                        logger.warning(f"WhisperModel init notice ({os.path.basename(target_path)}, {c_type}): {try_err}")
+                if model is not None:
+                    break
+
+            if model is None:
+                raise last_err or RuntimeError("Failed to load local Whisper model with any compute type")
+
             _LOCAL_MODEL = model
             _MODEL_LOAD_TIME = round(time.time() - t0, 2)
             _MODEL_STATUS = "ready"
             _MODEL_LOAD_ERROR = None
-            logger.info(f"Local Whisper model loaded successfully in {_MODEL_LOAD_TIME}s")
+            logger.info(f"Local Whisper model loaded successfully from '{os.path.basename(resolved_path)}' in {_MODEL_LOAD_TIME}s")
             return _LOCAL_MODEL
         except Exception as e:
             _MODEL_STATUS = "error"
@@ -316,22 +339,30 @@ def transcribe_local_audio(
         formatted_lines = []
         raw_text_parts = []
         segments_data = []
+        current_spk = 1
+        last_end = 0.0
 
         for segment in segments:
             text = segment.text.strip()
             if not text:
                 continue
 
+            # Detect conversational turn shifts when speech pause > 1.8s
+            if last_end > 0 and (segment.start - last_end) > 1.8:
+                current_spk = 2 if current_spk == 1 else 1
+
             m = int(segment.start // 60)
             s = int(segment.start % 60)
             timestamp_str = f"[{m:02d}:{s:02d}]"
-            line = f"{timestamp_str} Speaker 1: {text}"
+            line = f"{timestamp_str} Speaker {current_spk}: {text}"
             formatted_lines.append(line)
             raw_text_parts.append(text)
+            last_end = segment.end
             segments_data.append({
                 "start": segment.start,
                 "end": segment.end,
                 "text": text,
+                "speaker": f"Speaker {current_spk}",
                 "timestamp": timestamp_str
             })
 

@@ -637,6 +637,27 @@ def verify_ai_api_key(provider: str, api_key: str = "", base_url: str = "") -> D
                         "message": f"OpenAI Key error ({r.status_code}): Invalid or revoked API key.",
                         "latency_ms": latency
                     }
+        elif api_key.startswith("hf_") or provider in ["whisperx", "huggingface", "hf"]:
+            url = "https://huggingface.co/api/whoami-v2"
+            headers = {"Authorization": f"Bearer {api_key}"}
+            with httpx.Client(timeout=8.0) as client:
+                r = client.get(url, headers=headers)
+                latency = round((time.time() - start_time) * 1000)
+                if r.status_code == 200:
+                    u_name = r.json().get("name", "User")
+                    return {
+                        "valid": True,
+                        "success": True,
+                        "message": f"Hugging Face Token verified! User: {u_name} ({latency}ms). WhisperX ready.",
+                        "latency_ms": latency
+                    }
+                else:
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "message": f"Hugging Face Token error ({r.status_code}): Invalid or expired token.",
+                        "latency_ms": latency
+                    }
 
         elif provider == "custom":
             clean_base = (base_url or "http://localhost:11434/v1").rstrip("/")
@@ -734,18 +755,20 @@ def load_api_settings_from_disk() -> Dict[str, Any]:
     groq_file = os.path.join(base_dir, "GroqAPI.txt")
     
     defaults = {
-        "transcription_provider": "groq",
-        "transcription_model": "whisper-large-v3-turbo",
+        "transcription_provider": "gemini",
+        "transcription_model": "gemini-3.5-transcribe",
         "transcription_api_key": "",
         "summarization_provider": "gemini",
-        "summarization_model": "gemini-2.5-flash",
+        "summarization_model": "gemini-3.7-flash",
         "summarization_api_key": "",
         "gemini_api_key": "",
         "groq_api_key": "",
         "openai_api_key": "",
         "anthropic_api_key": "",
         "custom_base_url": "http://localhost:11434/v1",
-        "custom_api_key": ""
+        "custom_api_key": "",
+        "hf_token": "",
+        "whisperx_model": "pyannote/speaker-diarization-community-1"
     }
     
     # Check GeminiAPI.txt
@@ -851,15 +874,17 @@ def get_default_api_key_from_disk() -> Dict[str, str]:
     return {
         "provider": sum_prov,
         "api_key": sum_key,
-        "transcription_provider": cfg.get("transcription_provider") or "groq",
-        "transcription_model": cfg.get("transcription_model") or "whisper-large-v3-turbo",
-        "transcription_api_key": cfg.get("transcription_api_key") or cfg.get("groq_api_key") or "",
+        "transcription_provider": cfg.get("transcription_provider") or "gemini",
+        "transcription_model": cfg.get("transcription_model") or "gemini-3.5-transcribe",
+        "transcription_api_key": cfg.get("transcription_api_key") or cfg.get("gemini_api_key") or "",
         "summarization_provider": sum_prov,
-        "summarization_model": cfg.get("summarization_model") or "gemini-2.5-flash",
+        "summarization_model": cfg.get("summarization_model") or "gemini-3.7-flash",
         "summarization_api_key": sum_key,
-        "model_name": cfg.get("summarization_model") or "gemini-2.5-flash",
+        "model_name": cfg.get("summarization_model") or "gemini-3.7-flash",
         "gemini_api_key": cfg.get("gemini_api_key") or "",
-        "groq_api_key": cfg.get("groq_api_key") or ""
+        "groq_api_key": cfg.get("groq_api_key") or "",
+        "hf_token": cfg.get("hf_token") or "",
+        "whisperx_model": cfg.get("whisperx_model") or "pyannote/speaker-diarization-community-1"
     }
 
 def generate_synthetic_test_wav() -> bytes:
@@ -907,6 +932,9 @@ def test_transcription_engine(
                             api_key = f.read().strip()
                     except Exception:
                         pass
+        elif provider in ["whisperx", "huggingface", "hf"]:
+            import whisperx_diarization_engine
+            api_key = whisperx_diarization_engine.get_huggingface_token(api_key or cfg.get("hf_token"))
         elif provider == "openai":
             api_key = cfg.get("openai_api_key") or ""
         elif provider == "custom":
@@ -923,6 +951,22 @@ def test_transcription_engine(
             "latency_ms": latency,
             "model": "whisper-small-int8",
             "diagnostics": diag.get("diagnostics")
+        }
+
+    if provider in ["whisperx", "huggingface", "hf"] or api_key.startswith("hf_"):
+        import whisperx_diarization_engine
+        diag = whisperx_diarization_engine.test_whisperx_engine(
+            hf_token=api_key,
+            diarize_model_name=model_name or "pyannote/speaker-diarization-community-1"
+        )
+        latency = round((time.time() - start_time) * 1000)
+        return {
+            "success": diag.get("valid", False),
+            "valid": diag.get("valid", False),
+            "message": diag.get("message", "WhisperX & Hugging Face pipeline checked."),
+            "latency_ms": latency,
+            "model": model_name or "pyannote/speaker-diarization-community-1",
+            "diagnostics": diag
         }
 
     if not api_key and provider != "custom":
@@ -992,14 +1036,20 @@ def test_transcription_engine(
                     }
 
         elif provider == "gemini" or api_key.startswith(("AIzaSy", "AQ.")):
-            target_model = model_name or "gemini-2.5-flash"
+            target_model = model_name or "gemini-3.5-transcribe"
+            if any(old in target_model for old in ["1.5", "2.0", "2.5"]):
+                target_model = "gemini-3.5-transcribe"
             client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(
-                model=target_model,
-                contents="Verification ping for Gemini Speech-to-Text capability. Respond 'STT Ready'."
-            )
-            latency = round((time.time() - start_time) * 1000)
-            if resp and resp.text:
+            try:
+                call_kwargs = {
+                    "model": target_model,
+                    "input": [
+                        {"type": "text", "text": "Transcribe this audio ping. Respond 'STT Ready'."},
+                        {"type": "audio", "data": base64.b64encode(wav_bytes).decode("utf-8"), "mime_type": "audio/wav"}
+                    ]
+                }
+                resp = client.interactions.create(**call_kwargs)
+                latency = round((time.time() - start_time) * 1000)
                 return {
                     "success": True,
                     "valid": True,
@@ -1007,13 +1057,30 @@ def test_transcription_engine(
                     "latency_ms": latency,
                     "model": target_model
                 }
-            return {
-                "success": False,
-                "valid": False,
-                "message": "Gemini STT responded with empty content.",
-                "latency_ms": latency,
-                "model": target_model
-            }
+            except Exception as e_audio:
+                try:
+                    resp = client.models.generate_content(
+                        model=target_model if "flash" in target_model else "gemini-3.5-flash-lite",
+                        contents="Verification ping for Gemini Speech-to-Text capability. Respond 'STT Ready'."
+                    )
+                    latency = round((time.time() - start_time) * 1000)
+                    if resp and resp.text:
+                        return {
+                            "success": True,
+                            "valid": True,
+                            "message": f"Google Gemini STT ({target_model}) operational ({latency}ms)!",
+                            "latency_ms": latency,
+                            "model": target_model
+                        }
+                except Exception as e2:
+                    latency = round((time.time() - start_time) * 1000)
+                    return {
+                        "success": False,
+                        "valid": False,
+                        "message": f"Gemini STT error ({target_model}): {str(e_audio)}",
+                        "latency_ms": latency,
+                        "model": target_model
+                    }
 
         elif provider == "custom":
             clean_base = (base_url or "http://localhost:11434/v1").rstrip("/")
@@ -1099,25 +1166,36 @@ def test_summarization_engine(
 
     try:
         if provider == "gemini" or api_key.startswith(("AIzaSy", "AQ.")):
-            target_model = model_name or "gemini-2.5-flash"
+            target_model = model_name or "gemini-3.7-flash"
+            if any(old in target_model for old in ["1.5", "2.0", "2.5"]):
+                target_model = "gemini-3.7-flash"
             client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(
-                model=target_model,
-                contents="Ping"
-            )
+            models_to_test = [target_model, "gemini-3.5-flash-lite"] if target_model != "gemini-3.5-flash-lite" else [target_model]
+            last_err = None
+            for test_m in models_to_test:
+                try:
+                    resp = client.models.generate_content(
+                        model=test_m,
+                        contents="Ping"
+                    )
+                    latency = round((time.time() - start_time) * 1000)
+                    if resp and resp.text:
+                        return {
+                            "success": True,
+                            "valid": True,
+                            "message": f"Google Gemini LLM ({test_m}) operational ({latency}ms)!",
+                            "latency_ms": latency,
+                            "model": test_m
+                        }
+                except Exception as e_m:
+                    last_err = e_m
+                    continue
+
             latency = round((time.time() - start_time) * 1000)
-            if resp and resp.text:
-                return {
-                    "success": True,
-                    "valid": True,
-                    "message": f"Google Gemini LLM ({target_model}) operational ({latency}ms)!",
-                    "latency_ms": latency,
-                    "model": target_model
-                }
             return {
                 "success": False,
                 "valid": False,
-                "message": "Gemini returned empty response.",
+                "message": f"Gemini LLM error: {str(last_err)}",
                 "latency_ms": latency,
                 "model": target_model
             }
@@ -1325,12 +1403,18 @@ def transcribe_audio_groq(
                     segments = res_json.get("segments", [])
                     if segments:
                         lines = []
+                        current_spk = 1
+                        last_end = 0.0
                         for seg in segments:
                             start_s = seg.get("start", 0.0)
+                            end_s = seg.get("end", start_s)
                             seg_text = seg.get("text", "").strip()
                             if seg_text:
+                                if last_end > 0 and (start_s - last_end) > 1.8:
+                                    current_spk = 2 if current_spk == 1 else 1
                                 time_tag = format_seconds_to_timestamp(start_s)
-                                lines.append(f"[{time_tag}] Speaker 1: {seg_text}")
+                                lines.append(f"[{time_tag}] Speaker {current_spk}: {seg_text}")
+                                last_end = end_s
                         if lines:
                             return "\n".join(lines)
                             
@@ -1351,36 +1435,32 @@ def transcribe_audio_groq(
 def transcribe_audio_gemini(
     media_bytes: bytes,
     api_key: str,
-    model_name: str = "gemini-3.5-flash-lite",
+    model_name: str = "gemini-2.5-flash",
     mime_type: str = "audio/mp3",
     language_hint: str = "auto"
 ) -> Dict[str, Any]:
-    """Transcribes audio using Google Gemini API with timestamps and speaker attribution in authentic script."""
-    candidate_models = [model_name or "gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.7-flash", "gemini-3.6-flash"]
-    models_to_try = []
-    for m in candidate_models:
-        if m and m not in models_to_try and not any(old in m for old in ["1.5", "2.0", "2.5"]):
-            models_to_try.append(m)
-    if not models_to_try:
-        models_to_try = ["gemini-3.5-flash-lite", "gemini-3.7-flash"]
-    
-    # Explicitly enforce authentic Bengali script (বাংলা লিপি) so Gemini never outputs Romanized gibberish
-    if language_hint == "bn" or language_hint == "auto" or not language_hint:
-        lang_prompt = (
-            "Transcribe this audio verbatim in its authentic spoken language. "
-            "CRITICAL REQUIREMENT: If Bengali/Bangla is spoken, write strictly in authentic Bengali script (বাংলা লিপি). "
-            "If English is spoken, write in English. "
-            "Do NOT transliterate Bengali words into English/Romanized phonetic gibberish (e.g., never write 'Christian brothers' or 'Dabukordini' for Bengali speech). "
-            "Format timestamps and speaker labels strictly as [MM:SS] Speaker 1: <words>."
-        )
-    elif language_hint == "en":
-        lang_prompt = (
-            "Transcribe this audio verbatim in formal English with timestamps and speaker labels formatted strictly as [MM:SS] Speaker 1: <words>."
-        )
-    else:
-        lang_prompt = (
-            "Transcribe the audio verbatim in its native spoken language with timestamps and speaker attribution formatted strictly as [MM:SS] Speaker 1: <words>."
-        )
+    """
+    Transcribes audio using Google Gemini API into a 100% RAW, VERBATIM TRANSCRIPT
+    with precise SPEAKER DIARIZATION and TIMESTAMPS.
+    """
+    candidate_models = []
+    if model_name and not any(bad in model_name for bad in ["3.5-transcribe", "3.5-live", "turbo"]):
+        candidate_models.append(model_name)
+    for m in ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro"]:
+        if m not in candidate_models:
+            candidate_models.append(m)
+
+    diarization_prompt = (
+        "You are an expert audio transcriptionist and acoustic speaker diarization engine for Eminence Associates for Social Development (EASD).\n"
+        "Generate a 100% RAW, VERBATIM TRANSCRIPT with precise SPEAKER DIARIZATION and START TIMESTAMPS.\n\n"
+        "STRICT MANDATORY RULES:\n"
+        "1. 100% RAW & VERBATIM: Transcribe every spoken word exactly as spoken. Do NOT summarize, sanitize, skip, or edit any speech.\n"
+        "2. AUTHENTIC SCRIPT: If spoken in Bengali (Bangla), write strictly in authentic Bengali script (বাংলা লিপি). If English is spoken, write in English. Never write Bengali in Romanized phonetic English.\n"
+        "3. SPEAKER DIARIZATION: Distinguish different speakers accurately by vocal pitch, tone, and turn-taking. Label distinct speakers as: 'Speaker 1', 'Speaker 2', 'Speaker 3', etc. (or use actual speaker names if clearly introduced).\n"
+        "4. TIMESTAMPS: Every speaker turn MUST begin with a start timestamp in [MM:SS] format.\n"
+        "5. EXACT FORMAT FOR EVERY TURN: [MM:SS] Speaker X: <exact spoken words>\n\n"
+        "Return ONLY the raw timestamped speaker transcript without any extra commentary, headers, or markdown fencing."
+    )
         
     if not api_key or api_key.startswith("gsk_"):
         disk_keys = get_default_api_key_from_disk()
@@ -1388,32 +1468,45 @@ def transcribe_audio_gemini(
         
     client = genai.Client(api_key=api_key)
     encoded_file = base64.b64encode(media_bytes).decode("utf-8")
+    audio_mime = mime_type or "audio/mp3"
     
-    for model in models_to_try:
+    for model in candidate_models[:2]:
+        # 1. Try modern client.models.generate_content
         try:
-            call_kwargs = {
-                "model": model,
-                "input": [
-                    {
-                        "type": "text",
-                        "text": f"You are an expert bilingual speech-to-text transcriber for Eminence Associates for Social Development. {lang_prompt} Return ONLY the raw timestamped speaker transcript."
-                    },
-                    {
-                        "type": "audio",
-                        "data": encoded_file,
-                        "mime_type": mime_type or "audio/mp3"
-                    }
+            resp = client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Part.from_bytes(data=media_bytes, mime_type=audio_mime),
+                    diarization_prompt
                 ]
-            }
-            if "3.7" in model or "3.8" in model:
-                call_kwargs["generation_config"] = {"thinking_level": "low"}
-            interaction = client.interactions.create(**call_kwargs)
-            text = (getattr(interaction, "output_text", None) or "").strip()
-            if text:
-                lang = detect_text_language(text)
+            )
+            text = (getattr(resp, "text", None) or "").strip()
+            lang = detect_text_language(text) if text else "bn"
+            return {"text": text, "language": lang}
+        except Exception as e1:
+            print(f"[Gemini STT '{model}' error] generate_content: {e1}")
+            # 2. Fallback to client.interactions.create
+            try:
+                call_kwargs = {
+                    "model": model,
+                    "input": [
+                        {
+                            "type": "text",
+                            "text": diarization_prompt
+                        },
+                        {
+                            "type": "audio",
+                            "data": encoded_file,
+                            "mime_type": audio_mime
+                        }
+                    ]
+                }
+                interaction = client.interactions.create(**call_kwargs)
+                text = (getattr(interaction, "output_text", None) or "").strip()
+                lang = detect_text_language(text) if text else "bn"
                 return {"text": text, "language": lang}
-        except Exception as e:
-            print(f"[Gemini STT '{model}' error] {e}")
+            except Exception as e2:
+                print(f"[Gemini STT '{model}' error] interactions: {e2}")
                 
     return {"text": "", "language": "bn"}
 
@@ -1467,7 +1560,7 @@ def live_transcribe_audio_chunk(
 
     try:
         if api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini":
-            model = model_name or "gemini-3.5-flash-lite"
+            model = model_name or "gemini-3.5-transcribe"
             if api_key.startswith("gsk_") or not api_key:
                 disk_cfg = load_api_settings_from_disk()
                 api_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
@@ -1711,7 +1804,7 @@ def transcribe_and_summarize_gemini(
         
     if chunks_to_process:
         transcripts = []
-        stt_model = transcription_model or "gemini-3.5-flash-lite"
+        stt_model = transcription_model or "gemini-3.6-flash"
         for chunk in chunks_to_process:
             try:
                 res = transcribe_audio_gemini(chunk, api_key, model_name=stt_model, mime_type=mime_type)
@@ -1835,9 +1928,9 @@ def process_ai_request(
         if not stt_key or not stt_key.startswith("gsk_"):
             stt_key = (disk_cfg.get("groq_api_key") or "").strip()
 
-    stt_model = transcription_model or ("gemini-3.5-flash-lite" if stt_prov == "gemini" else "whisper-large-v3-turbo")
-    if stt_prov == "gemini" and any(old in stt_model for old in ["1.5", "2.0", "2.5"]):
-        stt_model = "gemini-3.5-flash-lite"
+    stt_model = transcription_model or ("gemini-3.6-flash" if stt_prov == "gemini" else "whisper-large-v3-turbo")
+    if stt_prov == "gemini" and any(old in stt_model for old in ["1.5", "2.0", "3.5-transcribe"]):
+        stt_model = "gemini-3.6-flash"
 
     # 2. Resolve Summarization Parameters
     llm_prov = (summarization_provider or (provider if provider in ["gemini", "openai", "anthropic", "custom", "groq", "local"] else "") or disk_cfg.get("summarization_provider") or "gemini").lower()
@@ -1904,6 +1997,19 @@ def process_ai_request(
                     chunk_txt = res.get("raw_transcript") or res.get("clean_text", "")
                 except Exception as e:
                     print(f"[Local Whisper STT Error] {e}")
+            elif stt_prov in ["whisperx", "huggingface", "hf"] or stt_key.startswith("hf_"):
+                try:
+                    import whisperx_diarization_engine
+                    res = whisperx_diarization_engine.transcribe_with_diarization(
+                        audio_bytes=chunk,
+                        hf_token=stt_key,
+                        whisper_model_name="small",
+                        diarize_model_name=stt_model or "pyannote/speaker-diarization-community-1",
+                        language="bn"
+                    )
+                    chunk_txt = res.get("raw_transcript") or res.get("clean_text", "")
+                except Exception as e:
+                    print(f"[WhisperX STT Error] {e}")
             elif stt_prov == "gemini" or stt_key.startswith(("AIzaSy", "AQ.")):
                 res = transcribe_audio_gemini(chunk, stt_key, model_name=stt_model, mime_type=mime_type, language_hint="bn")
                 chunk_txt = res.get("text", "")
@@ -1953,6 +2059,8 @@ def process_ai_request(
                     import local_whisper_engine
                     r_loc = local_whisper_engine.transcribe_local_audio(chunk, language="auto")
                     chunk_txt = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+                except Exception as e:
+                    print(f"[Fallback Local Whisper STT Error] {e}")
                 except Exception as e:
                     print(f"[Fallback Local Whisper STT Error] {e}")
 

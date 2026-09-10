@@ -297,8 +297,10 @@ def perform_ai_vision_ocr(
         from google.genai import types
 
         client = genai.Client(api_key=api_key)
-        models_to_try = [model_name or "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-3.7-flash"]
-        models_to_try = list(dict.fromkeys([m for m in models_to_try if m]))
+        models_to_try = [model_name or "gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.7-flash"]
+        models_to_try = list(dict.fromkeys([m for m in models_to_try if m and not any(old in m for old in ["1.5", "2.0", "2.5"])]))
+        if not models_to_try:
+            models_to_try = ["gemini-3.5-flash-lite", "gemini-3.7-flash"]
 
         # Optimize image if not PDF
         target_bytes = media_bytes

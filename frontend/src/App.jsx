@@ -97,6 +97,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isAutoTranscribing, setIsAutoTranscribing] = useState(false);
 
   // Document Type & Template State
   const [documentType, setDocumentType] = useState(localStorage.getItem('documentType') || 'meeting_minutes');
@@ -147,6 +148,8 @@ export default function App() {
   });
 
   const [transcript, setTranscript] = useState('');
+  const [isRecording, setIsRecording] = useState(false);
+  const [liveInterimText, setLiveInterimText] = useState('');
   // Backward-compatibility aliases for DOCX generation and components
   const banglaTranscript = transcript;
   const englishTranscript = transcript;
@@ -401,6 +404,47 @@ export default function App() {
            (s.includes('Action items:') && s.includes('Task Assignments:'));
   };
 
+  // --- Real-Time Speech Recognition & Live Transcription Storage ---
+  const handleLiveTranscriptSync = (updatedTranscript) => {
+    if (updatedTranscript && updatedTranscript.trim()) {
+      setTranscript(updatedTranscript);
+    }
+  };
+
+  const handleAppendToTranscript = (chunkOrLine) => {
+    if (chunkOrLine && chunkOrLine.trim()) {
+      setTranscript((prev) => {
+        if (!prev || !prev.trim()) return chunkOrLine.trim();
+        if (prev.includes(chunkOrLine.trim())) return prev;
+        return `${prev.trim()}\n${chunkOrLine.trim()}`;
+      });
+    }
+  };
+
+  const handleRecordingProcessed = (payload) => {
+    if (!payload) return;
+    const rawCandidate = payload.raw_transcript || payload.transcript || payload.bangla_transcript || payload.english_transcript || '';
+    if (rawCandidate && !isSyntheticSummary(rawCandidate)) {
+      setTranscript((prev) => {
+        if (!prev || !prev.trim()) return rawCandidate.trim();
+        if (prev.includes(rawCandidate.trim())) return prev;
+        return `${prev.trim()}\n\n${rawCandidate.trim()}`;
+      });
+    }
+    if (payload.doc_type) setDocumentType(payload.doc_type);
+    if (payload.summary) {
+      applyExtractedSummary(payload.summary);
+    }
+  };
+
+  const handleSendToBangla = (text) => {
+    setTranscript((prev) => (prev ? `${prev}\n${text}` : text));
+  };
+
+  const handleSendToEnglish = (text) => {
+    setTranscript((prev) => (prev ? `${prev}\n${text}` : text));
+  };
+
   // AI Process Request
   const handleProcessAi = async () => {
     if (!selectedFile && !directText.trim()) {
@@ -524,36 +568,6 @@ export default function App() {
       setIsSummarizing(false);
       alert('Fit to Template Error: ' + (err.response?.data?.detail || err.message));
     }
-  };
-
-  // Recording Processed with AI handler
-  const handleRecordingProcessed = (payload) => {
-    if (!payload) return;
-    const rawCandidate = payload.raw_transcript || payload.transcript || '';
-    if (rawCandidate && !isSyntheticSummary(rawCandidate)) {
-      setTranscript(rawCandidate);
-    }
-    if (payload.doc_type) setDocumentType(payload.doc_type);
-    if (payload.summary) {
-      applyExtractedSummary(payload.summary);
-    }
-  };
-
-  // Live Real-Time Transcription Handlers
-  const handleLiveTranscriptSync = (text) => {
-    setTranscript(text);
-  };
-
-  const handleAppendToTranscript = (text) => {
-    setTranscript((prev) => (prev ? `${prev}\n\n${text}` : text));
-  };
-
-  const handleSendToBangla = (text) => {
-    handleAppendToTranscript(text);
-  };
-
-  const handleSendToEnglish = (text) => {
-    handleAppendToTranscript(text);
   };
 
   // Download DOCX (Supports default EASD, Bangladesh Govt Nothi, Journal, News, Blog, and custom templates)
@@ -700,6 +714,8 @@ export default function App() {
           onAppendToTranscript={handleAppendToTranscript}
           onSendToBangla={handleSendToBangla}
           onSendToEnglish={handleSendToEnglish}
+          onRecordingStateChange={setIsRecording}
+          onLiveInterimChange={setLiveInterimText}
           scrollToSection={scrollToSection}
           onOpenSettings={() => setIsSettingsOpen(true)}
           directText={directText}
@@ -708,6 +724,8 @@ export default function App() {
           setSelectedFile={setSelectedFile}
           onProcessAi={handleProcessAi}
           isProcessing={isProcessing}
+          isAutoTranscribing={isAutoTranscribing}
+          setIsAutoTranscribing={setIsAutoTranscribing}
         />
 
         {/* 2. Transcript: Single unified real-time transcript section */}
@@ -716,6 +734,9 @@ export default function App() {
           setTranscript={setTranscript}
           onSummarize={handleSummarizeTranscript}
           isSummarizing={isSummarizing}
+          isAutoTranscribing={isAutoTranscribing}
+          isRecording={isRecording}
+          interimText={liveInterimText}
         />
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}

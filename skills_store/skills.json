@@ -1,19 +1,11 @@
 [
   {
-    "id": "gemini_audio",
-    "name": "Gemini Multimodal Speech Transcription",
-    "category": "Gemini",
+    "id": "executive_summary",
+    "name": "Executive Decisions Synthesizer",
+    "category": "Analysis",
     "is_builtin": true,
-    "description": "High-fidelity transcription of mixed Bangla + English speech directly from audio/video binaries.",
-    "prompt": "Transcribe spoken Bangla phonetics and code-switched English terms with verbatim accuracy."
-  },
-  {
-    "id": "claude_action_items",
-    "name": "Claude Action Item & Deadline Extractor",
-    "category": "Claude",
-    "is_builtin": true,
-    "description": "Deep reasoning to extract specific task assignments, responsible owners, and target deadlines.",
-    "prompt": "Extract each action item in the format: • [Task Description] - Assigned to: [Name] (Deadline: [Date/Time])."
+    "description": "Distills multi-hour discussions into concise, bulleted strategic outcomes.",
+    "prompt": "Synthesize meeting decisions into crisp, high-impact executive summary points."
   },
   {
     "id": "bangla_standardizer",
@@ -24,12 +16,20 @@
     "prompt": "Ensure Bangla transcript uses formal Bengali script while keeping technical acronyms (e.g. EASD, Eminence, DOHS, NCDs, WASH) intact."
   },
   {
-    "id": "executive_summary",
-    "name": "Executive Decisions Synthesizer",
-    "category": "Analysis",
+    "id": "claude_action_items",
+    "name": "Claude Action Item & Deadline Extractor",
+    "category": "Claude",
     "is_builtin": true,
-    "description": "Distills multi-hour discussions into concise, bulleted strategic outcomes.",
-    "prompt": "Synthesize meeting decisions into crisp, high-impact executive summary points."
+    "description": "Deep reasoning to extract specific task assignments, responsible owners, and target deadlines.",
+    "prompt": "Extract each action item in the format: • [Task Description] - Assigned to: [Name] (Deadline: [Date/Time])."
+  },
+  {
+    "id": "gemini_audio",
+    "name": "Gemini Multimodal Speech Transcription",
+    "category": "Gemini",
+    "is_builtin": true,
+    "description": "High-fidelity transcription of mixed Bangla + English speech directly from audio/video binaries.",
+    "prompt": "Transcribe spoken Bangla phonetics and code-switched English terms with verbatim accuracy."
   },
   {
     "id": "custom_file_1788406586124",

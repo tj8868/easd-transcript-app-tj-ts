@@ -288,13 +288,20 @@ export default function SettingsModal({
     const update = {
       [`${otherProvider}_api_key`]: clean
     };
-    if (otherProvider === 'groq') {
+    if (otherProvider === 'whisperx') {
+      update.hf_token = clean;
+      update.transcription_provider = 'whisperx';
+      update.transcription_api_key = clean;
+      update.transcription_model = 'pyannote/speaker-diarization-community-1';
+      update.whisperx_model = 'pyannote/speaker-diarization-community-1';
+    } else if (otherProvider === 'groq') {
       update.transcription_provider = 'groq';
       update.transcription_api_key = clean;
       update.transcription_model = aiConfig?.transcriptionModel || 'whisper-large-v3-turbo';
     }
     saveServerSettings(update);
-    setOtherFeedback(`✅ ${otherProvider.toUpperCase()} saved & activated!`);
+    const provDisplay = otherProvider === 'whisperx' ? 'WhisperX (Hugging Face)' : otherProvider.toUpperCase();
+    setOtherFeedback(`✅ ${provDisplay} saved & activated!`);
     setTimeout(() => setOtherFeedback(''), 4000);
   };
 
@@ -842,15 +849,15 @@ export default function SettingsModal({
                 }}
               >
                 <span style={{ fontSize: '0.84rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)' }}>
-                  <Globe size={14} color="var(--accent-color)" /> Other Cloud Providers (Groq, OpenAI, Anthropic)
+                  <Globe size={14} color="var(--accent-color)" /> Other Providers (WhisperX / Hugging Face, Groq, OpenAI, Anthropic)
                 </span>
                 {showOtherProviders ? <ChevronUp size={16} color="var(--text-secondary)" /> : <ChevronDown size={16} color="var(--text-secondary)" />}
               </div>
 
               {showOtherProviders && (
                 <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border-color)' }}>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-                    {['groq', 'openai', 'anthropic'].map((pId) => (
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                    {['whisperx', 'groq', 'openai', 'anthropic'].map((pId) => (
                       <button
                         key={pId}
                         type="button"
@@ -861,16 +868,22 @@ export default function SettingsModal({
                           setOtherFeedback('');
                         }}
                       >
-                        {pId.toUpperCase()}
+                        {pId === 'whisperx' ? 'WhisperX (Hugging Face)' : pId.toUpperCase()}
                       </button>
                     ))}
                   </div>
+
+                  {otherProvider === 'whisperx' && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '10px', background: 'rgba(234, 179, 8, 0.08)', border: '1px solid rgba(234, 179, 8, 0.25)', borderRadius: '6px', padding: '8px 12px' }}>
+                      🤗 <strong>Hugging Face WhisperX Diarization:</strong> Uses <code>pyannote/speaker-diarization-community-1</code> for neural speaker attribution. Provide your Hugging Face User Access Token (<code>hf_...</code>) or configure <code>HF_TOKEN</code> in your environment.
+                    </div>
+                  )}
 
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
                     <input
                       type={showOtherKey ? 'text' : 'password'}
                       className="form-control"
-                      placeholder={`Paste ${otherProvider.toUpperCase()} Key...`}
+                      placeholder={otherProvider === 'whisperx' ? 'Paste Hugging Face Token (e.g. hf_...)' : `Paste ${otherProvider.toUpperCase()} Key...`}
                       value={otherKey}
                       onChange={(e) => setOtherKey(e.target.value)}
                       style={{ flex: 1, fontSize: '0.85rem', fontFamily: 'monospace', padding: '8px 12px' }}

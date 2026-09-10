@@ -13,6 +13,7 @@ import base64
 import uuid
 import re
 import time
+import asyncio
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
@@ -77,12 +78,25 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https: ws: wss:; "
-        "upgrade-insecure-requests; object-src 'none'; "
-        "frame-ancestors 'self' https://*.github.dev https://*.app.github.dev;"
-    )
+    
+    # Check if request is actually over HTTPS
+    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    if is_https:
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: https: ws: wss:; "
+            "upgrade-insecure-requests; object-src 'none'; "
+            "frame-ancestors 'self' https://*.github.dev https://*.app.github.dev;"
+        )
+    else:
+        # On clean HTTP / localhost / 127.0.0.1, explicitly reset cached HSTS and allow HTTP
+        # to prevent browsers from forcing HTTPS on port 8000 (which triggers ERR_SSL_PROTOCOL_ERROR / Network Error)
+        response.headers["Strict-Transport-Security"] = "max-age=0"
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data: http: https: ws: wss:; "
+            "object-src 'none'; "
+            "frame-ancestors 'self' https://*.github.dev https://*.app.github.dev;"
+        )
     return response
 
 app.add_middleware(
@@ -144,18 +158,20 @@ class VerifyKeyPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 class ApiSettingsPayload(BaseModel):
-    transcription_provider: Optional[str] = "groq"
+    transcription_provider: Optional[str] = "gemini"
     transcription_api_key: Optional[str] = ""
-    transcription_model: Optional[str] = "whisper-large-v3-turbo"
+    transcription_model: Optional[str] = "gemini-3.5-transcribe"
     transcription_base_url: Optional[str] = ""
     summarization_provider: Optional[str] = "gemini"
     summarization_api_key: Optional[str] = ""
-    summarization_model: Optional[str] = "gemini-3.5-flash"
+    summarization_model: Optional[str] = "gemini-3.7-flash"
     summarization_base_url: Optional[str] = ""
     groq_api_key: Optional[str] = ""
     gemini_api_key: Optional[str] = ""
     openai_api_key: Optional[str] = ""
     anthropic_api_key: Optional[str] = ""
+    hf_token: Optional[str] = ""
+    whisperx_model: Optional[str] = "pyannote/speaker-diarization-community-1"
     model_config = ConfigDict(extra="ignore")
 
 class TestEnginePayload(BaseModel):
@@ -228,9 +244,16 @@ def test_engine_endpoint(payload: TestEnginePayload):
 
     # Test STT Transcription Engine if requested
     if payload.test_type in ["stt", "both"]:
-        stt_prov = payload.stt_provider or cfg.get("transcription_provider") or "groq"
-        stt_key = payload.stt_api_key or cfg.get(f"{stt_prov}_api_key") or cfg.get("transcription_api_key") or ""
-        stt_mod = payload.stt_model or cfg.get("transcription_model") or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-2.5-flash")
+        stt_prov = payload.stt_provider or cfg.get("transcription_provider") or "gemini"
+        if stt_prov in ["whisperx", "huggingface", "hf"]:
+            stt_key = payload.stt_api_key or cfg.get("hf_token") or os.getenv("HF_TOKEN") or ""
+            stt_mod = payload.stt_model or cfg.get("whisperx_model") or "pyannote/speaker-diarization-community-1"
+        else:
+            stt_key = payload.stt_api_key or cfg.get(f"{stt_prov}_api_key") or cfg.get("transcription_api_key") or ""
+            stt_mod = payload.stt_model or cfg.get("transcription_model") or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-3.5-transcribe")
+        if stt_prov == "gemini" and any(old in stt_mod for old in ["1.5", "2.0", "2.5"]):
+            stt_mod = "gemini-3.5-transcribe"
+
         stt_res = test_transcription_engine(
             provider=stt_prov,
             api_key=stt_key,
@@ -245,7 +268,10 @@ def test_engine_endpoint(payload: TestEnginePayload):
     if payload.test_type in ["llm", "both"]:
         llm_prov = payload.llm_provider or cfg.get("summarization_provider") or "gemini"
         llm_key = payload.llm_api_key or cfg.get(f"{llm_prov}_api_key") or cfg.get("summarization_api_key") or ""
-        llm_mod = payload.llm_model or cfg.get("summarization_model") or ("gemini-2.5-flash" if llm_prov == "gemini" else "llama-3.3-70b-versatile")
+        llm_mod = payload.llm_model or cfg.get("summarization_model") or ("gemini-3.7-flash" if llm_prov == "gemini" else "llama-3.3-70b-versatile")
+        if llm_prov == "gemini" and any(old in llm_mod for old in ["1.5", "2.0", "2.5"]):
+            llm_mod = "gemini-3.7-flash"
+
         llm_res = test_summarization_engine(
             provider=llm_prov,
             api_key=llm_key,
@@ -508,7 +534,8 @@ async def transcribe_and_summarize(
 
         template_schema = get_template_by_id(template_id) if template_id else None
 
-        result = process_ai_request(
+        result = await asyncio.to_thread(
+            process_ai_request,
             provider=provider,
             api_key=api_key,
             base_url=base_url,
@@ -552,7 +579,8 @@ async def summarize_transcript_endpoint(
     """Summarizes raw or edited transcript into structured template fields using specified model."""
     try:
         template_schema = get_template_by_id(template_id) if template_id else None
-        res = process_ai_request(
+        res = await asyncio.to_thread(
+            process_ai_request,
             provider=provider,
             api_key=api_key,
             base_url=base_url,
@@ -632,7 +660,8 @@ async def ocr_extract_and_optimize_endpoint(
 
         template_schema = get_template_by_id(template_id) if template_id else None
         
-        result = process_ai_request(
+        result = await asyncio.to_thread(
+            process_ai_request,
             provider=provider,
             api_key=api_key,
             base_url=base_url,
@@ -795,50 +824,82 @@ async def transcribe_take_endpoint(
             return JSONResponse(content={"status": "success", "transcript": "", "language": "bn"})
             
         mime = file.content_type or "audio/webm"
+        if not mime or mime == "application/octet-stream":
+            fn_low = (file.filename or "").lower()
+            if fn_low.endswith(".mp3"): mime = "audio/mp3"
+            elif fn_low.endswith(".wav"): mime = "audio/wav"
+            elif fn_low.endswith(".m4a"): mime = "audio/m4a"
+            elif fn_low.endswith(".ogg"): mime = "audio/ogg"
+            elif fn_low.endswith(".mp4"): mime = "audio/mp4"
+            elif fn_low.endswith(".webm"): mime = "audio/webm"
+            elif fn_low.endswith(".mov"): mime = "video/quicktime"
+
         cfg = load_api_settings_from_disk()
-        key = api_key or cfg.get("gemini_api_key") or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
-        
         from ai_providers import transcribe_audio_gemini, transcribe_audio_groq, detect_text_language
-        
-        chosen_prov = (provider or cfg.get("transcription_provider") or "local_whisper").lower()
-        if chosen_prov in ["local_whisper", "local", "whisper_local"]:
-            import local_whisper_engine
-            res = local_whisper_engine.transcribe_local_audio(
-                media_input=content,
-                language=language or "auto",
-                beam_size=2,
-                temperature=0.0
-            )
-            transcript = res.get("raw_transcript") or res.get("clean_text", "")
-            lang = res.get("detected_language", "bn")
-        elif chosen_prov == "gemini" or key.startswith(("AIzaSy", "AQ.")):
-            res = transcribe_audio_gemini(
-                media_bytes=content,
-                api_key=key,
-                model_name=model_name or "gemini-3.5-flash-lite",
-                mime_type=mime,
-                language_hint=language or "bn"
-            )
-            transcript = res.get("text", "")
-            lang = res.get("language", "bn")
-            if not transcript:
+
+        def _do_transcribe():
+            chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
+            if chosen_prov == "gemini":
+                key = api_key if (api_key and not api_key.startswith("gsk_")) else (cfg.get("gemini_api_key") or (get_default_api_key_from_disk().get("api_key") if not get_default_api_key_from_disk().get("api_key", "").startswith("gsk_") else ""))
+            elif chosen_prov == "groq":
+                key = api_key if (api_key and api_key.startswith("gsk_")) else (cfg.get("groq_api_key") or cfg.get("transcription_api_key") or "")
+            else:
+                key = api_key or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
+
+            if chosen_prov in ["local_whisper", "local", "whisper_local"]:
                 import local_whisper_engine
-                r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
-                transcript = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-        else:
-            transcript = transcribe_audio_groq(
-                media_bytes=content,
-                api_key=key,
-                model_name=model_name or "whisper-large-v3-turbo",
-                mime_type=mime,
-                language=language or "bn"
-            )
-            lang = detect_text_language(transcript)
-            if not transcript:
-                import local_whisper_engine
-                r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
-                transcript = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-            
+                res = local_whisper_engine.transcribe_local_audio(
+                    media_input=content,
+                    language=language or "auto",
+                    beam_size=2,
+                    temperature=0.0
+                )
+                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", "bn")
+            elif chosen_prov in ["whisperx", "huggingface", "hf"]:
+                import whisperx_diarization_engine
+                hf_tok = api_key or cfg.get("hf_token") or os.getenv("HF_TOKEN") or ""
+                diar_model = cfg.get("whisperx_model") or "pyannote/speaker-diarization-community-1"
+                res = whisperx_diarization_engine.transcribe_with_diarization(
+                    audio_bytes=content,
+                    hf_token=hf_tok,
+                    whisper_model_name="small",
+                    diarize_model_name=diar_model,
+                    language=language or "bn"
+                )
+                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("language", "bn")
+            elif chosen_prov == "gemini" or (key and key.startswith(("AIzaSy", "AQ."))):
+                target_gem_stt = model_name if model_name and not any(bad in model_name for bad in ["3.5-transcribe", "3.5-live", "turbo", "2.0-flash"]) else "gemini-3.6-flash"
+                res = transcribe_audio_gemini(
+                    media_bytes=content,
+                    api_key=key,
+                    model_name=target_gem_stt,
+                    mime_type=mime,
+                    language_hint=language or "bn"
+                )
+                t = res.get("text", "")
+                l = res.get("language", "bn")
+                if not t:
+                    import local_whisper_engine
+                    r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
+                    t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+                return t, l
+            else:
+                t = transcribe_audio_groq(
+                    media_bytes=content,
+                    api_key=key,
+                    model_name=model_name or "whisper-large-v3-turbo",
+                    mime_type=mime,
+                    language=language or "bn"
+                )
+                l = detect_text_language(t)
+                if not t:
+                    import local_whisper_engine
+                    r_loc = local_whisper_engine.transcribe_local_audio(content, language="bn")
+                    t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+                return t, l
+
+        transcript, lang = await asyncio.to_thread(_do_transcribe)
+
         return JSONResponse(content={
             "status": "success",
             "transcript": transcript,
@@ -1015,8 +1076,7 @@ if __name__ == "__main__":
     import uvicorn
     import sys
     port = find_available_port(8000)
-    is_cloud_env = os.getenv("CODESPACES") == "true" or os.getenv("DEVCONTAINER") == "true" or os.getenv("HOST") == "0.0.0.0"
-    server_host = os.getenv("HOST", "0.0.0.0" if is_cloud_env else "127.0.0.1")
+    server_host = os.getenv("HOST", "0.0.0.0")
     
     cert_path = os.path.join(BASE_DIR, "cert.pem")
     key_path = os.path.join(BASE_DIR, "key.pem")

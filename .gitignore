@@ -36,6 +36,9 @@ Test Input .txt
 .env.local
 GroqAPI.txt
 GeminiAPI.txt
+HuggingFaceAPI.txt
+HF_TOKEN.txt
+hf_token.txt
 api_settings.json
 
 # OS Generated

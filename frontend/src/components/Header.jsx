@@ -21,9 +21,9 @@ export default function Header({
             <span className="sign-pulse"></span>
           </div>
         </div>
-        <div>
-          <h1 style={{ fontSize: '1.35rem', fontWeight: 800, letterSpacing: '-0.02em', margin: 0, display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-            <span>Eminence Transcription & Meeting Minutes AI</span>
+        <div className="brand-text">
+          <h1 className="brand-title">
+            <span className="brand-name">Eminence Minutes AI</span>
             <div className="transcription-pill">
               <span className="live-dot"></span>
               <div className="sound-wave-bars">
@@ -33,35 +33,20 @@ export default function Header({
             </div>
             <span className="org-badge">EASD</span>
           </h1>
-          <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '4px 0 0 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <p className="brand-subtitle">
             <span>Eminence Associates for Social Development</span>
             <span style={{ opacity: 0.4 }}>•</span>
-            <span style={{ color: 'var(--eminence-cerulean)', fontWeight: 600 }}>Gemini 3.7 Flash & Dual Language Executive Minutes</span>
+            <span style={{ color: 'var(--eminence-cerulean)', fontWeight: 600 }}>Automated Voice Minutes & Clinical Documentation</span>
           </p>
         </div>
       </div>
-      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="header-actions">
         {/* Front Page Top API Button: Shows ONLY the active API name, not the key/code */}
         <button
           id="topApiButton"
-          className="btn btn-secondary"
+          className="btn btn-secondary header-btn"
           onClick={onOpenApiSettings || onOpenSettings}
           title={`Active AI Engine: ${activeApiName}. Click to configure or switch APIs.`}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '7px',
-            padding: '8px 14px',
-            fontSize: '0.85rem',
-            fontWeight: 700,
-            border: '1px solid var(--accent-color)',
-            background: 'rgba(2, 132, 199, 0.10)',
-            color: 'var(--text-primary)',
-            borderRadius: '8px',
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.15)',
-            cursor: 'pointer',
-            transition: 'all 0.2s ease'
-          }}
         >
           <span
             style={{
@@ -70,14 +55,15 @@ export default function Header({
               borderRadius: '50%',
               background: '#10b981',
               boxShadow: '0 0 8px #10b981',
-              display: 'inline-block'
+              display: 'inline-block',
+              flexShrink: 0
             }}
           ></span>
           <span style={{ color: 'var(--accent-color)', fontSize: '0.78rem', fontWeight: 800 }}>API:</span>
           <span
             id="activeApiDisplayName"
             style={{
-              maxWidth: '150px',
+              maxWidth: '120px',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -91,56 +77,46 @@ export default function Header({
         {/* Responsive 3-Device Visualizer Button */}
         {!isFrameView && onOpenDeviceViewer && (
           <button
-            className="btn btn-secondary"
+            className="btn btn-secondary header-btn"
             onClick={onOpenDeviceViewer}
             title="Visualize responsive layout in Mobile, Tablet, and Desktop components"
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '8px 12px',
-              fontSize: '0.82rem',
-              fontWeight: 700,
-              border: '1px solid var(--accent-color)',
-              color: 'var(--accent-color)',
-              background: 'rgba(14, 165, 233, 0.08)'
-            }}
           >
             <LayoutGrid size={15} />
-            <span>📱 3-Device View</span>
+            <span className="btn-label-desktop">📱 3-Device View</span>
+            <span className="btn-label-mobile">📱 3-Device</span>
           </button>
         )}
 
         {/* Quick Theme Toggle In Place */}
         <button
-          className="btn btn-secondary"
+          className="btn btn-secondary header-btn"
           onClick={toggleTheme}
           title="Toggle Light / Dark Mode"
-          style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', fontSize: '0.85rem' }}
         >
           {theme === 'light' ? (
             <>
-              <Moon size={16} color="var(--eminence-blue)" /> <span>Dark</span>
+              <Moon size={15} color="var(--eminence-blue)" /> <span className="btn-label-desktop">Dark</span>
             </>
           ) : (
             <>
-              <Sun size={16} color="#f59e0b" /> <span>Light</span>
+              <Sun size={15} color="#f59e0b" /> <span className="btn-label-desktop">Light</span>
             </>
           )}
         </button>
 
         {/* Secondary Settings Menu */}
         <button
-          className="btn btn-secondary"
+          className="btn btn-secondary header-btn"
           onClick={onOpenSettings}
           title="Open Settings & Font Engine"
-          style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 12px', fontSize: '0.85rem' }}
         >
-          <Settings size={16} /> <span>Settings</span>
+          <Settings size={15} /> <span className="btn-label-desktop">Settings</span>
         </button>
 
-        <button className="btn btn-primary" onClick={onOpenGDrive} style={{ padding: '8px 14px', fontSize: '0.85rem' }}>
-          <Cloud size={16} /> GDrive Sync
+        <button className="btn btn-primary header-btn" onClick={onOpenGDrive}>
+          <Cloud size={15} />
+          <span className="btn-label-desktop">GDrive Sync</span>
+          <span className="btn-label-mobile">Sync</span>
         </button>
       </div>
     </header>
