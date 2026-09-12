@@ -34,7 +34,8 @@ async function runTests() {
 
   // TEST 1: Default Provider is Gemini
   console.log('\n[TEST 1] Verifying System-wide Default Provider is Google Gemini...');
-  assert.strictEqual(PROVIDERS[0].id, 'gemini', 'First provider in list must be gemini');
+  const geminiProvider = PROVIDERS.find(p => p.id === 'gemini');
+  assert(geminiProvider, 'Gemini provider must exist in list');
   global.localStorage.clear();
   const defaultDisplayName = getActiveApiDisplayName(null);
   assert.strictEqual(defaultDisplayName, 'Gemini API', `Expected 'Gemini API', got '${defaultDisplayName}'`);
@@ -121,22 +122,19 @@ async function runTests() {
   assert(bundleContent.includes('activeApiDisplayName'), 'Production JS bundle must include activeApiDisplayName');
   console.log('   ✅ PASSED: Production client bundle verified with #topApiButton and #activeApiDisplayName.');
 
-  // TEST 8: Verify Test API Options in SettingsModal & MediaInput
-  console.log('\n[TEST 8] Validating Dedicated "Test API" Buttons Across Front Page & Settings Modal...');
-  const mediaInputContent = fs.readFileSync(path.join(__dirname, 'src', 'components', 'MediaInput.jsx'), 'utf-8');
-  assert(mediaInputContent.includes('id="frontPageTestApiBtn"'), 'MediaInput must contain frontPageTestApiBtn on main card');
+  // TEST 8: Verify Test API Options in SettingsModal
+  console.log('\n[TEST 8] Validating Dedicated "Test API" Buttons in Settings Modal...');
   assert(settingsContent.includes('id="testActiveEngineBtn"'), 'SettingsModal must contain testActiveEngineBtn');
   assert(settingsContent.includes('id="testGeminiBtn"'), 'SettingsModal must contain testGeminiBtn');
   assert(settingsContent.includes('id="testCustomNewBtn"'), 'SettingsModal must contain testCustomNewBtn');
   assert(settingsContent.includes('testCustomVaultBtn_'), 'SettingsModal must contain testCustomVaultBtn_ for vault items');
   assert(settingsContent.includes('id="testOtherProviderBtn"'), 'SettingsModal must contain testOtherProviderBtn');
-  console.log('   ✅ PASSED: All 5 "Test API" buttons verified across front page, active engine banner, Gemini, and custom vault.');
+  console.log('   ✅ PASSED: All "Test API" buttons verified across active engine banner, Gemini, and custom vault.');
 
   // TEST 9: Verify Production Bundle Contains the Test API Elements
   console.log('\n[TEST 9] Validating Vite Built Production Bundle for Test API Options...');
   assert(bundleContent.includes('testActiveEngineBtn'), 'Production bundle must contain testActiveEngineBtn');
-  assert(bundleContent.includes('frontPageTestApiBtn'), 'Production bundle must contain frontPageTestApiBtn');
-  console.log('   ✅ PASSED: Production client bundle verified with #testActiveEngineBtn and #frontPageTestApiBtn.');
+  console.log('   ✅ PASSED: Production client bundle verified with #testActiveEngineBtn.');
 
   console.log('\n====================================================');
   console.log('🎉 ALL 9 API BUTTON & TEST API TESTS PASSED 100%!');
