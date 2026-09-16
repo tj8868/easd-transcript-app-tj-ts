@@ -55,6 +55,47 @@ DEFAULT_BILINGUAL_PROMPT = (
 )
 
 
+def sanitize_whisper_text(text: Optional[str]) -> str:
+    """
+    Cleans raw Whisper transcription output to eliminate hallucinations and decoder loops:
+    1. Removes Unicode replacement characters (\uFFFD) and zero-width spaces (\u200B).
+    2. Strips hallucinated Tibetan / delimiter Unicode blocks (\u0F00-\u0FFF, e.g. ༼, ༽).
+    3. Collapses repetitive character/syllable/phrase loops (e.g. 'বিবিবিবিবিবি...' -> 'বি').
+    4. Eliminates phantom punctuation repetitions (e.g. '..........', '।।।।।।').
+    5. Discards segments lacking authentic alphanumeric speech tokens (Bangla or English).
+    """
+    if not text:
+        return ""
+
+    import re
+
+    # Strip replacement char and zero-width artifacts
+    cleaned = text.replace("\ufffd", "").replace("\u200b", "").replace("\ufeff", "")
+
+    # Strip Tibetan / alien symbol Unicode block (\u0F00-\u0FFF, including ༼, ༽, etc.)
+    cleaned = re.sub(r"[\u0F00-\u0FFF༼༽ༀ༁༂༃]+", " ", cleaned)
+
+    # Collapse repetitive character / syllable / phrase loops (e.g. 'বি' repeated 4+ times)
+    # Run multiple passes to catch nested loops
+    for _ in range(3):
+        prev = cleaned
+        cleaned = re.sub(r"(.{1,8}?)\1{3,}", r"\1", cleaned)
+        cleaned = re.sub(r"(\b\w+\s+)\1{3,}", r"\1", cleaned)
+        if cleaned == prev:
+            break
+
+    # Clean excessive punctuation repeats
+    cleaned = re.sub(r"([।\.\?\!\,\-\_])\1{2,}", r"\1", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+    # If the text has no meaningful alphanumeric characters (Bangla or Latin script), discard it
+    has_meaningful_speech = bool(re.search(r"[\u0980-\u09FFa-zA-Z0-9]", cleaned))
+    if not has_meaningful_speech:
+        return ""
+
+    return cleaned
+
+
 def get_system_ram_specs() -> Dict[str, Any]:
     """Detect system RAM specs to decide between small and nano (tiny/base) models."""
     try:
@@ -62,7 +103,8 @@ def get_system_ram_specs() -> Dict[str, Any]:
         mem = psutil.virtual_memory()
         total_gb = round(mem.total / (1024 ** 3), 2)
         avail_gb = round(mem.available / (1024 ** 3), 2)
-        is_low = total_gb < 6.0 or avail_gb < 1.5
+        # Low RAM only when total RAM < 5.0GB or available RAM < 0.8GB
+        is_low = total_gb < 5.0 or avail_gb < 0.8
         return {
             "total_ram_gb": total_gb,
             "available_ram_gb": avail_gb,
@@ -86,14 +128,27 @@ def select_optimal_model_name() -> str:
     """
     Dynamically select between whisper-small and whisper-nano (tiny/base)
     based on host system specifications.
-    If RAM is constrained (< 6GB total or < 1.5GB available), selects 'tiny' (nano).
-    Otherwise selects 'small'.
+    Standard systems (>= 6GB RAM) will reliably select 'small' for superior
+    Bangla/English bilingual accuracy and resistance to hallucinations.
+    Low-spec machines (< 4GB total or < 0.6GB available) select 'tiny' (nano).
     """
-    if is_low_ram_system():
+    specs = get_system_ram_specs()
+    total_gb = specs.get("total_ram_gb", 8.0)
+    avail_gb = specs.get("available_ram_gb", 2.0)
+
+    # Severely constrained RAM
+    if total_gb < 4.0 or avail_gb < 0.6:
         if os.path.isdir(_TINY_MODEL_DIR) and (os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.safetensors"))):
             return "tiny"
         if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
             return "base"
+    elif total_gb < 6.0 or avail_gb < 1.0:
+        if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+            return "base"
+        if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
+            return "small"
+
+    # Standard system: small model is optimal
     if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
         return "small"
     if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
@@ -396,7 +451,7 @@ def transcribe_local_audio(
     lang_code = normalize_language_code(language)
     init_prompt = prompt or DEFAULT_BILINGUAL_PROMPT
 
-    # Run faster-whisper transcribe with anti-hallucination & anti-repetition settings
+    # Run faster-whisper transcribe with robust anti-hallucination & anti-repetition settings
     try:
         segments, info = model.transcribe(
             temp_audio_file,
@@ -405,7 +460,12 @@ def transcribe_local_audio(
             initial_prompt=init_prompt,
             language=lang_code,
             condition_on_previous_text=False,
-            vad_filter=False  # 100% offline, zero network requests
+            compression_ratio_threshold=2.4,
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            repetition_penalty=1.2,
+            no_repeat_ngram_size=4,
+            vad_filter=False  # Keep False to avoid MKL malloc crashes on Windows CPU
         )
 
         formatted_lines = []
@@ -413,10 +473,28 @@ def transcribe_local_audio(
         segments_data = []
         current_spk = 1
         last_end = 0.0
+        last_clean_text = ""
 
         for segment in segments:
-            text = segment.text.strip()
+            # 1. Skip pure silence / high no_speech_prob segments (> 0.65 probability of no speech)
+            if getattr(segment, "no_speech_prob", 0.0) > 0.65:
+                continue
+
+            # 2. Skip extreme repetitive loops flagged by compression ratio (> 2.4)
+            if getattr(segment, "compression_ratio", 1.0) > 2.4:
+                continue
+
+            raw_text = (segment.text or "").strip()
+            if not raw_text:
+                continue
+
+            # 3. Sanitize text: collapse repetition loops, strip Tibetan/alien tokens, strip \uFFFD
+            text = sanitize_whisper_text(raw_text)
             if not text:
+                continue
+
+            # 4. Deduplicate consecutive identical segments (e.g. repeated hallucination across segment boundaries)
+            if text == last_clean_text:
                 continue
 
             # Detect conversational turn shifts when speech pause > 1.8s
@@ -430,6 +508,7 @@ def transcribe_local_audio(
             formatted_lines.append(line)
             raw_text_parts.append(text)
             last_end = segment.end
+            last_clean_text = text
             segments_data.append({
                 "start": segment.start,
                 "end": segment.end,

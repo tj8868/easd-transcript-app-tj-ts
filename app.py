@@ -826,7 +826,9 @@ async def live_transcribe_chunk_endpoint(
             mime_type=mime,
             language=language or "auto"
         )
-        return JSONResponse(content={"status": "success", "text": res.get("text", ""), "language": res.get("language", "auto")})
+        import local_whisper_engine
+        cleaned_chunk = local_whisper_engine.sanitize_whisper_text(res.get("text", ""))
+        return JSONResponse(content={"status": "success", "text": cleaned_chunk, "language": res.get("language", "auto")})
     except Exception as e:
         return JSONResponse(content={"status": "error", "text": "", "detail": str(e)}, status_code=200)
 
@@ -969,6 +971,24 @@ async def transcribe_take_endpoint(
             transcript = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
             lang = r_loc.get("detected_language", "auto")
 
+        # Sanitize lines to guarantee no hallucination loops or Tibetan symbols leak out
+        import local_whisper_engine
+        cleaned_lines = []
+        for line in (transcript or "").splitlines():
+            s_line = line.strip()
+            if not s_line:
+                continue
+            if ": " in s_line and s_line.startswith("["):
+                prefix, content_part = s_line.split(": ", 1)
+                sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part)
+                if sanitized_part:
+                    cleaned_lines.append(f"{prefix}: {sanitized_part}")
+            else:
+                sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line)
+                if sanitized_part:
+                    cleaned_lines.append(sanitized_part)
+        transcript = "\n".join(cleaned_lines)
+
         return JSONResponse(content={
             "status": "success",
             "transcript": transcript,
@@ -980,9 +1000,24 @@ async def transcribe_take_endpoint(
             import local_whisper_engine
             opt_m = local_whisper_engine.select_optimal_model_name()
             r_loc = local_whisper_engine.transcribe_local_audio(content, model_name=opt_m)
+            raw_t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+            cleaned_emergency = []
+            for line in raw_t.splitlines():
+                s_line = line.strip()
+                if not s_line:
+                    continue
+                if ": " in s_line and s_line.startswith("["):
+                    prefix, content_part = s_line.split(": ", 1)
+                    sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part)
+                    if sanitized_part:
+                        cleaned_emergency.append(f"{prefix}: {sanitized_part}")
+                else:
+                    sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line)
+                    if sanitized_part:
+                        cleaned_emergency.append(sanitized_part)
             return JSONResponse(content={
                 "status": "success",
-                "transcript": r_loc.get("raw_transcript") or r_loc.get("clean_text", ""),
+                "transcript": "\n".join(cleaned_emergency),
                 "language": r_loc.get("detected_language", "auto")
             })
         except Exception:

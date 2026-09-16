@@ -1631,21 +1631,26 @@ def live_transcribe_audio_chunk(
             )
             if res.get("status") == "success":
                 txt = res.get("clean_text") or res.get("raw_transcript", "")
+                txt = local_whisper_engine.sanitize_whisper_text(txt)
                 lang = res.get("detected_language") or "bn"
                 return {"text": txt, "raw_transcript": res.get("raw_transcript", ""), "language": lang}
         except Exception as e:
             print(f"[Local Whisper Live Chunk Warning] {e}")
 
     try:
+        import local_whisper_engine
         if api_key.startswith("AIzaSy") or api_key.startswith("AQ.") or provider == "gemini":
             model = model_name or "gemini-3.5-transcribe"
             if api_key.startswith("gsk_") or not api_key:
                 disk_cfg = load_api_settings_from_disk()
                 api_key = (disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
-            return transcribe_audio_gemini(media_bytes, api_key, model, mime_type, language_hint=language)
+            g_res = transcribe_audio_gemini(media_bytes, api_key, model, mime_type, language_hint=language)
+            g_txt = local_whisper_engine.sanitize_whisper_text(g_res.get("text", ""))
+            return {"text": g_txt, "language": g_res.get("language", "bn")}
         elif api_key.startswith("gsk_") or provider in ["groq", "custom"]:
             model = model_name or "whisper-large-v3-turbo"
             txt = transcribe_audio_groq(media_bytes, api_key, model_name=model, mime_type=mime_type, language=language or "bn")
+            txt = local_whisper_engine.sanitize_whisper_text(txt)
             lang = detect_text_language(txt)
             return {"text": txt, "language": lang}
         elif api_key.startswith(("sk-proj-", "sk-")) or provider == "openai":
@@ -1658,13 +1663,15 @@ def live_transcribe_audio_chunk(
                 w_resp = client.post(whisper_url, headers=headers, files=files, data=data)
                 if w_resp.status_code == 200:
                     txt = w_resp.json().get("text", "")
+                    txt = local_whisper_engine.sanitize_whisper_text(txt)
                     return {"text": txt, "language": detect_text_language(txt)}
         else:
             # Automatic fallback to local whisper if no cloud keys match
-            import local_whisper_engine
             res = local_whisper_engine.transcribe_local_audio(media_bytes, language=language or "auto")
             if res.get("status") == "success":
-                return {"text": res.get("clean_text", ""), "raw_transcript": res.get("raw_transcript", ""), "language": res.get("detected_language", "bn")}
+                txt = res.get("clean_text", "")
+                txt = local_whisper_engine.sanitize_whisper_text(txt)
+                return {"text": txt, "raw_transcript": res.get("raw_transcript", ""), "language": res.get("detected_language", "bn")}
     except Exception as e:
         print(f"[Live Transcribe Chunk Warning] {e}")
         

@@ -52,6 +52,27 @@ const ModelSectionHeader = ({ icon, label, activeModel }) => (
   </div>
 );
 
+export const cleanTranscriptText = (text) => {
+  if (!text) return '';
+  // 1. Remove replacement character and zero-width artifacts
+  let cleaned = String(text).replace(/[\uFFFD\u200B\uFEFF]/g, '');
+  // 2. Remove Tibetan / alien delimiter symbols Unicode block (\u0F00-\u0FFF, e.g. ༼, ༽)
+  cleaned = cleaned.replace(/[\u0F00-\u0FFF༼༽ༀ༁༂༃]+/g, ' ');
+  // 3. Collapse repetitive character / syllable loops (e.g. 'বিবিবিবিবিবি...' -> 'বি')
+  for (let i = 0; i < 3; i++) {
+    const prev = cleaned;
+    cleaned = cleaned.replace(/(.{1,8}?)\1{3,}/g, '$1');
+    cleaned = cleaned.replace(/(\b\w+\s+)\1{3,}/g, '$1');
+    if (cleaned === prev) break;
+  }
+  // 4. Collapse excessive punctuation repeats
+  cleaned = cleaned.replace(/([।\.\?\!\,\-\_])\1{2,}/g, '$1');
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  // 5. Must have meaningful alphanumeric characters (Bangla or Latin)
+  const hasSpeech = /[\u0980-\u09FFa-zA-Z0-9]/.test(cleaned);
+  return hasSpeech ? cleaned : '';
+};
+
 async function requestTakeTranscription({ blob, name, language, provider, apiKey, modelName }) {
   const formData = new FormData();
   formData.append('file', blob, blob.name || `${name}.mp3`);
@@ -60,7 +81,24 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
   formData.append('api_key', apiKey);
   formData.append('model_name', modelName);
   const res = await axios.post('/api/transcribe_take', formData);
-  return res.data?.transcript?.trim() || '';
+  const raw = res.data?.transcript?.trim() || '';
+  if (!raw) return '';
+
+  // Clean lines and drop empty/alien segments
+  const cleaned = raw.split('\n').map(line => {
+    const sLine = line.trim();
+    if (!sLine) return '';
+    if (sLine.includes(': ') && sLine.startsWith('[')) {
+      const parts = sLine.split(': ');
+      const prefix = parts[0];
+      const content = parts.slice(1).join(': ');
+      const cleanContent = cleanTranscriptText(content);
+      return cleanContent ? `${prefix}: ${cleanContent}` : '';
+    }
+    return cleanTranscriptText(sLine);
+  }).filter(Boolean).join('\n');
+
+  return cleaned;
 }
 
 export default function LiveRecordStudio({
@@ -625,17 +663,19 @@ export default function LiveRecordStudio({
 
               const res = await axios.post('/api/live_transcribe_chunk', formData);
               if (res.data && res.data.text && res.data.text.trim()) {
-                const chunkTxt = res.data.text.trim();
-                const speaker = activeSpeakerRef.current || 'Speaker 1';
-                const formatted = chunkTxt.startsWith('[') ? chunkTxt : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${chunkTxt}`;
-                setLiveTranscript((prev) => {
-                  if (prev && prev.includes(chunkTxt)) return prev;
-                  return prev ? `${prev}\n${formatted}` : formatted;
-                });
-                liveTranscriptForTakeRef.current = formatted;
-                setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
-                if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
-                if (onAppendToTranscript) onAppendToTranscript(formatted);
+                const cleanChunk = cleanTranscriptText(res.data.text.trim());
+                if (cleanChunk) {
+                  const speaker = activeSpeakerRef.current || 'Speaker 1';
+                  const formatted = cleanChunk.startsWith('[') ? cleanChunk : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${cleanChunk}`;
+                  setLiveTranscript((prev) => {
+                    if (prev && prev.includes(cleanChunk)) return prev;
+                    return prev ? `${prev}\n${formatted}` : formatted;
+                  });
+                  liveTranscriptForTakeRef.current = formatted;
+                  setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
+                  if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
+                  if (onAppendToTranscript) onAppendToTranscript(formatted);
+                }
               }
             }
           } catch (err) {
@@ -1102,6 +1142,40 @@ export default function LiveRecordStudio({
                     transition: 'width 0.08s ease'
                   }}
                 />
+              </div>
+            </div>
+          )}
+
+          {/* High-Visibility Real-Time Speech Monitor */}
+          {isRecording && (
+            <div
+              id="realtime-speech-monitor"
+              style={{
+                width: '100%',
+                padding: '6px 10px',
+                borderRadius: '8px',
+                background: 'rgba(15, 23, 42, 0.7)',
+                border: '1px solid rgba(52, 211, 153, 0.4)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                marginTop: '4px'
+              }}
+            >
+              <Sparkles size={13} color="#34d399" className="spin" />
+              <div
+                id="live-speech-stream-display"
+                style={{
+                  fontSize: '0.8rem',
+                  color: '#34d399',
+                  fontWeight: 600,
+                  fontFamily: "'Hind Siliguri', 'Inter', sans-serif",
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {interimText || 'Listening live...'}
               </div>
             </div>
           )}
