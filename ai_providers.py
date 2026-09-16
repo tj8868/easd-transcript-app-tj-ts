@@ -1566,6 +1566,26 @@ def transcribe_audio_gemini(
             except Exception as e2:
                 print(f"[Gemini STT fallback '{model}' error] interactions: {e2}")
 
+    # Seamless Automatic Fallback to Local Whisper (whisper-nano/tiny for low RAM, whisper-small for standard RAM)
+    try:
+        import local_whisper_engine
+        opt_model = local_whisper_engine.select_optimal_model_name()
+        print(f"[Gemini STT Fallback] Falling back seamlessly to local Whisper ({opt_model})...")
+        r_loc = local_whisper_engine.transcribe_local_audio(
+            media_input=media_bytes,
+            language=None if language_hint in ["auto", "detect", ""] else language_hint,
+            model_name=opt_model,
+            mime_type=audio_mime,
+            beam_size=2,
+            temperature=0.0
+        )
+        t_loc = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+        l_loc = r_loc.get("detected_language") or (language_hint if language_hint not in ["auto", ""] else "bn")
+        if t_loc:
+            return {"text": t_loc, "raw_transcript": t_loc, "language": l_loc, "provider": "local_whisper", "model": opt_model}
+    except Exception as e_loc:
+        print(f"[Gemini STT Fallback to Local Whisper Error] {e_loc}")
+
     return {"text": "", "language": "bn"}
 
 def live_transcribe_audio_chunk(
@@ -2138,43 +2158,50 @@ def process_ai_request(
         raw_transcript = "Weekly Strategic, Programmatic and Presentation Review Meeting discussion and proceedings."
 
     # 5. Summarization & Template Fitting Stage (LLM)
-    if llm_prov == "local":
-        return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
+    try:
+        if llm_prov == "local":
+            return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
 
-    if llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ.")):
-        if not llm_key:
-            raise ValueError("Google Gemini API Key is missing. Please paste your Gemini API key in 'GeminiAPI.txt' or save it in the Settings modal.")
-        return summarize_text_gemini(
-            text_content=raw_transcript,
-            api_key=llm_key,
-            model_name=llm_model,
-            org_context=org_context,
-            custom_skills=custom_skills,
-            template_schema=template_schema
-        )
+        if llm_prov == "gemini" or llm_key.startswith(("AIzaSy", "AQ.")):
+            if not llm_key:
+                print("[LLM Gemini Notice] Key missing, falling back to deep_semantic_synthesis.")
+                return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
+            return summarize_text_gemini(
+                text_content=raw_transcript,
+                api_key=llm_key,
+                model_name=llm_model,
+                org_context=org_context,
+                custom_skills=custom_skills,
+                template_schema=template_schema
+            )
 
-    if (llm_prov == "anthropic" or llm_key.startswith("sk-ant-")) and llm_key:
-        return summarize_text_anthropic(
-            text_content=raw_transcript,
-            api_key=llm_key,
-            model_name=llm_model,
-            org_context=org_context,
-            custom_skills=custom_skills,
-            template_schema=template_schema
-        )
+        if (llm_prov == "anthropic" or llm_key.startswith("sk-ant-")) and llm_key:
+            return summarize_text_anthropic(
+                text_content=raw_transcript,
+                api_key=llm_key,
+                model_name=llm_model,
+                org_context=org_context,
+                custom_skills=custom_skills,
+                template_schema=template_schema
+            )
 
-    if llm_key:
-        target_base = base_url or ("https://api.groq.com/openai/v1" if llm_prov == "groq" else "https://api.openai.com/v1")
-        result = summarize_text_openai_compatible(
-            text_content=raw_transcript,
-            api_key=llm_key,
-            base_url=target_base,
-            model_name=llm_model,
-            org_context=org_context,
-            custom_skills=custom_skills,
-            template_schema=template_schema
-        )
-        return result
+        if llm_key:
+            target_base = base_url or ("https://api.groq.com/openai/v1" if llm_prov == "groq" else "https://api.openai.com/v1")
+            result = summarize_text_openai_compatible(
+                text_content=raw_transcript,
+                api_key=llm_key,
+                base_url=target_base,
+                model_name=llm_model,
+                org_context=org_context,
+                custom_skills=custom_skills,
+                template_schema=template_schema
+            )
+            return result
+    except Exception as e_llm:
+        print(f"[Summarization LLM Provider Exception] {e_llm}. Falling back seamlessly to deep_semantic_synthesis...")
+        fallback_res = deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
+        fallback_res["warning"] = f"AI Provider notice: {e_llm}. Structured using built-in semantic synthesis."
+        return fallback_res
 
     # If user provided no active LLM key, or if LLM failed, fallback to local deep semantic synthesis
     return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)

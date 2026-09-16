@@ -33,9 +33,14 @@ if not logger.handlers:
     logger.addHandler(ch)
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-small")
-_FALLBACK_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-base")
+_SMALL_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-small")
+_BASE_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-base")
+_TINY_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-tiny")
 
+_DEFAULT_MODEL_DIR = _SMALL_MODEL_DIR
+_FALLBACK_MODEL_DIR = _BASE_MODEL_DIR
+
+_LOCAL_MODELS: Dict[str, Any] = {}
 _LOCAL_MODEL = None
 _MODEL_LOCK = threading.Lock()
 _IS_WARMING_UP = False
@@ -50,39 +55,103 @@ DEFAULT_BILINGUAL_PROMPT = (
 )
 
 
+def get_system_ram_specs() -> Dict[str, Any]:
+    """Detect system RAM specs to decide between small and nano (tiny/base) models."""
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        total_gb = round(mem.total / (1024 ** 3), 2)
+        avail_gb = round(mem.available / (1024 ** 3), 2)
+        is_low = total_gb < 6.0 or avail_gb < 1.5
+        return {
+            "total_ram_gb": total_gb,
+            "available_ram_gb": avail_gb,
+            "is_low_ram": is_low
+        }
+    except Exception:
+        return {
+            "total_ram_gb": 8.0,
+            "available_ram_gb": 2.0,
+            "is_low_ram": False
+        }
+
+
+def is_low_ram_system() -> bool:
+    """Returns True if the host machine has low total or available RAM."""
+    specs = get_system_ram_specs()
+    return bool(specs.get("is_low_ram", False))
+
+
+def select_optimal_model_name() -> str:
+    """
+    Dynamically select between whisper-small and whisper-nano (tiny/base)
+    based on host system specifications.
+    If RAM is constrained (< 6GB total or < 1.5GB available), selects 'tiny' (nano).
+    Otherwise selects 'small'.
+    """
+    if is_low_ram_system():
+        if os.path.isdir(_TINY_MODEL_DIR) and (os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.safetensors"))):
+            return "tiny"
+        if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+            return "base"
+    if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
+        return "small"
+    if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+        return "base"
+    if os.path.isdir(_TINY_MODEL_DIR):
+        return "tiny"
+    return "small"
+
+
 def get_model_path(preferred_name: Optional[str] = None) -> str:
     """Resolve the local model path on disk."""
     if preferred_name:
         pref_clean = preferred_name.strip().lower()
-        if "base" in pref_clean:
-            if os.path.isdir(_FALLBACK_MODEL_DIR) and os.path.isfile(os.path.join(_FALLBACK_MODEL_DIR, "model.bin")):
-                return _FALLBACK_MODEL_DIR
+        if "tiny" in pref_clean or "nano" in pref_clean:
+            if os.path.isdir(_TINY_MODEL_DIR) and (os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.safetensors"))):
+                return _TINY_MODEL_DIR
+            if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+                return _BASE_MODEL_DIR
+        elif "base" in pref_clean:
+            if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+                return _BASE_MODEL_DIR
         elif "small" in pref_clean:
-            if os.path.isdir(_DEFAULT_MODEL_DIR) and os.path.isfile(os.path.join(_DEFAULT_MODEL_DIR, "model.bin")):
-                return _DEFAULT_MODEL_DIR
+            if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
+                return _SMALL_MODEL_DIR
 
-    if os.path.isdir(_DEFAULT_MODEL_DIR) and os.path.isfile(os.path.join(_DEFAULT_MODEL_DIR, "model.bin")):
-        return _DEFAULT_MODEL_DIR
-    if os.path.isdir(_FALLBACK_MODEL_DIR) and os.path.isfile(os.path.join(_FALLBACK_MODEL_DIR, "model.bin")):
-        return _FALLBACK_MODEL_DIR
-    return _DEFAULT_MODEL_DIR
+    # Automatic spec-based resolution
+    optimal = select_optimal_model_name()
+    if optimal == "tiny" and os.path.isdir(_TINY_MODEL_DIR):
+        return _TINY_MODEL_DIR
+    if optimal == "base" and os.path.isdir(_BASE_MODEL_DIR):
+        return _BASE_MODEL_DIR
+    if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
+        return _SMALL_MODEL_DIR
+    if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+        return _BASE_MODEL_DIR
+    if os.path.isdir(_TINY_MODEL_DIR):
+        return _TINY_MODEL_DIR
+    return _SMALL_MODEL_DIR
 
 
 def get_local_whisper_model(model_name_or_path: Optional[str] = None):
     """
-    Get or initialize the singleton WhisperModel instance.
+    Get or initialize the singleton WhisperModel instance for the target model.
     Runs with device='cpu', compute_type='int8', cpu_threads=2, local_files_only=True.
     """
-    global _LOCAL_MODEL, _MODEL_STATUS, _MODEL_LOAD_ERROR, _MODEL_LOAD_TIME
+    global _LOCAL_MODEL, _LOCAL_MODELS, _MODEL_STATUS, _MODEL_LOAD_ERROR, _MODEL_LOAD_TIME
 
-    if _LOCAL_MODEL is not None:
+    resolved_path = get_model_path(model_name_or_path)
+
+    if resolved_path in _LOCAL_MODELS:
+        _LOCAL_MODEL = _LOCAL_MODELS[resolved_path]
         return _LOCAL_MODEL
 
     with _MODEL_LOCK:
-        if _LOCAL_MODEL is not None:
+        if resolved_path in _LOCAL_MODELS:
+            _LOCAL_MODEL = _LOCAL_MODELS[resolved_path]
             return _LOCAL_MODEL
 
-        resolved_path = get_model_path(model_name_or_path)
         if not os.path.exists(resolved_path):
             _MODEL_STATUS = "error"
             _MODEL_LOAD_ERROR = f"Model directory not found at {resolved_path}"
@@ -90,9 +159,10 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             raise FileNotFoundError(_MODEL_LOAD_ERROR)
 
         model_bin = os.path.join(resolved_path, "model.bin")
-        if not os.path.exists(model_bin):
+        model_safe = os.path.join(resolved_path, "model.safetensors")
+        if not os.path.exists(model_bin) and not os.path.exists(model_safe):
             _MODEL_STATUS = "error"
-            _MODEL_LOAD_ERROR = f"model.bin missing in {resolved_path}"
+            _MODEL_LOAD_ERROR = f"model weights missing in {resolved_path}"
             logger.error(_MODEL_LOAD_ERROR)
             raise FileNotFoundError(_MODEL_LOAD_ERROR)
 
@@ -107,8 +177,10 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             last_err = None
 
             paths_to_try = [resolved_path]
-            if resolved_path != _FALLBACK_MODEL_DIR and os.path.exists(_FALLBACK_MODEL_DIR):
-                paths_to_try.append(_FALLBACK_MODEL_DIR)
+            if resolved_path != _BASE_MODEL_DIR and os.path.exists(_BASE_MODEL_DIR):
+                paths_to_try.append(_BASE_MODEL_DIR)
+            if resolved_path != _TINY_MODEL_DIR and os.path.exists(_TINY_MODEL_DIR):
+                paths_to_try.append(_TINY_MODEL_DIR)
 
             for target_path in paths_to_try:
                 for c_type in compute_types:
@@ -132,6 +204,7 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             if model is None:
                 raise last_err or RuntimeError("Failed to load local Whisper model with any compute type")
 
+            _LOCAL_MODELS[resolved_path] = model
             _LOCAL_MODEL = model
             _MODEL_LOAD_TIME = round(time.time() - t0, 2)
             _MODEL_STATUS = "ready"
@@ -303,7 +376,8 @@ def transcribe_local_audio(
         }
 
     t_start = time.time()
-    model = get_local_whisper_model(model_name)
+    effective_model = model_name or select_optimal_model_name()
+    model = get_local_whisper_model(effective_model)
 
     # Determine input extension hint
     hint = "webm"
