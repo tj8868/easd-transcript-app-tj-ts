@@ -13,8 +13,15 @@ import {
 } from 'lucide-react';
 import Header from './components/Header';
 import NavTabs from './components/NavTabs';
-import MediaInput from './components/MediaInput';
 import LiveRecordStudio from './components/LiveRecordStudio';
+
+function buildActiveSkillPrompts(activeSkills, customSkillsList) {
+  return activeSkills.map((sId) => {
+    const found = customSkillsList.find((c) => c.id === sId);
+    if (found) return `[${found.category} Skill] ${found.name}: ${found.prompt}`;
+    return `[Skill: ${sId}]`;
+  }).join('\n');
+}
 import TemplateGenerator from './components/TemplateGenerator';
 import AiSkillsSelector from './components/AiSkillsSelector';
 import Transcripts from './components/Transcripts';
@@ -74,20 +81,22 @@ export default function App() {
   const [settings, setSettings] = useState(() => {
     try {
       const saved = localStorage.getItem('appSettings');
-      return saved
-        ? JSON.parse(saved)
-        : {
-            accentColor: '#0284c7',
-            banglaFont: 'nikosh',
-            englishFont: 'times_new_roman',
-            docScale: 'standard'
-          };
+      const parsed = saved ? JSON.parse(saved) : {};
+      const customLogo = localStorage.getItem('customAppLogo') || parsed.customLogo || '';
+      return {
+        accentColor: parsed.accentColor || '#0284c7',
+        banglaFont: parsed.banglaFont || 'nikosh',
+        englishFont: parsed.englishFont || 'times_new_roman',
+        docScale: parsed.docScale || 'standard',
+        customLogo: customLogo
+      };
     } catch (e) {
       return {
         accentColor: '#0284c7',
         banglaFont: 'nikosh',
         englishFont: 'times_new_roman',
-        docScale: 'standard'
+        docScale: 'standard',
+        customLogo: localStorage.getItem('customAppLogo') || ''
       };
     }
   });
@@ -98,6 +107,7 @@ export default function App() {
   const [isSummarizing, setIsSummarizing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isAutoTranscribing, setIsAutoTranscribing] = useState(false);
+  const [clearQueueTrigger, setClearQueueTrigger] = useState(0);
 
   // Document Type & Template State
   const [documentType, setDocumentType] = useState(localStorage.getItem('documentType') || 'meeting_minutes');
@@ -470,11 +480,7 @@ export default function App() {
     formData.append('org_context', orgContext);
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
     
-    const activeSkillPrompts = activeSkills.map((sId) => {
-      const found = customSkillsList.find((c) => c.id === sId);
-      if (found) return `[${found.category} Skill] ${found.name}: ${found.prompt}`;
-      return `[Skill: ${sId}]`;
-    }).join('\n');
+    const activeSkillPrompts = buildActiveSkillPrompts(activeSkills, customSkillsList);
     formData.append('custom_skills', activeSkillPrompts);
 
     if (selectedFile) formData.append('file', selectedFile);
@@ -541,11 +547,7 @@ export default function App() {
     formData.append('org_context', orgContext);
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
 
-    const activeSkillPrompts = activeSkills.map((sId) => {
-      const found = customSkillsList.find((c) => c.id === sId);
-      if (found) return `[${found.category} Skill] ${found.name}: ${found.prompt}`;
-      return `[Skill: ${sId}]`;
-    }).join('\n');
+    const activeSkillPrompts = buildActiveSkillPrompts(activeSkills, customSkillsList);
     formData.append('custom_skills', activeSkillPrompts);
 
     try {
@@ -559,7 +561,11 @@ export default function App() {
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
         }
-        alert('Raw transcript structured and fitted to active template successfully!');
+        if (payload.warning) {
+          alert('⚠️ AI Provider Notice:\n' + payload.warning);
+        } else {
+          alert('Raw transcript structured and fitted to active template successfully!');
+        }
         scrollToSection('section-export');
       } else {
         alert('Fit to Template failed: ' + (res.data?.detail || 'Unknown error'));
@@ -568,6 +574,23 @@ export default function App() {
       setIsSummarizing(false);
       alert('Fit to Template Error: ' + (err.response?.data?.detail || err.message));
     }
+  };
+
+  // Big Clear All Handler (Clears all records, audio queue, transcripts, and generated data)
+  const handleClearAll = () => {
+    if (!window.confirm('Are you sure you want to clear all recordings, transcripts, and document content?')) {
+      return;
+    }
+    setTranscript('');
+    setDirectText('');
+    setSelectedFile(null);
+    setLiveInterimText('');
+    setCustomSectionsData({});
+    setCustomTablesData({});
+    setAgendas(DEFAULT_AGENDAS);
+    setDiscussions(DEFAULT_DISCUSSIONS);
+    setDecisions('');
+    setClearQueueTrigger((prev) => prev + 1);
   };
 
   // Download DOCX (Supports default EASD, Bangladesh Govt Nothi, Journal, News, Blog, and custom templates)
@@ -690,6 +713,7 @@ export default function App() {
         activeApiName={activeApiName}
         onOpenDeviceViewer={() => setIsDeviceViewerOpen(true)}
         isFrameView={isFrameView}
+        customLogo={settings.customLogo}
       />
       <NavTabs
         activeSection={activeSection}
@@ -726,6 +750,7 @@ export default function App() {
           isProcessing={isProcessing}
           isAutoTranscribing={isAutoTranscribing}
           setIsAutoTranscribing={setIsAutoTranscribing}
+          clearQueueTrigger={clearQueueTrigger}
         />
 
         {/* 2. Transcript: Single unified real-time transcript section */}
@@ -733,10 +758,13 @@ export default function App() {
           transcript={transcript}
           setTranscript={setTranscript}
           onSummarize={handleSummarizeTranscript}
+          onGenerate={handleSummarizeTranscript}
           isSummarizing={isSummarizing}
+          isGenerating={isGenerating}
           isAutoTranscribing={isAutoTranscribing}
           isRecording={isRecording}
           interimText={liveInterimText}
+          onClearAll={handleClearAll}
         />
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}

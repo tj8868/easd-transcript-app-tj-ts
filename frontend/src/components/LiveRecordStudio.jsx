@@ -31,7 +31,7 @@ import {
   ChevronUp,
   FileText
 } from 'lucide-react';
-import { MODEL_OPTIONS_BY_PROVIDER } from './MediaInput';
+import { MODEL_OPTIONS_BY_PROVIDER } from '../utils/aiModelConstants';
 import {
   getActiveApiDisplayName,
   getSavedKeyForProvider,
@@ -40,6 +40,28 @@ import {
   testAiEngine,
   saveServerSettings
 } from '../utils/apiKeyStorage';
+
+const ModelSectionHeader = ({ icon, label, activeModel }) => (
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+      {icon} {label}
+    </label>
+    <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+      Active: <strong style={{ color: 'var(--text-primary)' }}>{activeModel}</strong>
+    </span>
+  </div>
+);
+
+async function requestTakeTranscription({ blob, name, language, provider, apiKey, modelName }) {
+  const formData = new FormData();
+  formData.append('file', blob, blob.name || `${name}.mp3`);
+  formData.append('language', language || 'auto');
+  formData.append('provider', provider);
+  formData.append('api_key', apiKey);
+  formData.append('model_name', modelName);
+  const res = await axios.post('/api/transcribe_take', formData);
+  return res.data?.transcript?.trim() || '';
+}
 
 export default function LiveRecordStudio({
   aiConfig,
@@ -66,7 +88,8 @@ export default function LiveRecordStudio({
   onProcessAi,
   isProcessing = false,
   isAutoTranscribing = false,
-  setIsAutoTranscribing
+  setIsAutoTranscribing,
+  clearQueueTrigger = 0
 }) {
   // Engine Verification & Direct Text State
   const [verifying, setVerifying] = useState(false);
@@ -92,7 +115,6 @@ export default function LiveRecordStudio({
   const [statusText, setStatusText] = useState('Ready to record');
   const [audioLevel, setAudioLevel] = useState(0);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
-  const [isCopied, setIsCopied] = useState(false);
   const [proTranscription, setProTranscription] = useState(true);
 
   // Multi-take Queue State
@@ -122,7 +144,6 @@ export default function LiveRecordStudio({
   const restartTimerRef = useRef(null);
   const lastSpeechTimestampRef = useRef(Date.now());
   const fileInputRef = useRef(null);
-  const transcriptBottomRef = useRef(null);
   const liveTranscriptForTakeRef = useRef('');
 
   useEffect(() => {
@@ -142,11 +163,7 @@ export default function LiveRecordStudio({
     activeSpeakerRef.current = activeSpeaker;
   }, [activeSpeaker]);
 
-  useEffect(() => {
-    if (transcriptBottomRef.current) {
-      transcriptBottomRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [liveTranscript, interimText]);
+
 
   useEffect(() => {
     return () => {
@@ -160,6 +177,18 @@ export default function LiveRecordStudio({
       });
     };
   }, []);
+
+  useEffect(() => {
+    if (clearQueueTrigger > 0) {
+      recordingsQueue.forEach((item) => {
+        if (item.url) URL.revokeObjectURL(item.url);
+      });
+      setRecordingsQueue([]);
+      setLiveTranscript('');
+      setInterimText('');
+      setStatusText('Ready to record');
+    }
+  }, [clearQueueTrigger]);
 
   const handleVerifyKey = async () => {
     setVerifying(true);
@@ -217,6 +246,61 @@ export default function LiveRecordStudio({
       setTestingSTT(false);
       setSttTestResult({ success: false, message: e.message || 'STT test failed' });
       setTimeout(() => setSttTestResult(null), 8000);
+    }
+  };
+
+  const applyTranscribedTakeResult = (targetId, aiTranscript, labelText) => {
+    setLiveTranscript((prev) => (prev ? `${prev}\n\n${aiTranscript}` : aiTranscript));
+    if (onAppendToTranscript) {
+      onAppendToTranscript(aiTranscript);
+    } else if (onLiveTranscriptSync) {
+      onLiveTranscriptSync(aiTranscript);
+    }
+
+    setRecordingsQueue((prev) =>
+      prev.map((t) => (t.id === targetId ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
+    );
+    setStatusText(`✓ ${labelText} auto-transcribed with speaker diarization & timestamps!`);
+  };
+
+  const transcribeAudioItems = async (items, lang) => {
+    const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
+    const sttKey = (
+      aiConfig?.transcriptionApiKey ||
+      getSavedKeyForProvider(resolvedSttProv) ||
+      (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
+      (aiConfig?.apiKey || '')
+    ).trim();
+
+    for (const item of items) {
+      const finalizeFallback = () => {
+        if (item.transcript) {
+          applyTranscribedTakeResult(item.id, item.transcript, item.name);
+        } else {
+          setRecordingsQueue((prev) =>
+            prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false } : t))
+          );
+        }
+      };
+
+      try {
+        const aiTranscript = await requestTakeTranscription({
+          blob: item.blob,
+          name: item.name,
+          language: lang || languageRef.current || 'auto',
+          provider: resolvedSttProv,
+          apiKey: sttKey,
+          modelName: aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : 'whisper-large-v3-turbo')
+        });
+        if (aiTranscript) {
+          applyTranscribedTakeResult(item.id, aiTranscript, item.name);
+        } else {
+          finalizeFallback();
+        }
+      } catch (err) {
+        console.warn('Transcribe error for item:', item.name, err);
+        finalizeFallback();
+      }
     }
   };
 
@@ -606,68 +690,11 @@ export default function LiveRecordStudio({
           setIsAutoTranscribing(true);
         }
 
-        setStatusText(`⚡ Auto-transcribing Take #${takeNum} (100% Raw Speech • Diarization • Timestamps)...`);
+        setStatusText(`⚡ Auto-transcribing Take #${takeNum} with speaker diarization & timestamps...`);
         try {
-          const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
-          let sttKey = (
-            aiConfig?.transcriptionApiKey ||
-            getSavedKeyForProvider(resolvedSttProv) ||
-            (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
-            (aiConfig?.apiKey || '')
-          ).trim();
-
-          // Ensure HuggingFace token never bleeds into Gemini calls
-          if (resolvedSttProv === 'gemini' && sttKey.startsWith('hf_')) {
-            sttKey = getSavedKeyForProvider('gemini') || '';
-          }
-
-          const defaultSttModel = resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : (resolvedSttProv === 'whisperx' ? 'pyannote/speaker-diarization-community-1' : 'whisper-large-v3-turbo');
-          const chosenSttModel = aiConfig?.transcriptionModel || defaultSttModel;
-
-          const formData = new FormData();
-          const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
-          formData.append('file', blob, `take_${takeNum}.${ext}`);
-          formData.append('language', languageRef.current || 'auto');
-          formData.append('provider', resolvedSttProv);
-          formData.append('api_key', sttKey);
-          formData.append('model_name', chosenSttModel);
-
-          const res = await axios.post('/api/transcribe_take', formData);
-          if (res.data && res.data.transcript && res.data.transcript.trim()) {
-            const aiTranscript = res.data.transcript.trim();
-            setLiveTranscript((prev) => (prev ? `${prev}\n\n${aiTranscript}` : aiTranscript));
-            liveTranscriptForTakeRef.current = aiTranscript;
-            setEngineStatus(`${resolvedSttProv.toUpperCase()} Raw Diarized STT`);
-            if (onAppendToTranscript) {
-              onAppendToTranscript(aiTranscript);
-            } else if (onLiveTranscriptSync) {
-              onLiveTranscriptSync(aiTranscript);
-            }
-
-            setRecordingsQueue((prev) =>
-              prev.map((t) => (t.id === takeId ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
-            );
-            setStatusText(`✓ Take #${takeNum} auto-transcribed with speaker diarization & timestamps!`);
-          } else {
-            if (capturedTranscript) {
-              if (onAppendToTranscript) onAppendToTranscript(capturedTranscript);
-              else if (onLiveTranscriptSync) onLiveTranscriptSync(capturedTranscript);
-            }
-            setRecordingsQueue((prev) =>
-              prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
-            );
-            setStatusText(`✓ Take #${takeNum} saved to queue`);
-          }
+          await transcribeAudioItems([newTake], languageRef.current || 'auto');
         } catch (err) {
           console.warn('Take auto-transcribe error:', err);
-          if (capturedTranscript) {
-            if (onAppendToTranscript) onAppendToTranscript(capturedTranscript);
-            else if (onLiveTranscriptSync) onLiveTranscriptSync(capturedTranscript);
-          }
-          setRecordingsQueue((prev) =>
-            prev.map((t) => (t.id === takeId ? { ...t, isAutoTranscribing: false } : t))
-          );
-          setStatusText(`✓ Take #${takeNum} saved to queue`);
         } finally {
           if (setIsAutoTranscribing) {
             setIsAutoTranscribing(false);
@@ -771,6 +798,9 @@ export default function LiveRecordStudio({
     }
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
+        if (mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.requestData();
+        }
         mediaRecorderRef.current.stop();
       } catch (e) {}
     }
@@ -849,53 +879,10 @@ export default function LiveRecordStudio({
 
     if (mediaFiles.length > 0) {
       if (setIsAutoTranscribing) setIsAutoTranscribing(true);
-      setStatusText(`⚡ Auto-transcribing ${mediaFiles.length} uploaded media file(s) into raw diarized transcript...`);
-
-      const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
-      const sttKey = (
-        aiConfig?.transcriptionApiKey ||
-        getSavedKeyForProvider(resolvedSttProv) ||
-        (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
-        (aiConfig?.apiKey || '')
-      ).trim();
-
-      for (const item of mediaFiles) {
-        try {
-          const formData = new FormData();
-          formData.append('file', item.blob, item.blob.name || `${item.name}.mp3`);
-          formData.append('language', languageRef.current || 'bn');
-          formData.append('provider', resolvedSttProv);
-          formData.append('api_key', sttKey);
-          formData.append('model_name', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.6-flash' : 'whisper-large-v3-turbo'));
-
-          const res = await axios.post('/api/transcribe_take', formData);
-          if (res.data && res.data.transcript && res.data.transcript.trim()) {
-            const aiTranscript = res.data.transcript.trim();
-            setLiveTranscript((prev) => (prev ? `${prev}\n\n${aiTranscript}` : aiTranscript));
-            if (onAppendToTranscript) {
-              onAppendToTranscript(aiTranscript);
-            } else if (onLiveTranscriptSync) {
-              onLiveTranscriptSync(aiTranscript);
-            }
-
-            setRecordingsQueue((prev) =>
-              prev.map((t) => (t.id === item.id ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
-            );
-            setStatusText(`✓ ${item.name} auto-transcribed with speaker diarization & timestamps!`);
-          } else {
-            setRecordingsQueue((prev) =>
-              prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false } : t))
-            );
-          }
-        } catch (err) {
-          console.warn('Upload auto-transcribe error for item:', item.name, err);
-          setRecordingsQueue((prev) =>
-            prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false } : t))
-          );
-        }
-      }
+      setStatusText(`⚡ Auto-transcribing ${mediaFiles.length} uploaded media file(s)...`);
+      await transcribeAudioItems(mediaFiles, languageRef.current || 'bn');
       if (setIsAutoTranscribing) setIsAutoTranscribing(false);
-      setStatusText(`✓ Uploaded media auto-transcribed into 100% raw initial transcript!`);
+      setStatusText(`✓ Uploaded media auto-transcribed!`);
     } else {
       setStatusText(`✓ Added ${newItems.length} file(s) to queue`);
     }
@@ -953,7 +940,7 @@ export default function LiveRecordStudio({
     setStatusText('All takes cleared');
   };
 
-  // --- Batch Transcribe All Takes ---
+  // --- Batch Transcribe All Takes into Raw Transcript ---
   const handleTranscribeAllTakes = async () => {
     if (recordingsQueue.length === 0) {
       alert('No takes in queue. Please record a take or upload an audio file first.');
@@ -961,116 +948,70 @@ export default function LiveRecordStudio({
     }
 
     setIsTranscribing(true);
-    setStatusText(`⚡ Sending ${recordingsQueue.length} takes to AI Transcription...`);
+    if (setIsAutoTranscribing) setIsAutoTranscribing(true);
+    setStatusText(`⚡ Transcribing ${recordingsQueue.length} takes with speaker diarization & timestamps...`);
 
-    const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
-    const resolvedSumProv = aiConfig?.summarizationProvider || 'gemini';
+    const pendingTakes = recordingsQueue.filter((t) => !t.transcript || t.isAutoTranscribing);
+    const takesToRun = pendingTakes.length > 0 ? pendingTakes : recordingsQueue;
 
-    const sttKey = (
-      aiConfig?.transcriptionApiKey ||
-      getSavedKeyForProvider(resolvedSttProv) ||
-      (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
-      (aiConfig?.apiKey || '')
-    ).trim();
+    await transcribeAudioItems(takesToRun, languageRef.current || 'auto');
 
-    const sumKey = (
-      aiConfig?.summarizationApiKey ||
-      getSavedKeyForProvider(resolvedSumProv) ||
-      getSavedKeyForProvider('gemini') ||
-      (aiConfig?.apiKey || '')
-    ).trim();
+    setIsTranscribing(false);
+    if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+    setStatusText(`✓ All ${recordingsQueue.length} takes transcribed into raw transcript!`);
+    if (scrollToSection) scrollToSection('section-transcripts');
+  };
 
-    const formData = new FormData();
-    formData.append('provider', resolvedSumProv);
-    formData.append('api_key', sumKey || sttKey);
-    formData.append('base_url', (aiConfig?.baseUrl || '').trim());
-    formData.append('model_name', aiConfig?.summarizationModel || 'gemini-3.7-flash');
-    formData.append('transcription_provider', resolvedSttProv);
-    formData.append('transcription_api_key', sttKey);
-    formData.append('transcription_model', aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-2.5-flash' : (resolvedSttProv === 'whisperx' ? 'pyannote/speaker-diarization-community-1' : 'whisper-large-v3-turbo')));
-    formData.append('summarization_provider', resolvedSumProv);
-    formData.append('summarization_api_key', sumKey);
-    formData.append('summarization_model', aiConfig?.summarizationModel || 'gemini-3.7-flash');
-    formData.append('org_context', orgContext || '');
-    formData.append('template_id', activeTemplateId || 'easd_default_minutes');
-
-    const activeSkillPrompts = (activeSkills || []).map((sId) => {
-      const found = (customSkillsList || []).find((c) => c.id === sId);
-      if (found) return `[${found.category} Skill] ${found.name}: ${found.prompt}`;
-      return `[Skill: ${sId}]`;
-    }).join('\n');
-    formData.append('custom_skills', activeSkillPrompts);
-
-    recordingsQueue.forEach((item, index) => {
-      if (item.blob instanceof File) {
-        formData.append('files', item.blob);
-      } else {
-        const mime = item.blob.type || 'audio/webm';
-        const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
-        const audioFile = new File([item.blob], `take_${index + 1}_${Date.now()}.${ext}`, { type: mime });
-        formData.append('files', audioFile);
-      }
-    });
-
-    try {
-      const res = await axios.post('/api/transcribe_and_summarize', formData);
-      setIsTranscribing(false);
-
-      if (res.data && res.data.status === 'success') {
-        const payload = res.data.data;
-        if (onRecordingProcessed) {
-          onRecordingProcessed(payload);
-        }
-        setStatusText(`✓ All ${recordingsQueue.length} takes transcribed successfully!`);
-        alert('All queued takes transcribed! Scrolled to Document Preview.');
-        if (scrollToSection) scrollToSection('section-export');
-      } else {
-        setStatusText('Notice on completion');
-        alert('Notice: ' + (res.data?.detail || 'Unknown response'));
-      }
-    } catch (err) {
-      setIsTranscribing(false);
-      setStatusText('Transcription Error');
-      alert('AI Server Error: ' + (err.response?.data?.detail || err.message));
+  // --- Big Transcribe Action (Step 2: Transcribe uploaded/recorded speech into raw transcript) ---
+  const handleBigTranscribe = async () => {
+    if (isRecording) {
+      handleStopAndSaveTake();
     }
-  };
 
-  // --- Live Transcript Utilities ---
-  const handleCopyLive = () => {
-    const text = (liveTranscript + (interimText ? ' ' + interimText : '')).trim();
-    if (!text) return;
-    navigator.clipboard.writeText(text);
-    setIsCopied(true);
-    setTimeout(() => setIsCopied(false), 2000);
-  };
-
-  const handleClearLive = () => {
-    if (window.confirm('Clear the live spoken transcript?')) {
-      setLiveTranscript('');
-      setInterimText('');
-      if (onLiveTranscriptSync) onLiveTranscriptSync('');
+    let itemsToProcess = [...recordingsQueue];
+    if (itemsToProcess.length === 0 && selectedFile) {
+      const url = URL.createObjectURL(selectedFile);
+      const tempItem = {
+        id: 'file_' + Date.now(),
+        blob: selectedFile,
+        url: url,
+        duration: 0,
+        name: selectedFile.name.replace(/\.[^/.]+$/, ''),
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        size: (selectedFile.size / (1024 * 1024)).toFixed(2) + ' MB',
+        transcript: '',
+        isAutoTranscribing: false
+      };
+      itemsToProcess = [tempItem];
+      setRecordingsQueue([tempItem]);
     }
-  };
 
-  const handleScrollToTranscript = () => {
+    if (itemsToProcess.length === 0 && !liveTranscript.trim()) {
+      alert('Please record audio or upload a media file first.');
+      return;
+    }
+
+    if (itemsToProcess.length === 0 && liveTranscript.trim()) {
+      if (onAppendToTranscript) {
+        onAppendToTranscript(liveTranscript.trim());
+      }
+      if (scrollToSection) scrollToSection('section-transcripts');
+      return;
+    }
+
+    setIsTranscribing(true);
+    if (setIsAutoTranscribing) setIsAutoTranscribing(true);
+    setStatusText('⚡ Transcribing audio with speaker diarization & timestamps...');
+
+    await transcribeAudioItems(itemsToProcess, languageRef.current || 'auto');
+
+    setIsTranscribing(false);
+    if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+    setStatusText('✓ Audio transcribed with speaker diarization & timestamps!');
     if (scrollToSection) scrollToSection('section-transcripts');
   };
 
-  const handleSendBangla = () => {
-    const text = (liveTranscript + (interimText ? ' ' + interimText : '')).trim();
-    if (!text) return;
-    if (onLiveTranscriptSync) onLiveTranscriptSync(text);
-    else if (onSendToBangla) onSendToBangla(text);
-    if (scrollToSection) scrollToSection('section-transcripts');
-  };
 
-  const handleSendEnglish = () => {
-    const text = (liveTranscript + (interimText ? ' ' + interimText : '')).trim();
-    if (!text) return;
-    if (onLiveTranscriptSync) onLiveTranscriptSync(text);
-    else if (onSendToEnglish) onSendToEnglish(text);
-    if (scrollToSection) scrollToSection('section-transcripts');
-  };
 
   return (
     <div className="card" id="section-live" style={{ border: '1.5px solid var(--border-color)', position: 'relative' }}>
@@ -1165,6 +1106,75 @@ export default function LiveRecordStudio({
             </div>
           )}
 
+          {/* Speaker & Language Controls */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', alignItems: 'center', margin: '8px 0 4px 0' }}>
+            {/* Speaker Selector */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <Users size={12} color="var(--accent-color)" /> Speaker:
+              </span>
+              {['Speaker 1', 'Speaker 2', 'Speaker 3'].map((spk) => {
+                const isSelected = activeSpeaker === spk;
+                return (
+                  <button
+                    key={spk}
+                    type="button"
+                    onClick={() => setActiveSpeaker(spk)}
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      fontSize: '0.72rem',
+                      fontWeight: isSelected ? 700 : 500,
+                      border: isSelected ? '1.5px solid #38bdf8' : '1px solid var(--border-color)',
+                      background: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
+                      color: isSelected ? '#38bdf8' : 'var(--text-secondary)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {spk}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Language Selector */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px' }}>
+                <Globe size={12} /> Spoken:
+              </span>
+              {[
+                { id: 'auto', label: '🌐 Auto' },
+                { id: 'bn', label: '🇧🇩 বাংলা' },
+                { id: 'en', label: '🇬🇧 English' }
+              ].map((pill) => {
+                const isSelected = language === pill.id;
+                return (
+                  <button
+                    key={pill.id}
+                    type="button"
+                    onClick={() => {
+                      setLanguage(pill.id);
+                      languageRef.current = pill.id;
+                      if (isRecording) restartSpeechRecognition(100);
+                    }}
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: '12px',
+                      fontSize: '0.72rem',
+                      fontWeight: isSelected ? 700 : 500,
+                      border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+                      background: isSelected ? 'var(--accent-glow)' : 'transparent',
+                      color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {pill.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* Primary Action Button (Doctor-Friendly) */}
           <div className="hero-btn-container">
             {!isRecording ? (
@@ -1254,6 +1264,46 @@ export default function LiveRecordStudio({
         </div>
       </div>
 
+      {/* BIG PROMINENT TRANSCRIBE BUTTON (Step 2 of Workflow) */}
+      <div style={{ maxWidth: '720px', margin: '14px auto 18px auto', width: '100%', boxSizing: 'border-box' }}>
+        <button
+          type="button"
+          onClick={handleBigTranscribe}
+          disabled={isTranscribing || (recordingsQueue.length === 0 && !selectedFile && !isRecording && !liveTranscript.trim())}
+          className="btn btn-primary"
+          style={{
+            width: '100%',
+            padding: '14px 22px',
+            fontSize: '1.18rem',
+            fontWeight: 800,
+            borderRadius: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '10px',
+            background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+            border: '2px solid #38bdf8',
+            boxShadow: '0 6px 20px rgba(14, 165, 233, 0.3)',
+            cursor: (recordingsQueue.length > 0 || selectedFile || isRecording || liveTranscript.trim()) && !isTranscribing ? 'pointer' : 'not-allowed',
+            opacity: (recordingsQueue.length > 0 || selectedFile || isRecording || liveTranscript.trim()) && !isTranscribing ? 1 : 0.65,
+            transition: 'all 0.2s ease'
+          }}
+        >
+          <Cpu size={22} color="#facc15" />
+          <span>
+            {isTranscribing
+              ? 'Transcribing Audio...'
+              : isRecording
+              ? 'Stop Recording & Transcribe'
+              : recordingsQueue.length > 0
+              ? `Transcribe Audio (${recordingsQueue.length} ${recordingsQueue.length === 1 ? 'Take' : 'Takes'})`
+              : selectedFile
+              ? `Transcribe Uploaded File (${selectedFile.name})`
+              : 'Transcribe'}
+          </span>
+        </button>
+      </div>
+
       {/* 2. TARGET DOCUMENT FORMAT SELECTOR (COMPACT SUB-BAR) */}
       {templates && templates.length > 0 && (
         <div className="hero-format-bar">
@@ -1341,295 +1391,7 @@ export default function LiveRecordStudio({
         )}
       </div>
 
-      {/* HIGH-VISIBILITY REAL-TIME SPEECH MONITOR */}
-      {(isRecording || liveTranscript || interimText) && (
-        <div
-          id="realtime-speech-monitor"
-          style={{
-            background: isRecording
-              ? 'linear-gradient(180deg, rgba(15, 23, 42, 0.95) 0%, rgba(8, 14, 26, 0.98) 100%)'
-              : 'var(--bg-secondary)',
-            border: isRecording
-              ? '2px solid rgba(16, 185, 129, 0.55)'
-              : '1.5px solid var(--border-color)',
-            borderRadius: '16px',
-            padding: '20px',
-            marginBottom: '20px',
-            boxShadow: isRecording
-              ? '0 0 35px rgba(16, 185, 129, 0.2), 0 8px 30px rgba(0, 0, 0, 0.4)'
-              : 'var(--card-shadow)',
-            transition: 'all 0.25s ease',
-            position: 'relative'
-          }}
-        >
-          {/* Top Bar: Live Status, Voice Visualizer, Language Pills, Toolbar */}
-          <div
-            style={{
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: '14px',
-              flexWrap: 'wrap',
-              gap: '12px',
-              borderBottom: '1px solid var(--border-color)',
-              paddingBottom: '12px'
-            }}
-          >
-            {/* Live Indicator & Volume Level */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-              <div
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '4px 12px',
-                  borderRadius: '20px',
-                  background: isRecording ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)',
-                  border: isRecording ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid rgba(16, 185, 129, 0.3)'
-                }}
-              >
-                <span
-                  style={{
-                    width: '9px',
-                    height: '9px',
-                    borderRadius: '50%',
-                    backgroundColor: isRecording ? '#ef4444' : '#10b981',
-                    animation: isRecording && !isPaused ? 'pulse 1.2s infinite' : 'none',
-                    boxShadow: isRecording ? '0 0 8px #ef4444' : 'none'
-                  }}
-                />
-                <span style={{ fontSize: '0.82rem', fontWeight: 800, color: isRecording ? '#ef4444' : '#10b981' }}>
-                  {isRecording ? (isPaused ? 'PAUSED' : `LIVE SPEECH [${formatTime(recordingSeconds)}]`) : 'LIVE TRANSCRIPT READY'}
-                </span>
-              </div>
 
-              {isRecording && !isPaused && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Volume2 size={16} color="var(--accent-color)" />
-                  <div style={{ width: '90px', height: '8px', background: 'rgba(255,255,255,0.1)', borderRadius: '4px', overflow: 'hidden' }}>
-                    <div
-                      style={{
-                        height: '100%',
-                        width: `${audioLevel}%`,
-                        background: audioLevel > 60 ? '#ef4444' : 'var(--accent-color)',
-                        transition: 'width 0.08s ease'
-                      }}
-                    />
-                  </div>
-                  <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>Voice</span>
-                </div>
-              )}
-            </div>
-
-            {/* Active Speaker Selector Pills */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Users size={13} color="var(--accent-color)" /> Speaker:
-              </span>
-              {['Speaker 1', 'Speaker 2', 'Speaker 3'].map((spk) => {
-                const isSelected = activeSpeaker === spk;
-                return (
-                  <button
-                    key={spk}
-                    type="button"
-                    onClick={() => setActiveSpeaker(spk)}
-                    style={{
-                      padding: '3px 10px',
-                      borderRadius: '16px',
-                      fontSize: '0.74rem',
-                      fontWeight: isSelected ? 700 : 500,
-                      border: isSelected ? '1.5px solid #38bdf8' : '1px solid var(--border-color)',
-                      background: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-                      color: isSelected ? '#38bdf8' : 'var(--text-secondary)',
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    {spk}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Language Selector Pills */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Globe size={13} /> Spoken:
-              </span>
-              {[
-                { id: 'auto', label: '🌐 Auto (Any Language)' },
-                { id: 'bn', label: '🇧🇩 বাংলা' },
-                { id: 'en', label: '🇬🇧 English' },
-                { id: 'multilingual', label: '🌍 Multilingual' }
-              ].map((pill) => {
-                const isSelected = language === pill.id;
-                return (
-                  <button
-                    key={pill.id}
-                    type="button"
-                    onClick={() => handleLanguageChange(pill.id)}
-                    style={{
-                      padding: '3px 10px',
-                      borderRadius: '16px',
-                      fontSize: '0.74rem',
-                      fontWeight: isSelected ? 700 : 500,
-                      border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
-                      background: isSelected ? 'var(--accent-glow)' : 'transparent',
-                      color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    {pill.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            {/* Quick Actions: Copy, View in Transcript, Clear */}
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={handleCopyLive}
-                disabled={!liveTranscript && !interimText}
-                style={{ fontSize: '0.76rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                title="Copy live spoken text"
-              >
-                {isCopied ? <Check size={12} color="#10b981" /> : <Copy size={12} />}
-                {isCopied ? 'Copied' : 'Copy'}
-              </button>
-
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={handleScrollToTranscript}
-                style={{ fontSize: '0.76rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px', fontWeight: 600 }}
-                title="View in main transcript section"
-              >
-                <Send size={12} color="var(--accent-color)" /> View in Transcript ↓
-              </button>
-
-              {(liveTranscript || interimText) && (
-                <button
-                  className="btn btn-secondary btn-sm"
-                  onClick={handleClearLive}
-                  style={{ fontSize: '0.76rem', padding: '4px 8px', color: '#f87171' }}
-                  title="Clear live monitor"
-                >
-                  <Trash2 size={12} />
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* High-Legibility Real-Time Text Monitor Display */}
-          <div
-            id="live-speech-stream-display"
-            style={{
-              minHeight: '120px',
-              maxHeight: '260px',
-              overflowY: 'auto',
-              background: 'rgba(0, 0, 0, 0.45)',
-              padding: '18px 20px',
-              borderRadius: '12px',
-              fontSize: '1.22rem',
-              lineHeight: '1.8',
-              color: '#f8fafc',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              fontFamily: language === 'bn' ? "'Hind Siliguri', 'Inter', sans-serif" : "'Inter', -apple-system, sans-serif",
-              border: '1px solid rgba(255, 255, 255, 0.08)',
-              boxShadow: 'inset 0 2px 8px rgba(0, 0, 0, 0.4)'
-            }}
-          >
-            {liveTranscript ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {liveTranscript.split('\n').map((line, idx) => {
-                  const match = line.match(/^(\[\d{2}:\d{2}\])\s*([^:]+):\s*(.*)$/);
-                  if (match) {
-                    return (
-                      <div key={idx} style={{ lineHeight: '1.7' }}>
-                        <span style={{ color: '#38bdf8', fontWeight: 700, marginRight: '8px', fontSize: '1.02rem', fontFamily: 'monospace' }}>
-                          {match[1]}
-                        </span>
-                        <span style={{ color: '#34d399', fontWeight: 700, marginRight: '8px', fontSize: '1.08rem' }}>
-                          {match[2]}:
-                        </span>
-                        <span style={{ color: '#f8fafc', fontWeight: 500 }}>
-                          {match[3]}
-                        </span>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div key={idx} style={{ color: '#f1f5f9', fontWeight: 500 }}>
-                      {line}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : !interimText ? (
-              <span style={{ color: 'rgba(148, 163, 184, 0.75)', fontStyle: 'italic', fontSize: '1.05rem' }}>
-                {isRecording
-                  ? '🎙️ Listening... Speak naturally into your microphone. Words appear here live as you speak in authentic Bengali (বাংলা).'
-                  : 'Click Record above to start live speech recognition. Words stream here in real time as you speak.'}
-              </span>
-            ) : null}
-
-            {interimText && (
-              <div style={{ marginTop: liveTranscript ? '8px' : '0px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <span style={{ color: '#38bdf8', fontSize: '0.98rem', fontFamily: 'monospace', fontWeight: 700 }}>
-                  [{formatTime(currentTakeSecondsRef.current || 0)}]
-                </span>
-                <span style={{ color: '#34d399', fontWeight: 700, fontSize: '1.08rem' }}>
-                  {activeSpeaker}:
-                </span>
-                <span
-                  style={{
-                    color: '#f8fafc',
-                    background: 'rgba(56, 189, 248, 0.12)',
-                    padding: '3px 10px',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(56, 189, 248, 0.35)',
-                    fontWeight: 600,
-                    fontSize: '1.25rem',
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px'
-                  }}
-                >
-                  {interimText}
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      width: '2px',
-                      height: '1.15rem',
-                      background: '#38bdf8',
-                      animation: 'pulse 0.8s infinite'
-                    }}
-                  />
-                </span>
-              </div>
-            )}
-            <div ref={transcriptBottomRef} />
-          </div>
-
-          {/* Live Sync Status Footer */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '10px', fontSize: '0.76rem', color: 'var(--text-secondary)', flexWrap: 'wrap', gap: '8px' }}>
-            <span style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-              <Sparkles size={12} color="var(--accent-color)" />
-              Streaming live directly into the single Transcript section below
-            </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-              <span id="speech-engine-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', background: 'rgba(255,255,255,0.06)', padding: '2px 8px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }}>
-                ⚡ Engine: <strong style={{ color: 'var(--text-primary)' }}>{engineStatus}</strong>
-              </span>
-              <span>
-                {((liveTranscript || '') + ' ' + (interimText || '')).trim() ? ((liveTranscript || '') + ' ' + (interimText || '')).trim().split(/\s+/).length : 0} words captured
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Multi-Take Queue Shelf */}
       {recordingsQueue.length > 0 && (
@@ -1646,7 +1408,7 @@ export default function LiveRecordStudio({
                 style={{ fontWeight: 800, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
                 <Sparkles size={14} />
-                {isTranscribing ? 'Transcribing...' : `⚡ Transcribe All Takes (${recordingsQueue.length})`}
+                {isTranscribing ? 'Transcribing...' : `⚡ Transcribe All (${recordingsQueue.length})`}
               </button>
               <button
                 className="btn btn-secondary btn-sm"
@@ -1765,7 +1527,7 @@ export default function LiveRecordStudio({
                   {/* Editable Transcript text if in edit mode or if present */}
                   {isEditing ? (
                     <div>
-                      <label style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>Edit Live Transcript Notes:</label>
+                      <label style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>Edit Transcript:</label>
                       <textarea
                         className="form-control"
                         rows="2"
@@ -2007,14 +1769,11 @@ export default function LiveRecordStudio({
 
               {/* Row 2: Interactive STT Model Selection Buttons */}
               <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                    <Mic size={14} color="#8b5cf6" /> 🎙️ Transcription STT Model:
-                  </label>
-                  <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-                    Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}</strong>
-                  </span>
-                </div>
+                <ModelSectionHeader
+                  icon={<Mic size={14} color="#8b5cf6" />}
+                  label="🎙️ Transcription STT Model:"
+                  activeModel={aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}
+                />
 
                 {/* Quick Segmented Buttons for STT */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -2065,14 +1824,11 @@ export default function LiveRecordStudio({
 
               {/* Row 3: Interactive Summary LLM Model Selection Buttons */}
               <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.82rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                    <Cpu size={14} color="var(--accent-color)" /> ⚡ Summary LLM Model:
-                  </label>
-                  <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
-                    Active: <strong style={{ color: 'var(--text-primary)' }}>{aiConfig?.summarizationModel || 'gemini-3.7-flash'}</strong>
-                  </span>
-                </div>
+                <ModelSectionHeader
+                  icon={<Cpu size={14} color="var(--accent-color)" />}
+                  label="⚡ Summary LLM Model:"
+                  activeModel={aiConfig?.summarizationModel || 'gemini-3.7-flash'}
+                />
 
                 {/* Quick Segmented Buttons for LLM */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
@@ -2120,34 +1876,6 @@ export default function LiveRecordStudio({
                   </select>
                 </div>
               </div>
-            </div>
-
-            {/* 4-Layer Architecture Workflow Tracker Banner */}
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '6px 14px',
-                background: 'rgba(255, 255, 255, 0.03)',
-                border: '1px solid rgba(255, 255, 255, 0.06)',
-                borderRadius: '8px',
-                marginBottom: '8px',
-                fontSize: '0.74rem',
-                color: 'var(--text-secondary)',
-                flexWrap: 'wrap'
-              }}
-            >
-              <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
-              <span style={{ color: '#34d399', fontWeight: 700, background: 'rgba(16, 185, 129, 0.15)', padding: '1px 7px', borderRadius: '4px' }}>
-                1. Record / Listen & Determine Language
-              </span>
-              <span style={{ opacity: 0.5 }}>→</span>
-              <span style={{ color: '#38bdf8', fontWeight: 600 }}>2. Transcribe Audio</span>
-              <span style={{ opacity: 0.5 }}>→</span>
-              <span style={{ color: 'var(--text-secondary)' }}>3. Raw Transcription</span>
-              <span style={{ opacity: 0.5 }}>→</span>
-              <span style={{ color: 'var(--text-secondary)' }}>4. Template Fillup via Skills</span>
             </div>
           </div>
         )}

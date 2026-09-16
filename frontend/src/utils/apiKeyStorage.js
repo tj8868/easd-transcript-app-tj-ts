@@ -94,7 +94,7 @@ export const PROVIDERS = [
   }
 ];
 
-export const detectProviderFromKey = (keyVal) => {
+const detectProviderFromKey = (keyVal) => {
   const trimmed = (keyVal || '').trim();
   if (!trimmed) return null;
   if (trimmed.startsWith('AIzaSy') || trimmed.startsWith('AQ.')) return 'gemini';
@@ -364,7 +364,7 @@ export const QUICK_LLM_MODELS = [
 
 // --- SERVER PERSISTENCE & TWO-WAY API TESTING ---
 
-export const loadServerSettings = async () => {
+const loadServerSettings = async () => {
   try {
     const res = await fetch('/api/settings');
     if (res.ok) {

@@ -1897,8 +1897,10 @@ def transcribe_and_summarize_gemini(
         except Exception as e:
             print(f"[Gemini Interactions Model '{model}' Exception] {e}")
             last_gen_err = e
-                
-    raise RuntimeError(f"Google Gemini summarization failed across models {models_to_try}: {last_gen_err}")
+    print(f"[Gemini Summarization] All models failed ({last_gen_err}). Falling back to deep_semantic_synthesis...")
+    res = deep_semantic_synthesis(transcript, custom_skills, org_context)
+    res["warning"] = f"Google Gemini API notice: {last_gen_err}. Formatted using built-in semantic synthesis engine."
+    return res
 
 def summarize_text_gemini(
     text_content: str,
@@ -1947,8 +1949,11 @@ def summarize_text_gemini(
         except Exception as e:
             print(f"[Gemini Summarize '{m}' interactions error] {e}")
             last_error = e
-                
-    raise RuntimeError(f"Google Gemini summarization failed for models {models_to_try}: {last_error}")
+
+    print(f"[Gemini Summarize] All models failed ({last_error}). Falling back to deep_semantic_synthesis...")
+    res = deep_semantic_synthesis(text_content, custom_skills, org_context)
+    res["warning"] = f"Google Gemini access notice ({last_error}). Fitted to template using built-in semantic synthesis engine. Please update your Gemini API key in Settings."
+    return res
 
 def process_ai_request(
     provider: str,

@@ -51,6 +51,27 @@ const PRESET_SKILLS = [
   }
 ];
 
+function SkillModalDialog({ children }) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.6)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 9999,
+        padding: '20px'
+      }}
+    >
+      <div className="card" style={{ maxWidth: '500px', width: '100%', padding: '24px', background: 'var(--bg-primary)', borderRadius: '14px' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export default function AiSkillsSelector({
   activeSkills,
   setActiveSkills,
@@ -352,135 +373,109 @@ export default function AiSkillsSelector({
 
       {/* Modal: Create New AI Skill */}
       {showAddModal && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '20px'
-          }}
-        >
-          <div className="card" style={{ maxWidth: '500px', width: '100%', padding: '24px', background: 'var(--bg-primary)', borderRadius: '14px' }}>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <Plus size={18} color="var(--accent-color)" /> Create & Save Custom AI Skill
-            </h3>
+        <SkillModalDialog>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <Plus size={18} color="var(--accent-color)" /> Create & Save Custom AI Skill
+          </h3>
 
-            <form onSubmit={handleAddCustomSkill}>
-              <div className="form-group">
-                <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill Title</label>
-                <input
-                  className="form-control"
-                  type="text"
-                  placeholder="e.g. Budget & Financial Ledger Extractor"
-                  value={newSkillName}
-                  onChange={(e) => setNewSkillName(e.target.value)}
-                  required
-                />
-              </div>
+          <form onSubmit={handleAddCustomSkill}>
+            <div className="form-group">
+              <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill Title</label>
+              <input
+                className="form-control"
+                type="text"
+                placeholder="e.g. Budget & Financial Ledger Extractor"
+                value={newSkillName}
+                onChange={(e) => setNewSkillName(e.target.value)}
+                required
+              />
+            </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Category / Model Family</label>
-                <select className="form-control" value={newSkillCategory} onChange={(e) => setNewSkillCategory(e.target.value)}>
-                  <option value="Gemini">Google Gemini Directive</option>
-                  <option value="Claude">Anthropic Claude Reasoning</option>
-                  <option value="Groq">Groq High-Speed Prompt</option>
-                  <option value="OpenAI">OpenAI GPT-4o Schema</option>
-                  <option value="Domain">Public Health / Domain Specialist</option>
-                </select>
-              </div>
+            <div className="form-group">
+              <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Category / Model Family</label>
+              <select className="form-control" value={newSkillCategory} onChange={(e) => setNewSkillCategory(e.target.value)}>
+                <option value="Gemini">Google Gemini Directive</option>
+                <option value="Claude">Anthropic Claude Reasoning</option>
+                <option value="Groq">Groq High-Speed Prompt</option>
+                <option value="OpenAI">OpenAI GPT-4o Schema</option>
+                <option value="Domain">Public Health / Domain Specialist</option>
+              </select>
+            </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill System Prompt Instruction</label>
-                <textarea
-                  className="form-control"
-                  rows={4}
-                  placeholder="e.g. Scan the transcript for any budget figures, grants, donor milestones, or procurement amounts and format them into bullet points."
-                  value={newSkillPrompt}
-                  onChange={(e) => setNewSkillPrompt(e.target.value)}
-                  required
-                />
-              </div>
+            <div className="form-group">
+              <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill System Prompt Instruction</label>
+              <textarea
+                className="form-control"
+                rows={4}
+                placeholder="e.g. Scan the transcript for any budget figures, grants, donor milestones, or procurement amounts and format them into bullet points."
+                value={newSkillPrompt}
+                onChange={(e) => setNewSkillPrompt(e.target.value)}
+                required
+              />
+            </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowAddModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary btn-sm" disabled={isSavingSkill} style={{ fontWeight: 700 }}>
-                  <Save size={14} /> {isSavingSkill ? 'Saving...' : 'Save Skill Permanently'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowAddModal(false)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary btn-sm" disabled={isSavingSkill} style={{ fontWeight: 700 }}>
+                <Save size={14} /> {isSavingSkill ? 'Saving...' : 'Save Skill Permanently'}
+              </button>
+            </div>
+          </form>
+        </SkillModalDialog>
       )}
 
       {/* Modal: Edit Existing Custom Skill */}
       {editingSkill && (
-        <div
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,0.6)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999,
-            padding: '20px'
-          }}
-        >
-          <div className="card" style={{ maxWidth: '500px', width: '100%', padding: '24px', background: 'var(--bg-primary)', borderRadius: '14px' }}>
-            <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <Edit3 size={18} color="var(--accent-color)" /> Edit Saved Skill: {editingSkill.name}
-            </h3>
+        <SkillModalDialog>
+          <h3 style={{ fontSize: '1.15rem', fontWeight: 700, marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <Edit3 size={18} color="var(--accent-color)" /> Edit Saved Skill: {editingSkill.name}
+          </h3>
 
-            <form onSubmit={handleSaveEditedSkill}>
-              <div className="form-group">
-                <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill Title</label>
-                <input
-                  className="form-control"
-                  type="text"
-                  value={editingSkill.name || ''}
-                  onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
-                  required
-                />
-              </div>
+          <form onSubmit={handleSaveEditedSkill}>
+            <div className="form-group">
+              <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill Title</label>
+              <input
+                className="form-control"
+                type="text"
+                value={editingSkill.name || ''}
+                onChange={(e) => setEditingSkill({ ...editingSkill, name: e.target.value })}
+                required
+              />
+            </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Category</label>
-                <input
-                  className="form-control"
-                  type="text"
-                  value={editingSkill.category || ''}
-                  onChange={(e) => setEditingSkill({ ...editingSkill, category: e.target.value })}
-                />
-              </div>
+            <div className="form-group">
+              <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Category</label>
+              <input
+                className="form-control"
+                type="text"
+                value={editingSkill.category || ''}
+                onChange={(e) => setEditingSkill({ ...editingSkill, category: e.target.value })}
+              />
+            </div>
 
-              <div className="form-group">
-                <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill System Prompt Instruction</label>
-                <textarea
-                  className="form-control"
-                  rows={4}
-                  value={editingSkill.prompt || ''}
-                  onChange={(e) => setEditingSkill({ ...editingSkill, prompt: e.target.value })}
-                  required
-                />
-              </div>
+            <div className="form-group">
+              <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Skill System Prompt Instruction</label>
+              <textarea
+                className="form-control"
+                rows={4}
+                value={editingSkill.prompt || ''}
+                onChange={(e) => setEditingSkill({ ...editingSkill, prompt: e.target.value })}
+                required
+              />
+            </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditingSkill(null)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn btn-primary btn-sm" style={{ fontWeight: 700 }}>
-                  <Save size={14} /> Update & Save
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => setEditingSkill(null)}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary btn-sm" style={{ fontWeight: 700 }}>
+                <Save size={14} /> Update & Save
+              </button>
+            </div>
+          </form>
+        </SkillModalDialog>
       )}
     </div>
   );

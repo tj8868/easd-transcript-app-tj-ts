@@ -13,6 +13,16 @@ import {
   ExternalLink
 } from 'lucide-react';
 
+function WindowControlDots() {
+  return (
+    <div style={{ display: 'flex', gap: '6px' }}>
+      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444' }} />
+      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#f59e0b' }} />
+      <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10b981' }} />
+    </div>
+  );
+}
+
 export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' }) {
   const [deviceMode, setDeviceMode] = useState(initialMode); // 'all', 'mobile', 'tablet', 'desktop'
   const [zoomScale, setZoomScale] = useState(0.75); // Scale for 3-device side-by-side mode
@@ -463,11 +473,7 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
                     borderBottom: '1px solid #334155'
                   }}
                 >
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444' }}></div>
-                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#f59e0b' }}></div>
-                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10b981' }}></div>
-                  </div>
+                  <WindowControlDots />
                   <div
                     style={{
                       flex: 1,
@@ -582,9 +588,7 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
                   gap: '8px'
                 }}
               >
-                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ef4444' }}></div>
-                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#f59e0b' }}></div>
-                <div style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#10b981' }}></div>
+                <WindowControlDots />
               </div>
               <iframe
                 key={`desktop-focus-${refreshKey}`}

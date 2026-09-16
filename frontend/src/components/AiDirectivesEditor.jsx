@@ -20,6 +20,79 @@ import {
  * 
  * Each directive has a dedicated (?) button providing detailed explanations and copyable examples.
  */
+function DirectiveBlock({
+  icon: IconComponent,
+  title,
+  helpKey,
+  onOpenHelp,
+  description,
+  value,
+  onChange,
+  disabled,
+  placeholder
+}) {
+  return (
+    <div
+      style={{
+        background: 'var(--bg-card, rgba(15, 28, 63, 0.6))',
+        border: '1px solid var(--border-color)',
+        borderRadius: '14px',
+        padding: '16px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '8px'
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--accent-color)', display: 'flex', alignItems: 'center' }}>
+          <IconComponent size={17} />
+        </span>
+        <label style={{ fontSize: '0.92rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          {title}
+          <button
+            type="button"
+            onClick={() => onOpenHelp(helpKey)}
+            style={{
+              background: 'rgba(2, 132, 199, 0.12)',
+              border: '1.5px solid var(--accent-border, rgba(2, 132, 199, 0.4))',
+              borderRadius: '6px',
+              padding: '2px 5px',
+              color: 'var(--accent-color)',
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              lineHeight: 1
+            }}
+            title={`What is ${title}? Click for explanation and examples`}
+          >
+            <HelpCircle size={14} />
+          </button>
+        </label>
+      </div>
+      <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '0 0 4px 0' }}>
+        {description}
+      </p>
+      <textarea
+        value={value}
+        onChange={onChange}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="form-control"
+        style={{
+          width: '100%',
+          minHeight: '110px',
+          fontSize: '0.86rem',
+          resize: 'vertical',
+          border: '1.5px solid var(--accent-border)',
+          background: 'var(--bg-secondary)',
+          color: 'var(--text-primary)'
+        }}
+      />
+    </div>
+  );
+}
+
 export default function AiDirectivesEditor({
   context = '',
   rules = '',
@@ -122,186 +195,43 @@ export default function AiDirectivesEditor({
   return (
     <div className={`space-y-4 ${className}`}>
       {/* 3 Component Cards Grid */}
+      {/* 3 Interactive Cards for Directives */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {/* 1. Context Block */}
-        <div
-          style={{
-            background: 'var(--bg-card, rgba(15, 28, 63, 0.6))',
-            border: '1px solid var(--border-color)',
-            borderRadius: '14px',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ color: 'var(--accent-color)', display: 'flex', alignItems: 'center' }}>
-              <BookOpen size={17} />
-            </span>
-            <label style={{ fontSize: '0.92rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              1. Context (Purpose)
-              <button
-                type="button"
-                onClick={() => setActiveHelpModal('context')}
-                style={{
-                  background: 'rgba(2, 132, 199, 0.12)',
-                  border: '1.5px solid var(--accent-border, rgba(2, 132, 199, 0.4))',
-                  borderRadius: '6px',
-                  padding: '2px 5px',
-                  color: 'var(--accent-color)',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  lineHeight: 1
-                }}
-                title="What is Context? Click for explanation and examples"
-              >
-                <HelpCircle size={14} />
-              </button>
-            </label>
-          </div>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '0 0 4px 0' }}>
-            Explain what this template is for, its role, and target audience.
-          </p>
-          <textarea
-            value={context}
-            onChange={(e) => handleTextChange('context', e.target.value)}
-            disabled={readOnly}
-            placeholder="e.g. Official review meetings conducted by EASD for executive leadership and program directors..."
-            className="form-control"
-            style={{
-              width: '100%',
-              minHeight: '110px',
-              fontSize: '0.86rem',
-              resize: 'vertical',
-              border: '1.5px solid var(--accent-border)',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)'
-            }}
-          />
-        </div>
+        <DirectiveBlock
+          icon={BookOpen}
+          title="1. Context (Purpose)"
+          helpKey="context"
+          onOpenHelp={setActiveHelpModal}
+          description="Explain what this template is for, its role, and target audience."
+          value={context}
+          onChange={(e) => handleTextChange('context', e.target.value)}
+          disabled={readOnly}
+          placeholder="e.g. Official review meetings conducted by EASD for executive leadership and program directors..."
+        />
 
-        {/* 2. Rules Block */}
-        <div
-          style={{
-            background: 'var(--bg-card, rgba(15, 28, 63, 0.6))',
-            border: '1px solid var(--border-color)',
-            borderRadius: '14px',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ color: 'var(--accent-color)', display: 'flex', alignItems: 'center' }}>
-              <ShieldCheck size={17} />
-            </span>
-            <label style={{ fontSize: '0.92rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              2. Rules (Guidelines)
-              <button
-                type="button"
-                onClick={() => setActiveHelpModal('rules')}
-                style={{
-                  background: 'rgba(2, 132, 199, 0.12)',
-                  border: '1.5px solid var(--accent-border, rgba(2, 132, 199, 0.4))',
-                  borderRadius: '6px',
-                  padding: '2px 5px',
-                  color: 'var(--accent-color)',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  lineHeight: 1
-                }}
-                title="What are Rules? Click for explanation and examples"
-              >
-                <HelpCircle size={14} />
-              </button>
-            </label>
-          </div>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '0 0 4px 0' }}>
-            Formatting rules, tone of voice, language rules, and constraints.
-          </p>
-          <textarea
-            value={rules}
-            onChange={(e) => handleTextChange('rules', e.target.value)}
-            disabled={readOnly}
-            placeholder="1. Write in formal institutional tone.\n2. Keep bullet points prefixed with '• '.\n3. Maintain bilingual accuracy..."
-            className="form-control"
-            style={{
-              width: '100%',
-              minHeight: '110px',
-              fontSize: '0.86rem',
-              resize: 'vertical',
-              border: '1.5px solid var(--accent-border)',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)'
-            }}
-          />
-        </div>
+        <DirectiveBlock
+          icon={ShieldCheck}
+          title="2. Rules (Guidelines)"
+          helpKey="rules"
+          onOpenHelp={setActiveHelpModal}
+          description="Formatting rules, tone of voice, language rules, and constraints."
+          value={rules}
+          onChange={(e) => handleTextChange('rules', e.target.value)}
+          disabled={readOnly}
+          placeholder="1. Write in formal institutional tone.\n2. Keep bullet points prefixed with '• '.\n3. Maintain bilingual accuracy..."
+        />
 
-        {/* 3. Requirements Block */}
-        <div
-          style={{
-            background: 'var(--bg-card, rgba(15, 28, 63, 0.6))',
-            border: '1px solid var(--border-color)',
-            borderRadius: '14px',
-            padding: '16px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-            <span style={{ color: 'var(--accent-color)', display: 'flex', alignItems: 'center' }}>
-              <CheckSquare size={17} />
-            </span>
-            <label style={{ fontSize: '0.92rem', fontWeight: 700, margin: 0, color: 'var(--text-primary)', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-              3. Requirements (Mandatory)
-              <button
-                type="button"
-                onClick={() => setActiveHelpModal('requirements')}
-                style={{
-                  background: 'rgba(2, 132, 199, 0.12)',
-                  border: '1.5px solid var(--accent-border, rgba(2, 132, 199, 0.4))',
-                  borderRadius: '6px',
-                  padding: '2px 5px',
-                  color: 'var(--accent-color)',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  lineHeight: 1
-                }}
-                title="What are Requirements? Click for explanation and examples"
-              >
-                <HelpCircle size={14} />
-              </button>
-            </label>
-          </div>
-          <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '0 0 4px 0' }}>
-            Mandatory fields, key sections, and essential outputs required.
-          </p>
-          <textarea
-            value={requirements}
-            onChange={(e) => handleTextChange('requirements', e.target.value)}
-            disabled={readOnly}
-            placeholder="- Document Title, Date, Location.\n- 4-5 core Agenda points.\n- Key decisions and responsible owners..."
-            className="form-control"
-            style={{
-              width: '100%',
-              minHeight: '110px',
-              fontSize: '0.86rem',
-              resize: 'vertical',
-              border: '1.5px solid var(--accent-border)',
-              background: 'var(--bg-secondary)',
-              color: 'var(--text-primary)'
-            }}
-          />
-        </div>
+        <DirectiveBlock
+          icon={CheckSquare}
+          title="3. Requirements (Mandatory)"
+          helpKey="requirements"
+          onOpenHelp={setActiveHelpModal}
+          description="Mandatory fields, key sections, and essential outputs required."
+          value={requirements}
+          onChange={(e) => handleTextChange('requirements', e.target.value)}
+          disabled={readOnly}
+          placeholder="- Document Title, Date, Location.\n- 4-5 core Agenda points.\n- Key decisions and responsible owners..."
+        />
       </div>
 
       {/* Interactive Help & Examples Modal */}

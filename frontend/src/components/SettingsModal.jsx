@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import {
   X, Sliders, Type, Palette, Monitor, Check, Sparkles, Smartphone, Apple,
   Terminal, ShieldCheck, RefreshCw, AlertTriangle, CheckCircle, FileText,
   Activity, Key, Plus, Trash2, Eye, EyeOff, CheckCircle2, Copy, Clipboard,
-  Zap, ChevronDown, ChevronUp, Cpu, Server, Globe, ExternalLink
+  Zap, ChevronDown, ChevronUp, Cpu, Server, Globe, ExternalLink,
+  UploadCloud, RotateCcw, Image as ImageIcon
 } from 'lucide-react';
 import {
   getSavedCustomApis,
@@ -28,7 +29,7 @@ export const ACCENT_PALETTES = [
   { id: 'crimson_red', name: 'Crimson Red', hex: '#dc2626', glow: 'rgba(220, 38, 38, 0.25)' }
 ];
 
-export const BANGLA_FONTS = [
+const BANGLA_FONTS = [
   { id: 'nikosh', name: 'Nikosh (Official Bangladesh Govt Secretariat Standard)', fontStack: "'Nikosh', 'NikoshBAN', 'SolaimanLipi', 'Hind Siliguri', sans-serif" },
   { id: 'nikosh_ban', name: 'NikoshBAN (Govt Bilingual Standard with English Glyphs)', fontStack: "'NikoshBAN', 'Nikosh', 'Hind Siliguri', sans-serif" },
   { id: 'kalpurush', name: 'Kalpurush (Classic Standard Unicode Bangla)', fontStack: "'Kalpurush', 'Hind Siliguri', 'SolaimanLipi', sans-serif" },
@@ -36,13 +37,89 @@ export const BANGLA_FONTS = [
   { id: 'solaiman_lipi', name: 'SolaimanLipi (Traditional Clean Typography)', fontStack: "'SolaimanLipi', 'Hind Siliguri', sans-serif" }
 ];
 
-export const ENGLISH_FONTS = [
+const ENGLISH_FONTS = [
   { id: 'times_new_roman', name: 'Times New Roman (Microsoft Standard Serif - Official Minutes)', fontStack: "'Times New Roman', Times, serif" },
   { id: 'calibri', name: 'Calibri (Microsoft Standard Sans-Serif - Corporate Briefs)', fontStack: "'Calibri', 'Segoe UI', Arial, sans-serif" },
   { id: 'arial', name: 'Arial (Microsoft High-Legibility Sans-Serif)', fontStack: "Arial, Helvetica, sans-serif" },
   { id: 'inter', name: 'Inter (Modern UI & Presentation Font)', fontStack: "'Inter', system-ui, sans-serif" },
   { id: 'nikosh_ban_en', name: 'NikoshBAN (Bangladesh Govt English Standard)', fontStack: "'NikoshBAN', 'Times New Roman', serif" }
 ];
+
+const PLATFORM_TARGETS = [
+  {
+    icon: Monitor,
+    title: 'Windows Portable (.exe & .bat)',
+    color: '#0284c7',
+    desc: 'Run `python build_windows_exe.py` to generate a standalone portable `.exe` or use `Launch_App.bat` for instant zero-dependency launch.'
+  },
+  {
+    icon: Terminal,
+    title: 'Linux (Ubuntu / Debian / AppImage / Docker)',
+    color: '#f59e0b',
+    desc: 'Runs natively with Python 3.11+ & Uvicorn. Packaged as a standalone Linux ELF binary via PyInstaller or self-contained Docker container.'
+  },
+  {
+    icon: Apple,
+    title: 'macOS (.app & .dmg Bundle)',
+    color: '#a855f7',
+    desc: 'Compiles into a native `.app` bundle using PyInstaller on macOS with WebKit native windowing (pywebview).'
+  },
+  {
+    icon: Smartphone,
+    title: 'Android (APK) & iOS (PWA / Mobile Web)',
+    color: '#10b981',
+    desc: 'Built as a Progressive Web App (PWA) with offline support or compiled into an Android APK via Capacitor using `build_android_apk.py`.'
+  }
+];
+
+function FontOptionCard({ font, isSelected, onSelect, sampleText }) {
+  return (
+    <div
+      onClick={() => onSelect(font.id)}
+      style={{
+        padding: '10px 14px',
+        borderRadius: '10px',
+        border: isSelected ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
+        background: isSelected ? 'rgba(2, 132, 199, 0.12)' : 'var(--bg-secondary)',
+        cursor: 'pointer',
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        transition: 'all 0.2s ease'
+      }}
+    >
+      <div>
+        <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
+          {font.name}
+        </div>
+        <div style={{ fontFamily: font.fontStack, fontSize: '0.92rem', color: 'var(--accent-color)', marginTop: '2px' }}>
+          {sampleText}
+        </div>
+      </div>
+      {isSelected && <Check size={18} color="var(--accent-color)" />}
+    </div>
+  );
+}
+
+function AuditMetricCard({ title, value, badgeText, badgeColor, badgeBg, subText }) {
+  return (
+    <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
+      <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>{title}</div>
+      <div style={{ fontSize: '1.2rem', fontWeight: 800, color: badgeColor || 'var(--text-primary)', marginTop: '2px' }}>
+        {value}
+      </div>
+      {badgeText ? (
+        <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px', background: badgeBg, color: badgeColor, fontWeight: 700 }}>
+          {badgeText}
+        </span>
+      ) : subText ? (
+        <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
+          {subText}
+        </span>
+      ) : null}
+    </div>
+  );
+}
 
 export default function SettingsModal({
   isOpen,
@@ -84,6 +161,73 @@ export default function SettingsModal({
   const [showEnvKeys, setShowEnvKeys] = useState(false);
   const [testStatus, setTestStatus] = useState({});
 
+  // Custom Logo Management State
+  const logoInputRef = useRef(null);
+  const [logoFeedback, setLogoFeedback] = useState('');
+
+  const handleLogoUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+      setLogoFeedback('❌ Image exceeds 5MB limit. Please upload a smaller file.');
+      setTimeout(() => setLogoFeedback(''), 5000);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target?.result;
+      if (!dataUrl || typeof dataUrl !== 'string') return;
+
+      const img = new Image();
+      img.onload = () => {
+        const maxDim = 500;
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        const constrainedUrl = canvas.toDataURL('image/png');
+
+        try {
+          localStorage.setItem('customAppLogo', constrainedUrl);
+        } catch (err) {
+          console.warn('LocalStorage notice:', err);
+        }
+
+        if (setSettings) {
+          setSettings((prev) => ({ ...prev, customLogo: constrainedUrl }));
+        }
+        setLogoFeedback(`✅ Logo updated & constrained (${width}×${height}px)!`);
+        setTimeout(() => setLogoFeedback(''), 4000);
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleResetLogo = () => {
+    try {
+      localStorage.removeItem('customAppLogo');
+    } catch (e) {}
+    if (setSettings) {
+      setSettings((prev) => ({ ...prev, customLogo: '' }));
+    }
+    setLogoFeedback('✅ Restored default EASD logo.');
+    setTimeout(() => setLogoFeedback(''), 3000);
+  };
+
   useEffect(() => {
     if (isOpen) {
       fetchEnvKeys();
@@ -120,31 +264,28 @@ export default function SettingsModal({
     setTimeout(() => setGeminiFeedback(''), 4000);
   };
 
-  const handleTestActiveEngine = async () => {
-    setTestStatus(prev => ({ ...prev, active_engine: { loading: true, message: 'Testing active engine connection...' } }));
+  const runVerifyKey = async (statusKey, provider, apiKey, baseUrl = '', successLabel = '') => {
+    setTestStatus(prev => ({ ...prev, [statusKey]: { loading: true, message: `Testing ${provider} connection...` } }));
     try {
-      const p = aiConfig?.provider || 'gemini';
-      const k = aiConfig?.apiKey || getSavedKeyForProvider(p) || '';
-      const u = aiConfig?.baseUrl || '';
       const res = await axios.post('/api/verify_key', {
-        provider: p,
-        api_key: k,
-        base_url: u
+        provider,
+        api_key: apiKey,
+        base_url: baseUrl
       });
       const isValid = Boolean(res.data?.valid || res.data?.success);
       const lat = res.data?.latency_ms ? ` (${res.data.latency_ms}ms)` : '';
       setTestStatus(prev => ({
         ...prev,
-        active_engine: {
+        [statusKey]: {
           loading: false,
           success: isValid,
-          message: (res.data?.message || (isValid ? 'Active engine verified & connected!' : 'Verification failed.')) + lat
+          message: (res.data?.message || (isValid ? (successLabel || `${provider} connected successfully!`) : 'Verification failed.')) + lat
         }
       }));
     } catch (err) {
       setTestStatus(prev => ({
         ...prev,
-        active_engine: {
+        [statusKey]: {
           loading: false,
           success: false,
           message: err.response?.data?.detail || err.message || 'Connection test error'
@@ -153,33 +294,15 @@ export default function SettingsModal({
     }
   };
 
-  const handleTestGemini = async () => {
-    setTestStatus(prev => ({ ...prev, gemini: { loading: true, message: 'Verifying Google Gemini Key...' } }));
-    try {
-      const res = await axios.post('/api/verify_key', {
-        provider: 'gemini',
-        api_key: geminiKeyInput.trim()
-      });
-      const isValid = Boolean(res.data?.valid || res.data?.success);
-      const lat = res.data?.latency_ms ? ` (${res.data.latency_ms}ms)` : '';
-      setTestStatus(prev => ({
-        ...prev,
-        gemini: {
-          loading: false,
-          success: isValid,
-          message: (res.data?.message || (isValid ? 'Gemini connected successfully!' : 'Verification failed.')) + lat
-        }
-      }));
-    } catch (err) {
-      setTestStatus(prev => ({
-        ...prev,
-        gemini: {
-          loading: false,
-          success: false,
-          message: err.response?.data?.detail || err.message || 'Connection error'
-        }
-      }));
-    }
+  const handleTestActiveEngine = () => {
+    const p = aiConfig?.provider || 'gemini';
+    const k = aiConfig?.apiKey || getSavedKeyForProvider(p) || '';
+    const u = aiConfig?.baseUrl || '';
+    return runVerifyKey('active_engine', p, k, u, 'Active engine verified & connected!');
+  };
+
+  const handleTestGemini = () => {
+    return runVerifyKey('gemini', 'gemini', geminiKeyInput.trim(), '', 'Gemini connected successfully!');
   };
 
   const handleSaveCustomApi = () => {
@@ -221,64 +344,13 @@ export default function SettingsModal({
     }
   };
 
-  const handleTestCustom = async (itemOrNew) => {
+  const handleTestCustom = (itemOrNew) => {
     const keyId = itemOrNew.id || 'custom_new';
-    setTestStatus(prev => ({ ...prev, [keyId]: { loading: true, message: 'Testing endpoint connection...' } }));
-    try {
-      const res = await axios.post('/api/verify_key', {
-        provider: 'custom',
-        api_key: itemOrNew.apiKey || '',
-        base_url: itemOrNew.baseUrl || 'http://localhost:11434/v1'
-      });
-      const isValid = Boolean(res.data?.valid || res.data?.success);
-      const lat = res.data?.latency_ms ? ` (${res.data.latency_ms}ms)` : '';
-      setTestStatus(prev => ({
-        ...prev,
-        [keyId]: {
-          loading: false,
-          success: isValid,
-          message: (res.data?.message || (isValid ? 'Custom endpoint connected!' : 'Connection failed.')) + lat
-        }
-      }));
-    } catch (err) {
-      setTestStatus(prev => ({
-        ...prev,
-        [keyId]: {
-          loading: false,
-          success: false,
-          message: err.response?.data?.detail || err.message || 'Connection error'
-        }
-      }));
-    }
+    return runVerifyKey(keyId, 'custom', itemOrNew.apiKey || '', itemOrNew.baseUrl || 'http://localhost:11434/v1', 'Custom endpoint connected!');
   };
 
-  const handleTestOtherProvider = async () => {
-    setTestStatus(prev => ({ ...prev, [otherProvider]: { loading: true, message: `Testing ${otherProvider.toUpperCase()}...` } }));
-    try {
-      const res = await axios.post('/api/verify_key', {
-        provider: otherProvider,
-        api_key: otherKey.trim()
-      });
-      const isValid = Boolean(res.data?.valid || res.data?.success);
-      const lat = res.data?.latency_ms ? ` (${res.data.latency_ms}ms)` : '';
-      setTestStatus(prev => ({
-        ...prev,
-        [otherProvider]: {
-          loading: false,
-          success: isValid,
-          message: (res.data?.message || (isValid ? `${otherProvider.toUpperCase()} key verified!` : 'Verification failed.')) + lat
-        }
-      }));
-    } catch (err) {
-      setTestStatus(prev => ({
-        ...prev,
-        [otherProvider]: {
-          loading: false,
-          success: false,
-          message: err.response?.data?.detail || err.message || 'Connection error'
-        }
-      }));
-    }
+  const handleTestOtherProvider = () => {
+    return runVerifyKey(otherProvider, otherProvider, otherKey.trim(), '', `${otherProvider.toUpperCase()} key verified!`);
   };
 
   const handleSaveOtherProvider = () => {
@@ -1018,31 +1090,13 @@ export default function SettingsModal({
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {BANGLA_FONTS.map((font) => (
-                  <div
+                  <FontOptionCard
                     key={font.id}
-                    onClick={() => handleSelectBangla(font.id)}
-                    style={{
-                      padding: '10px 14px',
-                      borderRadius: '10px',
-                      border: currentBangla === font.id ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
-                      background: currentBangla === font.id ? 'rgba(2, 132, 199, 0.12)' : 'var(--bg-secondary)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      transition: 'all 0.2s ease'
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                        {font.name}
-                      </div>
-                      <div style={{ fontFamily: font.fontStack, fontSize: '0.92rem', color: 'var(--accent-color)', marginTop: '2px' }}>
-                        নমুনা: গণপ্রজাতন্ত্রী বাংলাদেশ সরকার — স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়
-                      </div>
-                    </div>
-                    {currentBangla === font.id && <Check size={18} color="var(--accent-color)" />}
-                  </div>
+                    font={font}
+                    isSelected={currentBangla === font.id}
+                    onSelect={handleSelectBangla}
+                    sampleText="নমুনা: গণপ্রজাতন্ত্রী বাংলাদেশ সরকার — স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়"
+                  />
                 ))}
               </div>
             </div>
@@ -1054,31 +1108,13 @@ export default function SettingsModal({
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {ENGLISH_FONTS.map((font) => (
-                  <div
+                  <FontOptionCard
                     key={font.id}
-                    onClick={() => handleSelectEnglish(font.id)}
-                    style={{
-                      padding: '10px 14px',
-                      borderRadius: '10px',
-                      border: currentEnglish === font.id ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
-                      background: currentEnglish === font.id ? 'rgba(2, 132, 199, 0.12)' : 'var(--bg-secondary)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      transition: 'all 0.2s ease'
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-primary)' }}>
-                        {font.name}
-                      </div>
-                      <div style={{ fontFamily: font.fontStack, fontSize: '0.92rem', color: 'var(--accent-color)', marginTop: '2px' }}>
-                        Sample: Weekly Strategic, Programmatic and Review Meeting Minutes
-                      </div>
-                    </div>
-                    {currentEnglish === font.id && <Check size={18} color="var(--accent-color)" />}
-                  </div>
+                    font={font}
+                    isSelected={currentEnglish === font.id}
+                    onSelect={handleSelectEnglish}
+                    sampleText="Sample: Weekly Strategic, Programmatic and Review Meeting Minutes"
+                  />
                 ))}
               </div>
             </div>
@@ -1110,6 +1146,96 @@ export default function SettingsModal({
         {/* TAB 2: APPEARANCE & ACCENT COLORS */}
         {activeTab === 'appearance' && (
           <div>
+            {/* Organization Logo & Branding Card */}
+            <div
+              style={{
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '12px',
+                padding: '16px 18px',
+                marginBottom: '20px'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <ImageIcon size={18} color="var(--accent-color)" />
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: '0.96rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                      Organization Logo & Seal Branding
+                    </h4>
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                      Default is the official EASD seal. Upload any custom logo to replace it across the app and documents.
+                    </span>
+                  </div>
+                </div>
+                {settings?.customLogo && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleResetLogo}
+                    style={{ fontSize: '0.75rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                    title="Reset to default EASD logo"
+                  >
+                    <RotateCcw size={12} /> Reset to Default
+                  </button>
+                )}
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                {/* Logo Preview Container (Constrained Aspect Ratio & Size) */}
+                <div
+                  style={{
+                    width: '76px',
+                    height: '76px',
+                    borderRadius: '12px',
+                    background: '#ffffff',
+                    border: '2px solid var(--border-color)',
+                    boxShadow: '0 2px 10px rgba(0, 0, 0, 0.15)',
+                    padding: '6px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}
+                  title="Constrained logo preview"
+                >
+                  <img
+                    src={settings?.customLogo || '/eminence_logo.png'}
+                    alt="Logo Preview"
+                    style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                  />
+                </div>
+
+                <div style={{ flex: 1, minWidth: '220px' }}>
+                  <input
+                    ref={logoInputRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
+                    onChange={handleLogoUpload}
+                    style={{ display: 'none' }}
+                  />
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => logoInputRef.current?.click()}
+                      style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700 }}
+                    >
+                      <UploadCloud size={14} /> Upload Custom Logo
+                    </button>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                      PNG, JPG, WEBP (Max 5MB • Auto-constrained)
+                    </span>
+                  </div>
+                  {logoFeedback && (
+                    <div style={{ marginTop: '6px', fontSize: '0.78rem', fontWeight: 600, color: logoFeedback.startsWith('❌') ? '#ef4444' : '#10b981' }}>
+                      {logoFeedback}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Theme Toggle inside Settings */}
             <div className="form-group">
               <label style={{ fontSize: '0.88rem', fontWeight: 600 }}>Base Workspace Theme:</label>
@@ -1205,45 +1331,19 @@ export default function SettingsModal({
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-              {/* Windows */}
-              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: '#0284c7' }}>
-                  <Monitor size={18} /> Windows Portable (.exe & .bat)
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Run `python build_windows_exe.py` to generate a standalone portable `.exe` or use `Launch_App.bat` for instant zero-dependency launch.
-                </div>
-              </div>
-
-              {/* Linux */}
-              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: '#f59e0b' }}>
-                  <Terminal size={18} /> Linux (Ubuntu / Debian / AppImage / Docker)
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Runs natively with Python 3.11+ & Uvicorn. Packaged as a standalone Linux ELF binary via PyInstaller or self-contained Docker container.
-                </div>
-              </div>
-
-              {/* macOS */}
-              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: '#a855f7' }}>
-                  <Apple size={18} /> macOS (.app & .dmg Bundle)
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Compiles into a native `.app` bundle using PyInstaller on macOS with WebKit native windowing (pywebview).
-                </div>
-              </div>
-
-              {/* Android & iOS */}
-              <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: '#10b981' }}>
-                  <Smartphone size={18} /> Android (APK) & iOS (PWA / Mobile Web)
-                </div>
-                <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  Built as a Progressive Web App (PWA) with offline support or compiled into an Android APK via Capacitor using `build_android_apk.py`.
-                </div>
-              </div>
+              {PLATFORM_TARGETS.map((target) => {
+                const IconComponent = target.icon;
+                return (
+                  <div key={target.title} style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 700, color: target.color }}>
+                      <IconComponent size={18} /> {target.title}
+                    </div>
+                    <div style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      {target.desc}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
@@ -1282,49 +1382,30 @@ export default function SettingsModal({
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                 {/* 4 Metric Summary Cards */}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
-                  {/* Security Score */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>Security Score</div>
-                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: auditData.security?.score >= 90 ? '#10b981' : '#f59e0b', marginTop: '2px' }}>
-                      {auditData.security?.score ?? 100}/100
-                    </div>
-                    <span style={{ fontSize: '0.68rem', padding: '2px 6px', borderRadius: '4px', background: auditData.security?.status === 'SECURE' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)', color: auditData.security?.status === 'SECURE' ? '#10b981' : '#f59e0b', fontWeight: 700 }}>
-                      {auditData.security?.status ?? 'SECURE'}
-                    </span>
-                  </div>
-
-                  {/* Toolchains */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>OCR & Media Engine</div>
-                    <div style={{ fontSize: '1.1rem', fontWeight: 700, color: auditData.toolchains?.tesseract_ocr?.found ? '#10b981' : '#3b82f6', marginTop: '4px' }}>
-                      {auditData.toolchains?.tesseract_ocr?.found ? 'OCR Ready' : 'AI Vision'}
-                    </div>
-                    <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
-                      FFmpeg: {auditData.toolchains?.ffmpeg?.found ? 'Active' : 'Missing'}
-                    </span>
-                  </div>
-
-                  {/* Build Health */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>Frontend Build</div>
-                    <div style={{ fontSize: '1.1rem', fontWeight: 700, color: auditData.build?.frontend_dist_exists ? '#10b981' : '#ef4444', marginTop: '4px' }}>
-                      {auditData.build?.frontend_dist_exists ? 'Compiled' : 'Not Built'}
-                    </div>
-                    <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
-                      Dist: {auditData.build?.frontend_dist_age_hours != null ? `${auditData.build.frontend_dist_age_hours}h ago` : 'Ready'}
-                    </span>
-                  </div>
-
-                  {/* Tasks / Code Debt */}
-                  <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '12px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>Code Backlog</div>
-                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--text-primary)', marginTop: '2px' }}>
-                      {auditData.tasks?.total_code_debt_items ?? 0}
-                    </div>
-                    <span style={{ fontSize: '0.68rem', color: 'var(--text-secondary)' }}>
-                      Active TODOs
-                    </span>
-                  </div>
+                  <AuditMetricCard
+                    title="Security Score"
+                    value={`${auditData.security?.score ?? 100}/100`}
+                    badgeText={auditData.security?.status ?? 'SECURE'}
+                    badgeColor={auditData.security?.score >= 90 ? '#10b981' : '#f59e0b'}
+                    badgeBg={auditData.security?.status === 'SECURE' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)'}
+                  />
+                  <AuditMetricCard
+                    title="OCR & Media Engine"
+                    value={auditData.toolchains?.tesseract_ocr?.found ? 'OCR Ready' : 'AI Vision'}
+                    badgeColor={auditData.toolchains?.tesseract_ocr?.found ? '#10b981' : '#3b82f6'}
+                    subText={`FFmpeg: ${auditData.toolchains?.ffmpeg?.found ? 'Active' : 'Missing'}`}
+                  />
+                  <AuditMetricCard
+                    title="Frontend Build"
+                    value={auditData.build?.frontend_dist_exists ? 'Compiled' : 'Not Built'}
+                    badgeColor={auditData.build?.frontend_dist_exists ? '#10b981' : '#ef4444'}
+                    subText={`Dist: ${auditData.build?.frontend_dist_age_hours != null ? `${auditData.build.frontend_dist_age_hours}h ago` : 'Ready'}`}
+                  />
+                  <AuditMetricCard
+                    title="Code Backlog"
+                    value={auditData.tasks?.total_code_debt_items ?? 0}
+                    subText="Active TODOs"
+                  />
                 </div>
 
                 {/* Toolchain Health Status */}

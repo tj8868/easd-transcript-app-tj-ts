@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { FileText, Copy, Check, Download, Trash2, Mic, Radio, Sparkles, User, Users, Clock, Wand2 } from 'lucide-react';
 
 export default function Transcripts({
   transcript = '',
   setTranscript,
   onSummarize,
+  onGenerate,
   isSummarizing = false,
   isAutoTranscribing = false,
+  onClearAll,
   // Backward-compatibility props if needed
   banglaTranscript,
   setBanglaTranscript,
@@ -18,9 +20,17 @@ export default function Transcripts({
 }) {
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
+  const textareaRef = useRef(null);
 
   // Derive current active transcript value
   const currentText = transcript || banglaTranscript || englishTranscript || '';
+
+  // Auto-scroll textarea to bottom when new speech arrives while recording
+  useEffect(() => {
+    if (isRecording && textareaRef.current) {
+      textareaRef.current.scrollTop = textareaRef.current.scrollHeight;
+    }
+  }, [currentText, isRecording]);
 
   const handleTextChange = (newVal) => {
     if (setTranscript) {
@@ -86,7 +96,7 @@ export default function Transcripts({
 
   // Insert speaker tag or timestamp at cursor or end of transcript
   const handleInsertTag = (tag) => {
-    const textarea = document.getElementById('unified-transcript-textarea');
+    const textarea = textareaRef.current || document.getElementById('unified-transcript-textarea');
     if (!textarea) {
       handleTextChange(currentText ? `${currentText}\n${tag} ` : `${tag} `);
       return;
@@ -129,98 +139,27 @@ export default function Transcripts({
 
   return (
     <div className="card" id="section-transcripts" style={{ border: isRecording ? '1.5px solid var(--accent-color)' : '1.5px solid var(--border-color)', transition: 'border-color 0.25s ease' }}>
-      {/* 4-Layer Architecture Workflow Tracker */}
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '8px',
-          padding: '6px 14px',
-          background: 'rgba(255, 255, 255, 0.03)',
-          border: '1px solid rgba(255, 255, 255, 0.06)',
-          borderRadius: '8px',
-          marginBottom: '12px',
-          fontSize: '0.74rem',
-          color: 'var(--text-secondary)',
-          flexWrap: 'wrap'
-        }}
-      >
-        <span style={{ fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.3px' }}>LAYER STACK:</span>
-        <span style={{ color: 'var(--text-secondary)' }}>1. Record / Upload</span>
-        <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: 'var(--text-secondary)' }}>2. STT Engine</span>
-        <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: '#34d399', fontWeight: 800, background: 'rgba(16, 185, 129, 0.2)', padding: '2px 8px', borderRadius: '5px', border: '1px solid rgba(16, 185, 129, 0.4)' }}>
-          3. Initial Raw Transcript (Auto-Activated • Diarized • Timestamps)
-        </span>
-        <span style={{ opacity: 0.5 }}>→</span>
-        <span style={{ color: '#facc15', fontWeight: 600 }}>4. Template Fillup via Skills</span>
-      </div>
-
-      {/* Header & Controls Toolbar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '10px' }}>
+      {/* Header & Primary Actions Bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '12px' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
             <h2 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', gap: '8px', alignItems: 'center', margin: 0 }}>
-              <FileText size={20} color="var(--accent-color)" /> Initial Raw Transcript (100% Verbatim • Speaker Diarization • Timestamps)
+              <FileText size={20} color="var(--accent-color)" /> Transcript
             </h2>
 
-            {/* Quality & Verbatim Verification Badges */}
-            <span
-              style={{
-                fontSize: '0.72rem',
-                padding: '2px 8px',
-                borderRadius: '12px',
-                background: 'rgba(16, 185, 129, 0.15)',
-                color: '#34d399',
-                border: '1px solid rgba(16, 185, 129, 0.35)',
-                fontWeight: 700
-              }}
-            >
-              ✓ 100% Raw Speech
-            </span>
-
-            <span
-              style={{
-                fontSize: '0.72rem',
-                padding: '2px 8px',
-                borderRadius: '12px',
-                background: 'rgba(56, 189, 248, 0.15)',
-                color: '#38bdf8',
-                border: '1px solid rgba(56, 189, 248, 0.35)',
-                fontWeight: 700
-              }}
-            >
-              👥 Speaker Diarization Active
-            </span>
-
-            <span
-              style={{
-                fontSize: '0.72rem',
-                padding: '2px 8px',
-                borderRadius: '12px',
-                background: 'rgba(168, 85, 247, 0.15)',
-                color: '#c084fc',
-                border: '1px solid rgba(168, 85, 247, 0.35)',
-                fontWeight: 700
-              }}
-            >
-              ⏱️ Timestamps [MM:SS]
-            </span>
-
-            {isAutoTranscribing ? (
+            {isRecording && (
               <span
                 style={{
-                  fontSize: '0.75rem',
+                  fontSize: '0.74rem',
                   padding: '3px 10px',
-                  borderRadius: '20px',
-                  background: 'rgba(56, 189, 248, 0.2)',
-                  color: '#38bdf8',
-                  border: '1.5px solid rgba(56, 189, 248, 0.5)',
+                  borderRadius: '12px',
+                  background: 'rgba(239, 68, 68, 0.18)',
+                  color: '#f87171',
+                  border: '1px solid rgba(239, 68, 68, 0.4)',
+                  fontWeight: 700,
                   display: 'inline-flex',
                   alignItems: 'center',
-                  gap: '6px',
-                  fontWeight: 700
+                  gap: '6px'
                 }}
               >
                 <span
@@ -228,39 +167,15 @@ export default function Transcripts({
                     width: '8px',
                     height: '8px',
                     borderRadius: '50%',
-                    backgroundColor: '#38bdf8',
+                    background: '#ef4444',
                     animation: 'pulse 1s infinite'
                   }}
                 />
-                ⚡ Auto-Transcribing Diarized Speech...
+                LIVE RECORDING ACTIVE
               </span>
-            ) : isRecording ? (
-              <span
-                style={{
-                  fontSize: '0.75rem',
-                  padding: '3px 10px',
-                  borderRadius: '20px',
-                  background: 'rgba(239, 68, 68, 0.15)',
-                  color: '#ef4444',
-                  border: '1px solid rgba(239, 68, 68, 0.35)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontWeight: 700
-                }}
-              >
-                <span
-                  style={{
-                    width: '7px',
-                    height: '7px',
-                    borderRadius: '50%',
-                    backgroundColor: '#ef4444',
-                    animation: 'pulse 1.2s infinite'
-                  }}
-                />
-                ● Real-Time Speech Active
-              </span>
-            ) : currentText ? (
+            )}
+
+            {currentText ? (
               <span
                 style={{
                   fontSize: '0.75rem',
@@ -278,36 +193,81 @@ export default function Transcripts({
           </div>
 
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '4px', marginBottom: 0 }}>
-            Verbatim spoken conversation stream with speaker diarization & timestamps. 100% raw speech — never summarized or synthesized.
+            Live speech recognition stream and verbatim transcript with speaker labels and timestamps.
           </p>
         </div>
 
-        {/* Action Buttons */}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-          {/* Layer 4 Trigger: Fill Active Template */}
+        {/* Action Buttons: Big Generate, Big Clear All, plus utility buttons */}
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Big Generate Button (Fits transcript to active template) */}
           <button
-            className="btn btn-primary btn-sm"
-            onClick={() => onSummarize && onSummarize(currentText)}
+            type="button"
+            className="btn btn-primary"
+            onClick={() => (onGenerate || onSummarize) && (onGenerate || onSummarize)(currentText)}
             disabled={!currentText.trim() || isSummarizing}
-            title="Layer 4: Fill active template and synthesize document using skills & directives"
+            title="Generate document by fitting transcript to active template"
             style={{
-              fontSize: '0.8rem',
-              fontWeight: 700,
-              padding: '5px 12px',
+              fontSize: '0.92rem',
+              fontWeight: 800,
+              padding: '8px 18px',
               display: 'flex',
               alignItems: 'center',
-              gap: '6px',
-              background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
-              border: '1px solid #38bdf8',
+              gap: '8px',
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              border: '1.5px solid #34d399',
               color: '#ffffff',
-              boxShadow: '0 2px 8px rgba(14, 165, 233, 0.25)'
+              borderRadius: '8px',
+              boxShadow: '0 3px 12px rgba(16, 185, 129, 0.3)',
+              cursor: currentText.trim() && !isSummarizing ? 'pointer' : 'not-allowed',
+              opacity: currentText.trim() && !isSummarizing ? 1 : 0.6
             }}
           >
-            <Sparkles size={14} color="#facc15" />
-            {isSummarizing ? 'Filling Template...' : '⚡ Fill Active Template with AI'}
+            <Sparkles size={16} color="#facc15" />
+            {isSummarizing ? 'Generating...' : '⚡ Generate'}
           </button>
 
+          {/* Big and Visible Clear All Button */}
+          {onClearAll && (
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={onClearAll}
+              title="Clear all recordings, audio queues, transcript text, and document data"
+              style={{
+                fontSize: '0.88rem',
+                fontWeight: 800,
+                padding: '8px 16px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1.5px solid rgba(239, 68, 68, 0.45)',
+                color: '#ef4444',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                boxShadow: '0 2px 8px rgba(239, 68, 68, 0.15)'
+              }}
+            >
+              <Trash2 size={15} />
+              Clear All
+            </button>
+          )}
+
+          {/* Individual Clear Transcript Button */}
+          {currentText && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleClear}
+              title="Clear this transcript text box only"
+              style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}
+            >
+              <Trash2 size={13} /> Clear Transcript
+            </button>
+          )}
+
           <button
+            type="button"
             className="btn btn-secondary btn-sm"
             onClick={handleDownload}
             disabled={!currentText}
@@ -317,8 +277,9 @@ export default function Transcripts({
             {downloaded ? <Check size={14} /> : <Download size={14} />}
             {downloaded ? 'Downloaded!' : '📥 Download (.txt)'}
           </button>
-          
+
           <button
+            type="button"
             className="btn btn-secondary btn-sm"
             onClick={handleCopy}
             disabled={!currentText}
@@ -328,17 +289,6 @@ export default function Transcripts({
             {copied ? <Check size={14} color="var(--success-color)" /> : <Copy size={14} />}
             {copied ? 'Copied!' : '📋 Copy'}
           </button>
-
-          {currentText && (
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={handleClear}
-              title="Clear transcript content"
-              style={{ fontSize: '0.78rem', color: '#f87171', display: 'flex', alignItems: 'center', gap: '4px' }}
-            >
-              <Trash2 size={13} /> Clear
-            </button>
-          )}
         </div>
       </div>
 
@@ -481,15 +431,15 @@ export default function Transcripts({
           />
           <div>
             <strong style={{ color: '#ffffff', display: 'block', marginBottom: '2px' }}>
-              ⚡ Initial Transcript Auto-Activated:
+              ⚡ Transcribing:
             </strong>
-            Transcribing audio stream into 100% raw verbatim speech with speaker diarization (Speaker 1, Speaker 2...) and start timestamps ([MM:SS])...
+            Transcribing audio stream with speaker diarization and timestamps...
           </div>
         </div>
       )}
 
       {/* Real-time speech preview banner while speaker is actively talking */}
-      {isRecording && (
+      {(isRecording || Boolean(interimText && interimText.trim())) && (
         <div
           id="live-interim-preview-bar"
           style={{
@@ -509,7 +459,7 @@ export default function Transcripts({
           <Radio size={16} color="#10b981" style={{ animation: 'pulse 1s infinite', flexShrink: 0 }} />
           <div style={{ flex: 1, overflow: 'hidden' }}>
             <span style={{ fontWeight: 800, color: '#ffffff', marginRight: '8px' }}>
-              🎙️ Live Audio Instant Preview:
+              🎙️ Live Speech Stream:
             </span>
             <span
               style={{
@@ -519,7 +469,7 @@ export default function Transcripts({
                 fontFamily: "'Hind Siliguri', 'Inter', sans-serif"
               }}
             >
-              {interimText || 'Listening... Words preview here in real time as you speak and store immediately into the transcription box below.'}
+              {interimText || 'Listening... Words stream live here and format instantly into the Transcript box.'}
             </span>
           </div>
           <span
@@ -534,7 +484,7 @@ export default function Transcripts({
               flexShrink: 0
             }}
           >
-            AUTO-SYNCING
+            LIVE
           </span>
         </div>
       )}
@@ -542,6 +492,7 @@ export default function Transcripts({
       {/* Single Unified Raw Transcript Area */}
       <div className="form-group" style={{ marginBottom: 0 }}>
         <textarea
+          ref={textareaRef}
           id="unified-transcript-textarea"
           className="form-control"
           rows={12}
@@ -563,10 +514,10 @@ export default function Transcripts({
           }}
           placeholder={
             isAutoTranscribing
-              ? '⚡ Auto-activating initial transcript: Processing speech into 100% raw verbatim text with speaker diarization & timestamps...'
+              ? '⚡ Transcribing audio into text with speaker diarization & timestamps...'
               : isRecording
-              ? '🎙️ Listening... Real-time speech streams here in [MM:SS] Speaker X: <words> format...'
-              : '[00:00] Speaker 1: Speak into microphone or upload audio to auto-generate 100% raw verbatim transcript with speaker diarization & timestamps...'
+              ? '🎙️ Listening... Speech streams here in [MM:SS] Speaker X: <words> format...'
+              : '[00:00] Speaker 1: Speak into microphone or upload audio to transcribe with speaker diarization & timestamps...'
           }
           value={currentText}
           onChange={(e) => handleTextChange(e.target.value)}
@@ -575,7 +526,7 @@ export default function Transcripts({
 
       {/* Footer Meta */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-        <span>Raw verbatim speech formatted by speaker & timestamp.</span>
+        <span>Timestamped dialogue formatted by speaker.</span>
         <span>{wordCount} words | {charCount} characters</span>
       </div>
     </div>

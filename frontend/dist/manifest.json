@@ -1,0 +1,17 @@
+{
+  "short_name": "EASD AI",
+  "name": "Eminence Transcription & Meeting Minutes AI",
+  "description": "Cross-Platform AI Speech Transcription and Document Synthesis",
+  "icons": [
+    {
+      "src": "/eminence_logo.png",
+      "type": "image/png",
+      "sizes": "192x192 512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#070d1e",
+  "theme_color": "#0284c7",
+  "display": "standalone",
+  "orientation": "portrait"
+}

@@ -2,6 +2,73 @@ import React from 'react';
 import DOMPurify from 'dompurify';
 import { FileDown, Cloud, FileText, CheckCircle2, Table, Layers, Landmark, BookOpen, Newspaper, Feather, Check } from 'lucide-react';
 
+function TemplateSectionRenderer({
+  sec,
+  content,
+  titleColor = '#0f172a',
+  titleSize = '1.08rem',
+  titleBorderBottom = 'none',
+  placeholder = 'Section populated from speech recording synthesis...',
+  marginBottom = '18px',
+  cleanHtml
+}) {
+  return (
+    <div style={{ marginBottom }}>
+      <h3
+        style={{
+          fontSize: titleSize,
+          fontWeight: 'bold',
+          color: titleColor,
+          marginBottom: '6px',
+          borderBottom: titleBorderBottom,
+          paddingBottom: titleBorderBottom !== 'none' ? '4px' : '0'
+        }}
+      >
+        {sec.title}
+      </h3>
+      {content ? (
+        <div
+          style={{ fontSize: '0.96rem', lineHeight: '1.65', color: '#334155' }}
+          dangerouslySetInnerHTML={{ __html: cleanHtml(content) }}
+        />
+      ) : (
+        <p style={{ fontStyle: 'italic', color: '#94a3b8', fontSize: '0.9rem' }}>
+          {placeholder}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TemplateSectionsList({
+  sections = [],
+  meta = {},
+  customSectionsData = {},
+  titleColor,
+  titleSize,
+  titleBorderBottom,
+  placeholder,
+  marginBottom,
+  cleanHtml
+}) {
+  return (sections || []).map((sec, idx) => {
+    const content = meta[sec.id] || (customSectionsData && customSectionsData[sec.id]) || '';
+    return (
+      <TemplateSectionRenderer
+        key={sec.id || idx}
+        sec={sec}
+        content={content}
+        titleColor={titleColor}
+        titleSize={titleSize}
+        titleBorderBottom={titleBorderBottom}
+        placeholder={placeholder}
+        marginBottom={marginBottom}
+        cleanHtml={cleanHtml}
+      />
+    );
+  });
+}
+
 export default function DocumentPreview({
   meta = {},
   agendas = [],
@@ -102,19 +169,17 @@ export default function DocumentPreview({
           <button
             className="btn btn-secondary btn-sm"
             onClick={handleDownloadTranscriptOnly}
-            title="Download transcript text only (.txt)"
+            title="Download raw transcript text (.txt)"
             style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
           >
-            <FileText size={15} /> Transcript (.txt)
+            <FileText size={15} /> Download Raw Transcript (.txt)
           </button>
           <button className="btn btn-primary btn-sm" onClick={onDownloadDocx} disabled={isGenerating} style={{ fontWeight: 700 }}>
             <FileDown size={15} /> {isGenerating ? 'Generating Word...' : 'Download .docx'}
           </button>
-          {isEasdMinutes && (
-            <button className="btn btn-success btn-sm" onClick={onOpenGDrive} style={{ fontWeight: 700 }}>
-              <Cloud size={15} /> GDrive Sync
-            </button>
-          )}
+          <button className="btn btn-success btn-sm" onClick={onOpenGDrive} style={{ fontWeight: 700 }}>
+            <Cloud size={15} /> Share with GDrive
+          </button>
         </div>
       </div>
 
@@ -264,7 +329,7 @@ export default function DocumentPreview({
             {/* Header Logo Row */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '2.5px solid #004b87', paddingBottom: '12px' }}>
               <img src="/template_logo.jpeg" alt="EASD Header Banner" style={{ maxHeight: '58px', objectFit: 'contain' }} onError={(e) => { e.target.style.display = 'none'; }} />
-              <img src="/eminence_logo.png" alt="Eminence Seal" style={{ maxHeight: '58px', width: '58px', objectFit: 'contain' }} />
+              <img src={settings?.customLogo || '/eminence_logo.png'} alt="Eminence Seal" style={{ maxHeight: '64px', maxWidth: '80px', objectFit: 'contain' }} />
             </div>
 
             {/* Document Title & Meta */}
@@ -453,23 +518,16 @@ export default function DocumentPreview({
             </div>
 
             {/* Lead & Story Body */}
-            {(activeTemplate.sections || []).map((sec, idx) => {
-              const content = meta[sec.id] || (customSectionsData && customSectionsData[sec.id]) || '';
-              return (
-                <div key={idx} style={{ marginBottom: '18px' }}>
-                  <h3 style={{ fontSize: '1.08rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '6px' }}>
-                    {sec.title}
-                  </h3>
-                  {content ? (
-                    <div style={{ fontSize: '0.96rem', lineHeight: '1.65', color: '#334155' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(content) }} />
-                  ) : (
-                    <p style={{ fontStyle: 'italic', color: '#94a3b8', fontSize: '0.9rem' }}>
-                      Story details populated from press conference / event recording...
-                    </p>
-                  )}
-                </div>
-              );
-            })}
+            <TemplateSectionsList
+              sections={activeTemplate.sections}
+              meta={meta}
+              customSectionsData={customSectionsData}
+              titleColor="#0f172a"
+              titleSize="1.08rem"
+              placeholder="Story details populated from press conference / event recording..."
+              marginBottom="18px"
+              cleanHtml={cleanDetailsHtml}
+            />
 
             <div style={{ textAlign: 'center', margin: '30px 0 16px 0', color: '#94a3b8', fontWeight: 'bold', letterSpacing: '2px' }}>
               ### (END) ###
@@ -500,23 +558,16 @@ export default function DocumentPreview({
             </div>
 
             {/* Blog Sections */}
-            {(activeTemplate.sections || []).map((sec, idx) => {
-              const content = meta[sec.id] || (customSectionsData && customSectionsData[sec.id]) || '';
-              return (
-                <div key={idx} style={{ marginBottom: '20px' }}>
-                  <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#6d28d9', marginBottom: '8px' }}>
-                    {sec.title}
-                  </h3>
-                  {content ? (
-                    <div style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(content) }} />
-                  ) : (
-                    <p style={{ fontStyle: 'italic', color: '#94a3b8', fontSize: '0.9rem' }}>
-                      Insights and core takeaways synthesized from podcast / notes...
-                    </p>
-                  )}
-                </div>
-              );
-            })}
+            <TemplateSectionsList
+              sections={activeTemplate.sections}
+              meta={meta}
+              customSectionsData={customSectionsData}
+              titleColor="#6d28d9"
+              titleSize="1.15rem"
+              placeholder="Insights and core takeaways synthesized from podcast / notes..."
+              marginBottom="20px"
+              cleanHtml={cleanDetailsHtml}
+            />
           </div>
         )}
 
@@ -538,23 +589,17 @@ export default function DocumentPreview({
             </div>
 
             {/* Dynamic Sections */}
-            {(activeTemplate.sections || []).map((sec, idx) => {
-              const content = meta[sec.id] || (customSectionsData && customSectionsData[sec.id]) || '';
-              return (
-                <div key={idx} style={{ marginBottom: '20px' }}>
-                  <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#003366', marginBottom: '6px', borderBottom: '1px solid #cbd5e1', paddingBottom: '4px' }}>
-                    {sec.title}
-                  </h3>
-                  {content ? (
-                    <div style={{ fontSize: '0.96rem', lineHeight: '1.65', color: '#334155' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(content) }} />
-                  ) : (
-                    <p style={{ fontStyle: 'italic', color: '#94a3b8', fontSize: '0.9rem' }}>
-                      Section populated from speech recording synthesis...
-                    </p>
-                  )}
-                </div>
-              );
-            })}
+            <TemplateSectionsList
+              sections={activeTemplate.sections}
+              meta={meta}
+              customSectionsData={customSectionsData}
+              titleColor="#003366"
+              titleSize="1.15rem"
+              titleBorderBottom="1px solid #cbd5e1"
+              placeholder="Section populated from speech recording synthesis..."
+              marginBottom="20px"
+              cleanHtml={cleanDetailsHtml}
+            />
 
             {/* Dynamic Tables */}
             {(activeTemplate.tables || []).map((tbl, tIdx) => {
@@ -601,6 +646,46 @@ export default function DocumentPreview({
             })}
           </div>
         )}
+      </div>
+
+      {/* Bottom Action Footer Bar */}
+      <div
+        style={{
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          gap: '12px',
+          marginTop: '24px',
+          paddingTop: '18px',
+          borderTop: '1px solid var(--border-color)',
+          flexWrap: 'wrap'
+        }}
+      >
+        <button
+          className="btn btn-secondary btn-sm"
+          onClick={handleDownloadTranscriptOnly}
+          title="Download raw transcript (.txt)"
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600, padding: '8px 16px', fontSize: '0.85rem' }}
+        >
+          <FileText size={16} /> Download Raw Transcript (.txt)
+        </button>
+
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={onDownloadDocx}
+          disabled={isGenerating}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, padding: '8px 20px', fontSize: '0.88rem' }}
+        >
+          <FileDown size={16} /> {isGenerating ? 'Generating Word...' : 'Download .docx'}
+        </button>
+
+        <button
+          className="btn btn-success btn-sm"
+          onClick={onOpenGDrive}
+          style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, padding: '8px 18px', fontSize: '0.88rem' }}
+        >
+          <Cloud size={16} /> Share with GDrive
+        </button>
       </div>
     </div>
   );

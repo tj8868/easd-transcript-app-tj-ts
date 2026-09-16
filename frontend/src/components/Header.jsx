@@ -9,13 +9,14 @@ export default function Header({
   onOpenDeviceViewer,
   isFrameView = false,
   activeApiName = 'Gemini API',
-  onOpenApiSettings
+  onOpenApiSettings,
+  customLogo
 }) {
   return (
     <header className="app-header">
       <div className="brand">
         <div className="logo-img-container" title="Eminence AI Transcription Hub">
-          <img src="/eminence_logo.png" alt="Eminence Logo" className="logo-img" />
+          <img src={customLogo || '/eminence_logo.png'} alt="Eminence Logo" className="logo-img" />
           <div className="transcription-sign-badge" title="Live Transcription Engine Active">
             <Mic size={13} color="#ffffff" />
             <span className="sign-pulse"></span>

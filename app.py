@@ -595,7 +595,13 @@ async def summarize_transcript_endpoint(
         )
         return JSONResponse(content={"status": "success", "data": res})
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        print(f"[/api/summarize_transcript Exception] {e}. Falling back to deep_semantic_synthesis...")
+        try:
+            fallback = deep_semantic_synthesis(transcript, custom_skills, org_context)
+            fallback["warning"] = f"AI Provider Notice: {str(e)}. Structured using built-in semantic synthesis."
+            return JSONResponse(content={"status": "success", "data": fallback})
+        except Exception:
+            raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/api/ocr_extract_and_optimize")
 async def ocr_extract_and_optimize_endpoint(

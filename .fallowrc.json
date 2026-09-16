@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": ["frontend/src/main.jsx"],
+  "ignorePatterns": [
+    "static/**",
+    "temp_outputs/**",
+    "**/dist/**",
+    "**/node_modules/**",
+    "**/test_*.js"
+  ]
+}
