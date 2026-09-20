@@ -97,6 +97,13 @@ async def add_security_headers(request: Request, call_next):
             "object-src 'none'; "
             "frame-ancestors 'self' https://*.github.dev https://*.app.github.dev;"
         )
+    
+    # Ensure index.html and root page never get cached stale by browsers/PWA
+    req_path = request.url.path or ""
+    if req_path in ["", "/", "/index.html"] or req_path.endswith((".html", ".json")):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
     return response
 
 app.add_middleware(
@@ -159,30 +166,22 @@ class VerifyKeyPayload(BaseModel):
 
 class ApiSettingsPayload(BaseModel):
     transcription_provider: Optional[str] = "gemini"
-    transcription_api_key: Optional[str] = ""
     transcription_model: Optional[str] = "gemini-3.5-transcribe"
-    transcription_base_url: Optional[str] = ""
     summarization_provider: Optional[str] = "gemini"
-    summarization_api_key: Optional[str] = ""
-    summarization_model: Optional[str] = "gemini-3.7-flash"
-    summarization_base_url: Optional[str] = ""
-    groq_api_key: Optional[str] = ""
+    summarization_model: Optional[str] = "gemini-3.8-flash"
     gemini_api_key: Optional[str] = ""
-    openai_api_key: Optional[str] = ""
-    anthropic_api_key: Optional[str] = ""
-    hf_token: Optional[str] = ""
-    whisperx_model: Optional[str] = "pyannote/speaker-diarization-community-1"
+    local_whisper_model: Optional[str] = "auto"
+    gemini_live_model: Optional[str] = "models/gemini-3.5-transcribe-live"
     model_config = ConfigDict(extra="ignore")
 
 class TestEnginePayload(BaseModel):
     test_type: str = "both"  # "stt", "llm", or "both"
-    stt_provider: Optional[str] = None
+    stt_provider: Optional[str] = "gemini"
     stt_api_key: Optional[str] = None
-    stt_model: Optional[str] = None
-    llm_provider: Optional[str] = None
+    stt_model: Optional[str] = "gemini-3.5-transcribe"
+    llm_provider: Optional[str] = "gemini"
     llm_api_key: Optional[str] = None
-    llm_model: Optional[str] = None
-    base_url: Optional[str] = None
+    llm_model: Optional[str] = "gemini-3.8-flash"
     model_config = ConfigDict(extra="ignore")
 
 class DeleteTemplatePayload(BaseModel):
@@ -245,20 +244,13 @@ def test_engine_endpoint(payload: TestEnginePayload):
     # Test STT Transcription Engine if requested
     if payload.test_type in ["stt", "both"]:
         stt_prov = payload.stt_provider or cfg.get("transcription_provider") or "gemini"
-        if stt_prov in ["whisperx", "huggingface", "hf"]:
-            stt_key = payload.stt_api_key or cfg.get("hf_token") or os.getenv("HF_TOKEN") or ""
-            stt_mod = payload.stt_model or cfg.get("whisperx_model") or "pyannote/speaker-diarization-community-1"
-        else:
-            stt_key = payload.stt_api_key or cfg.get(f"{stt_prov}_api_key") or cfg.get("transcription_api_key") or ""
-            stt_mod = payload.stt_model or cfg.get("transcription_model") or ("whisper-large-v3-turbo" if stt_prov == "groq" else "gemini-3.5-transcribe")
-        if stt_prov == "gemini" and any(old in stt_mod for old in ["1.5", "2.0", "2.5"]):
-            stt_mod = "gemini-3.5-transcribe"
+        stt_key = payload.stt_api_key or cfg.get("gemini_api_key") or ""
+        stt_mod = payload.stt_model or cfg.get("transcription_model") or "gemini-3.5-transcribe"
 
         stt_res = test_transcription_engine(
             provider=stt_prov,
             api_key=stt_key,
-            model_name=stt_mod,
-            base_url=payload.base_url or cfg.get("transcription_base_url") or ""
+            model_name=stt_mod
         )
         results["stt"] = stt_res
         if not stt_res.get("success"):
@@ -267,16 +259,13 @@ def test_engine_endpoint(payload: TestEnginePayload):
     # Test LLM Summarization Engine if requested
     if payload.test_type in ["llm", "both"]:
         llm_prov = payload.llm_provider or cfg.get("summarization_provider") or "gemini"
-        llm_key = payload.llm_api_key or cfg.get(f"{llm_prov}_api_key") or cfg.get("summarization_api_key") or ""
-        llm_mod = payload.llm_model or cfg.get("summarization_model") or ("gemini-3.7-flash" if llm_prov == "gemini" else "llama-3.3-70b-versatile")
-        if llm_prov == "gemini" and any(old in llm_mod for old in ["1.5", "2.0", "2.5"]):
-            llm_mod = "gemini-3.7-flash"
+        llm_key = payload.llm_api_key or cfg.get("gemini_api_key") or ""
+        llm_mod = payload.llm_model or cfg.get("summarization_model") or "gemini-3.8-flash"
 
         llm_res = test_summarization_engine(
             provider=llm_prov,
             api_key=llm_key,
-            model_name=llm_mod,
-            base_url=payload.base_url or cfg.get("summarization_base_url") or ""
+            model_name=llm_mod
         )
         results["llm"] = llm_res
         if not llm_res.get("success"):
@@ -288,12 +277,8 @@ def test_engine_endpoint(payload: TestEnginePayload):
 @app.post("/api/env_keys")
 def get_env_keys_endpoint():
     """Reports detected AI API environment variables safely."""
-    groq_env = bool(os.getenv("GROQ_API_KEY"))
     gemini_env = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    openai_env = bool(os.getenv("OPENAI_API_KEY"))
-    anthropic_env = bool(os.getenv("ANTHROPIC_API_KEY"))
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    groq_file = os.path.exists(os.path.join(base_dir, "GroqAPI.txt"))
     gemini_file = False
     gem_path = os.path.join(base_dir, "GeminiAPI.txt")
     if os.path.exists(gem_path):
@@ -310,21 +295,9 @@ def get_env_keys_endpoint():
     return JSONResponse(content={
         "status": "success",
         "env_keys": {
-            "GROQ_API_KEY": {
-                "configured": bool(groq_env or groq_file),
-                "preview": "Set in GroqAPI.txt / ENV" if (groq_env or groq_file) else "Not configured"
-            },
             "GEMINI_API_KEY": {
                 "configured": bool(gemini_env or gemini_file),
                 "preview": "Set in GeminiAPI.txt / ENV" if (gemini_env or gemini_file) else "Not configured"
-            },
-            "OPENAI_API_KEY": {
-                "configured": bool(openai_env),
-                "preview": "Set in environment" if openai_env else "Not configured"
-            },
-            "ANTHROPIC_API_KEY": {
-                "configured": bool(anthropic_env),
-                "preview": "Set in environment" if anthropic_env else "Not configured"
             }
         }
     })
@@ -832,6 +805,39 @@ async def live_transcribe_chunk_endpoint(
     except Exception as e:
         return JSONResponse(content={"status": "error", "text": "", "detail": str(e)}, status_code=200)
 
+@app.post("/api/detect_language")
+async def detect_language_endpoint(
+    chunk: Optional[UploadFile] = File(None),
+    file: Optional[UploadFile] = File(None)
+):
+    """
+    Sub-second acoustic language detection between Bengali ('bn') and English ('en').
+    Evaluates audio slice and returns detected language with confidence.
+    """
+    try:
+        uploaded = chunk or file
+        if not uploaded:
+            return JSONResponse(content={"status": "error", "language": "auto", "confidence": 0.0})
+        content = await uploaded.read()
+        if len(content) < 32:
+            return JSONResponse(content={"status": "success", "language": "bn", "confidence": 0.5})
+
+        import local_whisper_engine
+        opt_m = local_whisper_engine.select_optimal_model_name()
+        model = local_whisper_engine.get_local_whisper_model(opt_m)
+        temp_wav = local_whisper_engine.convert_to_wav_pcm16k(content, input_hint="webm")
+        try:
+            lang, conf = local_whisper_engine.detect_bilingual_audio_language(model, temp_wav)
+            return JSONResponse(content={"status": "success", "language": lang, "confidence": conf})
+        finally:
+            if temp_wav and os.path.exists(temp_wav):
+                try:
+                    os.remove(temp_wav)
+                except Exception:
+                    pass
+    except Exception as e:
+        return JSONResponse(content={"status": "error", "language": "bn", "confidence": 0.5, "detail": str(e)})
+
 @app.post("/api/transcribe_take")
 async def transcribe_take_endpoint(
     file: UploadFile = File(...),
@@ -861,7 +867,7 @@ async def transcribe_take_endpoint(
             elif fn_low.endswith(".mov"): mime = "video/quicktime"
 
         cfg = load_api_settings_from_disk()
-        from ai_providers import transcribe_audio_gemini, transcribe_audio_groq, detect_text_language
+        from ai_providers import transcribe_audio_gemini, detect_text_language
 
         def _do_transcribe():
             chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
@@ -873,8 +879,6 @@ async def transcribe_take_endpoint(
                     if clean_key.startswith(("hf_", "gsk_")):
                         clean_key = get_default_api_key_from_disk().get("api_key", "")
                 key = clean_key
-            elif chosen_prov == "groq":
-                key = clean_key if (clean_key and clean_key.startswith("gsk_")) else (cfg.get("groq_api_key") or "")
             else:
                 key = clean_key or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
 
@@ -882,26 +886,18 @@ async def transcribe_take_endpoint(
 
             if chosen_prov in ["local_whisper", "local", "whisper_local"]:
                 import local_whisper_engine
+                opt_m = local_whisper_engine.select_optimal_model_name()
                 res = local_whisper_engine.transcribe_local_audio(
                     media_input=content,
                     language=None if target_lang == "auto" else target_lang,
-                    beam_size=2,
+                    model_name=opt_m,
+                    mime_type=mime,
+                    beam_size=1,
                     temperature=0.0
                 )
                 return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", target_lang)
-            elif chosen_prov in ["whisperx", "huggingface", "hf"]:
-                import whisperx_diarization_engine
-                hf_tok = key or cfg.get("hf_token") or os.getenv("HF_TOKEN") or ""
-                diar_model = cfg.get("whisperx_model") or "pyannote/speaker-diarization-community-1"
-                res = whisperx_diarization_engine.transcribe_with_diarization(
-                    audio_bytes=content,
-                    hf_token=hf_tok,
-                    whisper_model_name="base",
-                    diarize_model_name=diar_model,
-                    language="bn" if target_lang in ["bn", "auto"] else target_lang
-                )
-                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("language", target_lang)
-            elif chosen_prov == "gemini" or (key and key.startswith(("AIzaSy", "AQ."))):
+            else:
+                # Default: Gemini with instant fallback to local Whisper
                 target_gem_stt = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
                 try:
                     res = transcribe_audio_gemini(
@@ -911,67 +907,47 @@ async def transcribe_take_endpoint(
                         mime_type=mime,
                         language_hint=target_lang
                     )
-                    t = res.get("text", "")
+                    t = res.get("text", "") or res.get("raw_transcript", "")
                     l = res.get("language", target_lang)
+                    if t and t.strip():
+                        return t.strip(), l
                 except Exception as e_gem:
-                    print(f"[transcribe_take Gemini STT Notice] {e_gem}. Falling back to local Whisper...")
-                    t, l = "", target_lang
+                    print(f"[transcribe_take Gemini STT Notice] {e_gem}")
 
-                if not t:
-                    import local_whisper_engine
-                    opt_m = local_whisper_engine.select_optimal_model_name()
-                    r_loc = local_whisper_engine.transcribe_local_audio(
+                # If Gemini returned empty or was denied, transcribe_audio_gemini already ran local whisper fallback.
+                # If still empty, perform one quick greedy pass with local whisper:
+                import local_whisper_engine
+                opt_m = local_whisper_engine.select_optimal_model_name()
+                r_loc = local_whisper_engine.transcribe_local_audio(
+                    content,
+                    language=None if target_lang in ["auto", "detect", ""] else target_lang,
+                    model_name=opt_m,
+                    mime_type=mime,
+                    beam_size=1,
+                    temperature=0.0
+                )
+                t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+                l = r_loc.get("detected_language", target_lang)
+                if (not t or not t.strip()) and target_lang not in ["auto", "detect", ""]:
+                    r_loc2 = local_whisper_engine.transcribe_local_audio(
                         content,
-                        language=None if target_lang in ["auto", "detect", ""] else target_lang,
+                        language=None,
                         model_name=opt_m,
-                        mime_type=mime
-                    )
-                    t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-                    l = r_loc.get("detected_language", target_lang)
-                return t, l
-            else:
-                try:
-                    t = transcribe_audio_groq(
-                        media_bytes=content,
-                        api_key=key,
-                        model_name=model_name or "whisper-large-v3-turbo",
                         mime_type=mime,
-                        language=target_lang if target_lang != "auto" else "bn"
+                        beam_size=1,
+                        temperature=0.0
                     )
-                    l = detect_text_language(t)
-                except Exception as e_grq:
-                    print(f"[transcribe_take Groq STT Notice] {e_grq}. Falling back to local Whisper...")
-                    t, l = "", target_lang
-
-                if not t:
-                    import local_whisper_engine
-                    opt_m = local_whisper_engine.select_optimal_model_name()
-                    r_loc = local_whisper_engine.transcribe_local_audio(
-                        content,
-                        language=None if target_lang in ["auto", "detect", ""] else target_lang,
-                        model_name=opt_m,
-                        mime_type=mime
-                    )
-                    t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-                    l = r_loc.get("detected_language", target_lang)
+                    t = r_loc2.get("raw_transcript") or r_loc2.get("clean_text", "")
+                    l = r_loc2.get("detected_language", "auto")
                 return t, l
 
         try:
             transcript, lang = await asyncio.to_thread(_do_transcribe)
         except Exception as e_sub:
-            print(f"[transcribe_take _do_transcribe Error] {e_sub}. Fallback to local Whisper...")
-            import local_whisper_engine
-            opt_m = local_whisper_engine.select_optimal_model_name()
-            r_loc = local_whisper_engine.transcribe_local_audio(
-                content,
-                language=None if language in ["auto", "detect", ""] else language,
-                model_name=opt_m,
-                mime_type=mime
-            )
-            transcript = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-            lang = r_loc.get("detected_language", "auto")
+            print(f"[transcribe_take _do_transcribe Error] {e_sub}")
+            transcript, lang = "", language
 
-        # Sanitize lines to guarantee no hallucination loops or Tibetan symbols leak out
+        # Sanitize lines to guarantee no hallucination loops, CJK ideographs, or Tibetan symbols leak out
         import local_whisper_engine
         cleaned_lines = []
         for line in (transcript or "").splitlines():
@@ -980,11 +956,11 @@ async def transcribe_take_endpoint(
                 continue
             if ": " in s_line and s_line.startswith("["):
                 prefix, content_part = s_line.split(": ", 1)
-                sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part)
+                sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part, language=lang)
                 if sanitized_part:
                     cleaned_lines.append(f"{prefix}: {sanitized_part}")
             else:
-                sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line)
+                sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line, language=lang)
                 if sanitized_part:
                     cleaned_lines.append(sanitized_part)
         transcript = "\n".join(cleaned_lines)
@@ -999,8 +975,9 @@ async def transcribe_take_endpoint(
         try:
             import local_whisper_engine
             opt_m = local_whisper_engine.select_optimal_model_name()
-            r_loc = local_whisper_engine.transcribe_local_audio(content, model_name=opt_m)
+            r_loc = local_whisper_engine.transcribe_local_audio(content, language=None, model_name=opt_m)
             raw_t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+            emerg_lang = r_loc.get("detected_language", "auto")
             cleaned_emergency = []
             for line in raw_t.splitlines():
                 s_line = line.strip()
@@ -1008,11 +985,11 @@ async def transcribe_take_endpoint(
                     continue
                 if ": " in s_line and s_line.startswith("["):
                     prefix, content_part = s_line.split(": ", 1)
-                    sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part)
+                    sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part, language=emerg_lang)
                     if sanitized_part:
                         cleaned_emergency.append(f"{prefix}: {sanitized_part}")
                 else:
-                    sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line)
+                    sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line, language=emerg_lang)
                     if sanitized_part:
                         cleaned_emergency.append(sanitized_part)
             return JSONResponse(content={
@@ -1112,64 +1089,127 @@ async def upload_gdrive(payload: GDriveUploadPayload):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+class CloudImportPayload(BaseModel):
+    url: str
+    provider: Optional[str] = "auto"
+
+@app.post("/api/import_cloud_file")
+async def import_cloud_file(payload: CloudImportPayload):
+    import requests
+    from urllib.parse import unquote, urlparse
+    
+    url = (payload.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Empty URL provided.")
+
+    direct_url = url
+    target_provider = payload.provider or "auto"
+    
+    # 1. Google Drive
+    gdrive_match = re.search(r'drive\.google\.com/(?:file/d/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)', url)
+    if gdrive_match:
+        fid = gdrive_match.group(1)
+        direct_url = f"https://drive.google.com/uc?export=download&id={fid}"
+        target_provider = "gdrive"
+        
+    # 2. Dropbox
+    elif "dropbox.com" in url:
+        target_provider = "dropbox"
+        if "dl=0" in url:
+            direct_url = url.replace("dl=0", "dl=1")
+        elif "?" in url:
+            direct_url = url + "&dl=1"
+        else:
+            direct_url = url + "?dl=1"
+            
+    # 3. OneDrive
+    elif any(k in url for k in ["1drv.ms", "onedrive.live.com", "sharepoint.com"]):
+        target_provider = "onedrive"
+        try:
+            b64 = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
+            direct_url = f"https://api.onedrive.com/v1.0/shares/u!{b64}/root/content"
+        except Exception:
+            direct_url = url + ("&download=1" if "?" in url else "?download=1")
+
+    session = requests.Session()
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    try:
+        resp = session.get(direct_url, headers=headers, stream=True, timeout=60, allow_redirects=True)
+        
+        # Check for Google Drive large-file virus confirmation token
+        if target_provider == "gdrive" and "confirm=" not in direct_url:
+            confirm_token = None
+            for k, v in resp.cookies.items():
+                if k.startswith("download_warning"):
+                    confirm_token = v
+                    break
+            if confirm_token:
+                confirm_url = f"{direct_url}&confirm={confirm_token}"
+                resp = session.get(confirm_url, headers=headers, stream=True, timeout=60, allow_redirects=True)
+            elif "Google Drive - Virus scan warning" in resp.text[:2000]:
+                match = re.search(r'confirm=([0-9A-Za-z_]+)', resp.text)
+                if match:
+                    confirm_url = f"{direct_url}&confirm={match.group(1)}"
+                    resp = session.get(confirm_url, headers=headers, stream=True, timeout=60, allow_redirects=True)
+
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to fetch cloud file (Status {resp.status_code}). Ensure link has public sharing enabled."
+            )
+
+        # Extract filename
+        filename = None
+        cd = resp.headers.get("Content-Disposition", "")
+        if "filename=" in cd:
+            fn_match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)["\']?', cd, re.IGNORECASE)
+            if fn_match:
+                filename = unquote(fn_match.group(1).strip())
+        
+        if not filename:
+            path_part = urlparse(url).path
+            base_name = os.path.basename(path_part)
+            if base_name and "." in base_name:
+                filename = unquote(base_name)
+            else:
+                content_type = resp.headers.get("Content-Type", "")
+                ext = ".mp3"
+                if "wav" in content_type: ext = ".wav"
+                elif "mp4" in content_type: ext = ".mp4"
+                elif "m4a" in content_type: ext = ".m4a"
+                elif "pdf" in content_type: ext = ".pdf"
+                elif "word" in content_type or "docx" in content_type: ext = ".docx"
+                filename = f"{target_provider}_recording_{int(time.time())}{ext}"
+
+        media_type = resp.headers.get("Content-Type", "application/octet-stream")
+        
+        def iterfile():
+            for chunk in resp.iter_content(chunk_size=65536):
+                if chunk:
+                    yield chunk
+
+        return StreamingResponse(
+            iterfile(),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-File-Name": filename,
+                "Access-Control-Expose-Headers": "Content-Disposition, X-File-Name"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Cloud download error: {str(exc)}")
+
 # Mount Static/Frontend
 if os.path.exists(FRONTEND_DIST):
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 elif os.path.exists(STATIC_LEGACY):
     app.mount("/", StaticFiles(directory=STATIC_LEGACY, html=True), name="static")
-
-def ensure_ssl_certificates(cert_path: str, key_path: str) -> bool:
-    """Generates self-signed SSL cert and key for HTTPS if missing."""
-    if os.path.exists(cert_path) and os.path.exists(key_path):
-        return True
-    try:
-        import datetime
-        import ipaddress
-        from cryptography import x509
-        from cryptography.x509.oid import NameOID
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric import rsa
-        from cryptography.hazmat.primitives import serialization
-
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COUNTRY_NAME, u'BD'),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, u'EASD Eminence'),
-            x509.NameAttribute(NameOID.COMMON_NAME, u'localhost'),
-        ])
-        cert = x509.CertificateBuilder().subject_name(
-            subject
-        ).issuer_name(
-            issuer
-        ).public_key(
-            key.public_key()
-        ).serial_number(
-            x509.random_serial_number()
-        ).not_valid_before(
-            datetime.datetime.now(datetime.timezone.utc)
-        ).not_valid_after(
-            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=3650)
-        ).add_extension(
-            x509.SubjectAlternativeName([
-                x509.DNSName(u'localhost'),
-                x509.IPAddress(ipaddress.IPv4Address('127.0.0.1')),
-            ]),
-            critical=False,
-        ).sign(key, hashes.SHA256())
-
-        with open(key_path, 'wb') as f:
-            f.write(key.private_bytes(
-                encoding=serialization.Encoding.PEM,
-                format=serialization.PrivateFormat.TraditionalOpenSSL,
-                encryption_algorithm=serialization.NoEncryption(),
-            ))
-
-        with open(cert_path, 'wb') as f:
-            f.write(cert.public_bytes(serialization.Encoding.PEM))
-        return True
-    except Exception as e:
-        print(f"[SSL Certificate Warning] {e}")
-        return False
 
 def find_available_port(start_port: int = 8000, max_tries: int = 20) -> int:
     import socket
@@ -1182,43 +1222,90 @@ def find_available_port(start_port: int = 8000, max_tries: int = 20) -> int:
                 continue
     return start_port
 
-def open_browser_after_delay(url: str, delay: float = 1.0):
+def is_server_already_running(port: int = 8000) -> bool:
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/default_config")
+        with urllib.request.urlopen(req, timeout=0.6) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+def open_native_app_window(url: str, delay: float = 0.5):
+    """
+    Launches a dedicated, clean desktop application window using Chromium app mode.
+    Removes address bars, tabs, and browser clutter to look and feel like a normal desktop app.
+    Provides guaranteed fallback to the default system browser via Windows shell if needed.
+    """
     import time
     import threading
+    import subprocess
+    import shutil
     import webbrowser
-    def _open():
+    import os
+
+    def _launcher():
         time.sleep(delay)
-        webbrowser.open(url)
-    threading.Thread(target=_open, daemon=True).start()
+
+        # Candidate paths for native Chromium app mode
+        candidates = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            shutil.which("msedge.exe") or "",
+            shutil.which("chrome.exe") or ""
+        ]
+
+        opened = False
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                try:
+                    cmd = [candidate, f"--app={url}"]
+                    p = subprocess.Popen(cmd)
+                    time.sleep(0.8)
+                    if p.poll() is None or p.poll() == 0:
+                        opened = True
+                        return
+                except Exception:
+                    continue
+
+        # Reliable fallback: Windows native shell launch or Python webbrowser
+        if not opened:
+            try:
+                os.startfile(url)
+                return
+            except Exception:
+                pass
+            try:
+                webbrowser.open(url, new=2)
+            except Exception:
+                pass
+
+    threading.Thread(target=_launcher, daemon=True).start()
 
 if __name__ == "__main__":
     import uvicorn
     import sys
+
+    # If server is already running, open the application window and exit
+    if is_server_already_running(8000):
+        print("EASD Meeting Assistant is already running. Opening application window...")
+        open_native_app_window("http://localhost:8000/", delay=0.1)
+        time.sleep(1.5)
+        sys.exit(0)
+
     port = find_available_port(8000)
-    server_host = os.getenv("HOST", "0.0.0.0")
-    
-    cert_path = os.path.join(BASE_DIR, "cert.pem")
-    key_path = os.path.join(BASE_DIR, "key.pem")
-    
-    # By default, localhost runs on clean HTTP, which W3C and Firefox natively treat as a Secure Context
-    # (full mic/speech access enabled with ZERO 'risky self-signed cert' warnings in Firefox).
-    # If explicitly requested via CLI flag --https or ENABLE_HTTPS=true, enable HTTPS.
-    explicit_https = "--https" in sys.argv or os.getenv("ENABLE_HTTPS", "false").lower() in ["1", "true", "yes"]
-    use_https = explicit_https and not is_cloud_env and ensure_ssl_certificates(cert_path, key_path)
-    
-    proto = "https" if use_https else "http"
-    url = f"{proto}://localhost:{port}/"
-    print("\n========================================================")
-    print(f"  [ONLINE SECURE {proto.upper()}] EASD Meeting Assistant running at: {url}")
-    print(f"  [BIND HOST] {server_host}:{port}")
-    if not use_https:
-        print("  [NOTE] Running clean HTTP on localhost (W3C Secure Context compliant - zero browser warnings in Firefox/Chrome)")
-        print("  [TIP] To run with HTTPS/SSL, start with: python app.py --https")
-    print("========================================================\n")
-    if os.getenv("CODESPACES") != "true" and os.getenv("NO_BROWSER") != "true":
-        open_browser_after_delay(url, delay=0.8)
-    
-    if use_https:
-        uvicorn.run(app, host=server_host, port=port, log_level="info", ssl_certfile=cert_path, ssl_keyfile=key_path)
-    else:
-        uvicorn.run(app, host=server_host, port=port, log_level="info")
+    server_host = os.getenv("HOST", "127.0.0.1")
+    url = f"http://localhost:{port}/"
+    print(f"Starting EASD Meeting Assistant at: {url}")
+
+    # Launch dedicated native desktop app window
+    if os.getenv("NO_BROWSER") != "true" and os.getenv("CODESPACES") != "true":
+        open_native_app_window(url, delay=1.0)
+
+    # Run server
+    uvicorn.run(app, host=server_host, port=port, log_level="info")
+
+

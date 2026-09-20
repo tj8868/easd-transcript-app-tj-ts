@@ -6,6 +6,7 @@ export default function CollapsibleCard({
   title,
   icon: Icon,
   badge,
+  headerActions,
   summary,
   isCollapsed = true,
   onToggle,
@@ -63,6 +64,11 @@ export default function CollapsibleCard({
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--text-secondary)', flexShrink: 0 }}>
+          {headerActions && (
+            <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', alignItems: 'center' }}>
+              {headerActions}
+            </div>
+          )}
           <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>
             {isCollapsed ? 'Expand' : 'Collapse'}
           </span>

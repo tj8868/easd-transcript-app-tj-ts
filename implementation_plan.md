@@ -1,6 +1,6 @@
-# Implementation Plan (Branch: v5 / Version: v5)
-**Active Master Plan**: [`docs/implementation_plans/implementation_plan_v5.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v5.md)  
-**Target Branch**: `v5`  
+# Implementation Plan (Branch: v6 / Version: v6)
+**Active Master Plan**: [`docs/implementation_plans/implementation_plan_v6.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v6.md)  
+**Target Branch**: `v6`  
 **Current Status**: Active Canon & Production Suite  
 **Date**: September 2026  
 
@@ -13,8 +13,9 @@
 | **`main`** | **v1** | [`docs/implementation_plans/implementation_plan_v1.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v1.md) | Initial Core Transcriber, 5-Document Registry, Basic Gemini STT & LLM Pipeline |
 | **`v2`** | **v2** | [`docs/implementation_plans/implementation_plan_v2.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v2.md) | Collapsible Navigation, Deep Dark Mode, Full Mobile/Tablet Responsiveness, Multi-Take Studio |
 | **`v3`** | **v3** | [`docs/implementation_plans/implementation_plan_v3.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v3.md) | Decoupled STT/LLM, Masked Key Vault, Official EASD Word Template, Gemini 3.7 Interactions API |
-| **`v4`** | **v4** | [`docs/implementation_plans/implementation_plan_v4.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v4.md) | Neural Multi-Speaker Diarization (WhisperX & Pyannote), Silence Acoustic Fallback, Authentic Bengali STT, Live Auto-Preview Studio, Async Concurrency |
-| **`v5`** | **v5** | [`docs/implementation_plans/implementation_plan_v5.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v5.md) | **Current Active Version**: Enterprise Multimodal AI Hub, Gemini 3.8/3.7 Flash, Gemini 3.5 Transcribe, Embedded Local Faster-Whisper Offline STT, WhisperX Diarization, Real-Time Live Speech Studio, Verbatim Tagging & EASD Production Template Engine |
+| **`v4`** | **v4** | [`docs/implementation_plans/implementation_plan_v4.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v4.md) | Neural Multi-Speaker Diarization, Silence Acoustic Fallback, Authentic Bengali STT, Live Auto-Preview Studio, Async Concurrency |
+| **`v5`** | **v5** | [`docs/implementation_plans/implementation_plan_v5.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v5.md) | Enterprise Multimodal AI Hub, Embedded Local Faster-Whisper Offline STT, Real-Time Speech Studio & Template Engine |
+| **`v6`** | **v6** | [`docs/implementation_plans/implementation_plan_v6.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/implementation_plan_v6.md) | **Current Active Version**: eCommunicator Rebranding, Frozen Transcript Toolbar, Sticky Preview Bar, Merged Templates & Skills Cards, Cloud Ingestion (GDrive/Dropbox/OneDrive), Dynamic RAM-Scaled Offline Whisper & Anti-Hallucination Engine |
 
 ---
 
@@ -31,6 +32,7 @@
 10. [`10_authentic_bengali_stt_and_live_auto_preview.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/10_authentic_bengali_stt_and_live_auto_preview.md): Authentic Bengali Script Enforcement & Real-Time Auto-Preview
 11. [`11_local_whisper_fast_offline_stt.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/11_local_whisper_fast_offline_stt.md): Local Faster-Whisper Offline STT & Pre-warmed Auto-Language Engine
 12. [`12_gemini_multilingual_transcribe_and_browser_recording.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/12_gemini_multilingual_transcribe_and_browser_recording.md): Gemini 3.5 Multilingual Transcribe & Cross-Browser Live Audio Recording
+13. [`13_gemini35_transcribe_codeswitching_and_speed_fix.md`](file:///e:/ESAD%20-Taseen-Workspace-2026/EASD-TJ-Admin/EASD%20Meeting%20Minutes/easd-transcriptionapp-tj-ts/docs/implementation_plans/13_gemini35_transcribe_codeswitching_and_speed_fix.md): Gemini 3.5 Live Transcribe, Multilingual Code-Switching, Settings Developer Telemetry & Backend Speed Fix
 
 ---
 

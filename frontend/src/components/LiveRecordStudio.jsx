@@ -40,6 +40,7 @@ import {
   testAiEngine,
   saveServerSettings
 } from '../utils/apiKeyStorage';
+import CloudImportModal from './CloudImportModal';
 
 const ModelSectionHeader = ({ icon, label, activeModel }) => (
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
@@ -52,24 +53,29 @@ const ModelSectionHeader = ({ icon, label, activeModel }) => (
   </div>
 );
 
-export const cleanTranscriptText = (text) => {
+const cleanTranscriptText = (text, lang) => {
   if (!text) return '';
   // 1. Remove replacement character and zero-width artifacts
   let cleaned = String(text).replace(/[\uFFFD\u200B\uFEFF]/g, '');
   // 2. Remove Tibetan / alien delimiter symbols Unicode block (\u0F00-\u0FFF, e.g. ༼, ༽)
   cleaned = cleaned.replace(/[\u0F00-\u0FFF༼༽ༀ༁༂༃]+/g, ' ');
-  // 3. Collapse repetitive character / syllable loops (e.g. 'বিবিবিবিবিবি...' -> 'বি')
+  // 3. Remove CJK ideographs & East Asian syllabaries unless language is explicitly zh/ja/ko
+  const curLang = (lang || '').toLowerCase();
+  if (!['zh', 'ja', 'ko', 'chinese', 'japanese', 'korean'].includes(curLang)) {
+    cleaned = cleaned.replace(/[\u4E00-\u9FFF\u3400-\u4DBF\u2E80-\u2EFF\u3000-\u303F\u3040-\u30FF\uAC00-\uD7AF]+/g, ' ');
+  }
+  // 4. Collapse repetitive character / syllable loops (e.g. 'বিবিবিবিবিবি...' -> 'বি')
   for (let i = 0; i < 3; i++) {
     const prev = cleaned;
     cleaned = cleaned.replace(/(.{1,8}?)\1{3,}/g, '$1');
     cleaned = cleaned.replace(/(\b\w+\s+)\1{3,}/g, '$1');
     if (cleaned === prev) break;
   }
-  // 4. Collapse excessive punctuation repeats
+  // 5. Collapse excessive punctuation repeats
   cleaned = cleaned.replace(/([।\.\?\!\,\-\_])\1{2,}/g, '$1');
   cleaned = cleaned.replace(/\s+/g, ' ').trim();
-  // 5. Must have meaningful alphanumeric characters (Bangla or Latin)
-  const hasSpeech = /[\u0980-\u09FFa-zA-Z0-9]/.test(cleaned);
+  // 6. Must have meaningful alphanumeric characters in ANY language (Unicode letters or digits)
+  const hasSpeech = /\p{L}|\p{N}/u.test(cleaned);
   return hasSpeech ? cleaned : '';
 };
 
@@ -80,7 +86,7 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
   formData.append('provider', provider);
   formData.append('api_key', apiKey);
   formData.append('model_name', modelName);
-  const res = await axios.post('/api/transcribe_take', formData);
+  const res = await axios.post('/api/transcribe_take', formData, { timeout: 900000 });
   const raw = res.data?.transcript?.trim() || '';
   if (!raw) return '';
 
@@ -92,13 +98,13 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
       const parts = sLine.split(': ');
       const prefix = parts[0];
       const content = parts.slice(1).join(': ');
-      const cleanContent = cleanTranscriptText(content);
+      const cleanContent = cleanTranscriptText(content, language);
       return cleanContent ? `${prefix}: ${cleanContent}` : '';
     }
-    return cleanTranscriptText(sLine);
+    return cleanTranscriptText(sLine, language);
   }).filter(Boolean).join('\n');
 
-  return cleaned;
+  return cleaned || raw;
 }
 
 export default function LiveRecordStudio({
@@ -146,8 +152,10 @@ export default function LiveRecordStudio({
   const [isPaused, setIsPaused] = useState(false);
   const [language, setLanguage] = useState('auto'); // Default to 'auto' for any language (Bengali, English, Hindi, Arabic, etc.)
   const [engineStatus, setEngineStatus] = useState('webkitSpeechRecognition (Auto)');
-  const [activeSpeaker, setActiveSpeaker] = useState('Speaker 1');
-  const activeSpeakerRef = useRef('Speaker 1');
+  const [activeSpeaker, setActiveSpeaker] = useState('Auto-Detect');
+  const activeSpeakerRef = useRef('Auto-Detect');
+  const autoSpeakerIndexRef = useRef(1);
+  const lastSpeechTimeRef = useRef(0);
   const [liveTranscript, setLiveTranscript] = useState('');
   const [interimText, setInterimText] = useState('');
   const [statusText, setStatusText] = useState('Ready to record');
@@ -162,6 +170,8 @@ export default function LiveRecordStudio({
   const [editingTakeName, setEditingTakeName] = useState('');
   const [editingTakeTranscript, setEditingTakeTranscript] = useState('');
   const [isDragging, setIsDragging] = useState(false);
+  const [cloudModalOpen, setCloudModalOpen] = useState(false);
+  const [selectedCloudProvider, setSelectedCloudProvider] = useState('gdrive');
 
   // Refs
   const recognitionRef = useRef(null);
@@ -183,6 +193,13 @@ export default function LiveRecordStudio({
   const lastSpeechTimestampRef = useRef(Date.now());
   const fileInputRef = useRef(null);
   const liveTranscriptForTakeRef = useRef('');
+  const [liveDetectedLang, setLiveDetectedLang] = useState('bn');
+  const detectedLiveLangRef = useRef('bn');
+  const shouldSwitchLangOnPauseRef = useRef(null);
+
+  useEffect(() => {
+    detectedLiveLangRef.current = liveDetectedLang;
+  }, [liveDetectedLang]);
 
   useEffect(() => {
     isRecordingRef.current = isRecording;
@@ -264,11 +281,11 @@ export default function LiveRecordStudio({
     setTestingSTT(true);
     setSttTestResult(null);
     try {
-      const prov = aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'groq' : (aiConfig?.provider || 'groq'));
+      const prov = aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'local_whisper' : (aiConfig?.provider || 'gemini'));
       const res = await testAiEngine({
         test_type: 'stt',
         stt_provider: prov,
-        stt_model: aiConfig?.transcriptionModel || 'whisper-large-v3-turbo',
+        stt_model: aiConfig?.transcriptionModel || 'gemini-3.5-transcribe',
         stt_api_key: aiConfig?.transcriptionApiKey || aiConfig?.apiKey || '',
         base_url: aiConfig?.baseUrl || ''
       });
@@ -294,11 +311,14 @@ export default function LiveRecordStudio({
     } else if (onLiveTranscriptSync) {
       onLiveTranscriptSync(aiTranscript);
     }
+    if (onRecordingProcessed) {
+      onRecordingProcessed({ transcript: aiTranscript, raw_transcript: aiTranscript });
+    }
 
     setRecordingsQueue((prev) =>
       prev.map((t) => (t.id === targetId ? { ...t, transcript: aiTranscript, isAutoTranscribing: false } : t))
     );
-    setStatusText(`✓ ${labelText} auto-transcribed with speaker diarization & timestamps!`);
+    setStatusText(`✓ ${labelText} auto-transcribed!`);
   };
 
   const transcribeAudioItems = async (items, lang) => {
@@ -306,7 +326,7 @@ export default function LiveRecordStudio({
     const sttKey = (
       aiConfig?.transcriptionApiKey ||
       getSavedKeyForProvider(resolvedSttProv) ||
-      (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : getSavedKeyForProvider('groq')) ||
+      (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : '') ||
       (aiConfig?.apiKey || '')
     ).trim();
 
@@ -328,15 +348,18 @@ export default function LiveRecordStudio({
           language: lang || languageRef.current || 'auto',
           provider: resolvedSttProv,
           apiKey: sttKey,
-          modelName: aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : 'whisper-large-v3-turbo')
+          modelName: aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : 'auto')
         });
         if (aiTranscript) {
           applyTranscribedTakeResult(item.id, aiTranscript, item.name);
         } else {
+          console.warn('Empty transcription returned for item:', item.name);
+          setStatusText(`⚠️ No speech detected in ${item.name}`);
           finalizeFallback();
         }
       } catch (err) {
         console.warn('Transcribe error for item:', item.name, err);
+        setStatusText(`⚠️ Transcribe error: ${err.message || 'Check audio file'}`);
         finalizeFallback();
       }
     }
@@ -350,7 +373,7 @@ export default function LiveRecordStudio({
       const res = await testAiEngine({
         test_type: 'llm',
         llm_provider: prov,
-        llm_model: aiConfig?.summarizationModel || 'gemini-3.7-flash',
+        llm_model: aiConfig?.summarizationModel || 'gemini-3.8-flash',
         llm_api_key: aiConfig?.summarizationApiKey || aiConfig?.apiKey || '',
         base_url: aiConfig?.baseUrl || ''
       });
@@ -428,7 +451,7 @@ export default function LiveRecordStudio({
   };
 
   // --- Robust Continuous webkitSpeechRecognition Engine ---
-  const restartSpeechRecognition = (delay = 150) => {
+  const restartSpeechRecognition = (delay = 150, langOverride = null) => {
     if (restartTimerRef.current) {
       clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;
@@ -445,7 +468,7 @@ export default function LiveRecordStudio({
           } catch (e) {}
           recognitionRef.current = null;
         }
-        const rec = initSpeechRecognition(languageRef.current);
+        const rec = initSpeechRecognition(langOverride || languageRef.current);
         if (rec) {
           recognitionRef.current = rec;
           isStartingRecognitionRef.current = true;
@@ -454,7 +477,6 @@ export default function LiveRecordStudio({
       } catch (e) {
         console.warn('SpeechRecognition restart notice:', e);
         isStartingRecognitionRef.current = false;
-        // Schedule fallback retry if still recording
         if (isRecordingRef.current && !isPausedRef.current) {
           restartTimerRef.current = setTimeout(() => {
             if (isRecordingRef.current && !isPausedRef.current) {
@@ -480,8 +502,10 @@ export default function LiveRecordStudio({
     } else if (activeLang === 'en') {
       recognition.lang = 'en-US';
     } else {
-      // Auto / Multilingual: use user's browser locale or fallback to English/Bengali bilingual detection
-      recognition.lang = navigator.language || 'en-US';
+      // Auto / Multilingual: Default to bn-BD for bilingual South Asian speech recognition
+      // so Bengali speech is never routed into an English-only acoustic recognizer.
+      // If current live detected language is English, use en-US.
+      recognition.lang = detectedLiveLangRef.current === 'en' ? 'en-US' : 'bn-BD';
     }
     recognition.continuous = true;
     recognition.interimResults = true; // Enables live typing as you speak
@@ -490,8 +514,9 @@ export default function LiveRecordStudio({
     recognition.onstart = () => {
       isStartingRecognitionRef.current = false;
       lastSpeechTimestampRef.current = Date.now();
-      setEngineStatus(`SpeechRecognition (${recognition.lang})`);
-      setStatusText(`Live speech recognition active (${recognition.lang})`);
+      const displayLang = recognition.lang.startsWith('bn') ? 'বাংলা' : 'English';
+      setEngineStatus(`SpeechRecognition (${displayLang})`);
+      setStatusText(`Live speech recognition active (${displayLang})`);
     };
 
     recognition.onresult = (event) => {
@@ -508,11 +533,39 @@ export default function LiveRecordStudio({
         }
       }
 
+      // Dynamic token & script language auto-detection
+      const spokenSample = (finalChunk || liveText || '').trim();
+      if (spokenSample) {
+        const bengaliCount = (spokenSample.match(/[\u0980-\u09FF]/g) || []).length;
+        const latinCount = (spokenSample.match(/[a-zA-Z]/g) || []).length;
+        let detected = detectedLiveLangRef.current;
+        if (bengaliCount > 0 && bengaliCount >= latinCount * 0.2) {
+          detected = 'bn';
+        } else if (latinCount > bengaliCount * 2 && latinCount >= 5) {
+          detected = 'en';
+        }
+        if (detected !== detectedLiveLangRef.current) {
+          detectedLiveLangRef.current = detected;
+          setLiveDetectedLang(detected);
+          if (languageRef.current === 'auto') {
+            shouldSwitchLangOnPauseRef.current = detected === 'en' ? 'en-US' : 'bn-BD';
+          }
+        }
+      }
+
       console.log("Live Text:", liveText || finalChunk);
 
       if (finalChunk.trim()) {
         const timeTag = formatTime(currentTakeSecondsRef.current || 0);
-        const speaker = activeSpeakerRef.current || 'Speaker 1';
+        let speaker = activeSpeakerRef.current || 'Auto-Detect';
+        if (speaker === 'Auto-Detect' || !speaker) {
+          const now = Date.now();
+          if (lastSpeechTimeRef.current > 0 && (now - lastSpeechTimeRef.current) > 2200) {
+            autoSpeakerIndexRef.current = autoSpeakerIndexRef.current === 1 ? 2 : 1;
+          }
+          lastSpeechTimeRef.current = now;
+          speaker = `Speaker ${autoSpeakerIndexRef.current}`;
+        }
         const formattedLine = `[${timeTag}] ${speaker}: ${finalChunk.trim()}`;
         setLiveTranscript((prev) => {
           const updated = prev ? `${prev}\n${formattedLine}` : formattedLine;
@@ -526,7 +579,10 @@ export default function LiveRecordStudio({
       setInterimText(liveText);
       if (onLiveInterimChange && liveText) {
         const timeTag = formatTime(currentTakeSecondsRef.current || 0);
-        const speaker = activeSpeakerRef.current || 'Speaker 1';
+        let speaker = activeSpeakerRef.current || 'Auto-Detect';
+        if (speaker === 'Auto-Detect' || !speaker) {
+          speaker = `Speaker ${autoSpeakerIndexRef.current}`;
+        }
         onLiveInterimChange(`[${timeTag}] ${speaker}: ${liveText.trim()}`);
       }
     };
@@ -550,8 +606,14 @@ export default function LiveRecordStudio({
     recognition.onend = () => {
       isStartingRecognitionRef.current = false;
       if (isRecordingRef.current && !isPausedRef.current) {
-        // Seamlessly auto-restart using fresh SpeechRecognition instance after micro-pause
-        restartSpeechRecognition(150);
+        if (shouldSwitchLangOnPauseRef.current && languageRef.current === 'auto') {
+          const nextLocale = shouldSwitchLangOnPauseRef.current;
+          shouldSwitchLangOnPauseRef.current = null;
+          restartSpeechRecognition(100, nextLocale === 'en-US' ? 'en' : 'bn');
+        } else {
+          // Seamlessly auto-restart using fresh SpeechRecognition instance after micro-pause
+          restartSpeechRecognition(150);
+        }
       }
     };
 
@@ -647,42 +709,52 @@ export default function LiveRecordStudio({
           restartSpeechRecognition(100);
         }
 
-        // If browser speech recognition hasn't caught text or only caught silence, stream chunk to backend
-        if (isRecognitionStalled) {
-          try {
-            isStreamingChunkRef.current = true;
-            const mime = mimeType || 'audio/webm';
-            const chunkBlob = new Blob(currentChunksRef.current, { type: mime });
-            if (chunkBlob.size > 2000) {
-              const formData = new FormData();
-              const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
-              formData.append('chunk', chunkBlob, `live_stream.${ext}`);
-              formData.append('language', languageRef.current || 'bn');
-              formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
-              formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-transcribe');
+        try {
+          isStreamingChunkRef.current = true;
+          const mime = mimeType || 'audio/webm';
+          const chunkBlob = new Blob(currentChunksRef.current, { type: mime });
+          if (chunkBlob.size > 2000) {
+            const formData = new FormData();
+            const ext = mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
+            formData.append('chunk', chunkBlob, `live_stream.${ext}`);
+            formData.append('language', languageRef.current || 'auto');
+            formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
+            formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-transcribe');
 
-              const res = await axios.post('/api/live_transcribe_chunk', formData);
-              if (res.data && res.data.text && res.data.text.trim()) {
-                const cleanChunk = cleanTranscriptText(res.data.text.trim());
-                if (cleanChunk) {
-                  const speaker = activeSpeakerRef.current || 'Speaker 1';
-                  const formatted = cleanChunk.startsWith('[') ? cleanChunk : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${cleanChunk}`;
-                  setLiveTranscript((prev) => {
-                    if (prev && prev.includes(cleanChunk)) return prev;
-                    return prev ? `${prev}\n${formatted}` : formatted;
-                  });
-                  liveTranscriptForTakeRef.current = formatted;
-                  setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
-                  if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
-                  if (onAppendToTranscript) onAppendToTranscript(formatted);
+            const res = await axios.post('/api/live_transcribe_chunk', formData);
+            if (res.data && res.data.language) {
+              const backendLang = res.data.language === 'en' ? 'en' : 'bn';
+              if (backendLang !== detectedLiveLangRef.current) {
+                detectedLiveLangRef.current = backendLang;
+                setLiveDetectedLang(backendLang);
+                if (languageRef.current === 'auto') {
+                  shouldSwitchLangOnPauseRef.current = backendLang === 'en' ? 'en-US' : 'bn-BD';
                 }
               }
             }
-          } catch (err) {
-            console.warn('Live chunk auto-preview notice:', err);
-          } finally {
-            isStreamingChunkRef.current = false;
+            if (isRecognitionStalled && res.data && res.data.text && res.data.text.trim()) {
+              const cleanChunk = cleanTranscriptText(res.data.text.trim());
+              if (cleanChunk) {
+                let speaker = activeSpeakerRef.current || 'Auto-Detect';
+                if (speaker === 'Auto-Detect' || !speaker) {
+                  speaker = `Speaker ${autoSpeakerIndexRef.current || 1}`;
+                }
+                const formatted = cleanChunk.startsWith('[') ? cleanChunk : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${cleanChunk}`;
+                setLiveTranscript((prev) => {
+                  if (prev && prev.includes(cleanChunk)) return prev;
+                  return prev ? `${prev}\n${formatted}` : formatted;
+                });
+                liveTranscriptForTakeRef.current = formatted;
+                setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
+                if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
+                if (onAppendToTranscript) onAppendToTranscript(formatted);
+              }
+            }
           }
+        } catch (err) {
+          console.warn('Live chunk auto-preview notice:', err);
+        } finally {
+          isStreamingChunkRef.current = false;
         }
       }, 4500);
 
@@ -730,12 +802,18 @@ export default function LiveRecordStudio({
           setIsAutoTranscribing(true);
         }
 
-        setStatusText(`⚡ Auto-transcribing Take #${takeNum} with speaker diarization & timestamps...`);
+        setStatusText(`Transcribing Take #${takeNum}...`);
+        setIsTranscribing(true);
+        if (setIsAutoTranscribing) {
+          setIsAutoTranscribing(true);
+        }
         try {
           await transcribeAudioItems([newTake], languageRef.current || 'auto');
+          setStatusText(`✓ Take #${takeNum} auto-transcribed!`);
         } catch (err) {
           console.warn('Take auto-transcribe error:', err);
         } finally {
+          setIsTranscribing(false);
           if (setIsAutoTranscribing) {
             setIsAutoTranscribing(false);
           }
@@ -918,11 +996,18 @@ export default function LiveRecordStudio({
     }
 
     if (mediaFiles.length > 0) {
+      setIsTranscribing(true);
       if (setIsAutoTranscribing) setIsAutoTranscribing(true);
-      setStatusText(`⚡ Auto-transcribing ${mediaFiles.length} uploaded media file(s)...`);
-      await transcribeAudioItems(mediaFiles, languageRef.current || 'bn');
-      if (setIsAutoTranscribing) setIsAutoTranscribing(false);
-      setStatusText(`✓ Uploaded media auto-transcribed!`);
+      setStatusText(`Auto-transcribing ${mediaFiles.length} uploaded media file(s)...`);
+      try {
+        await transcribeAudioItems(mediaFiles, languageRef.current || 'auto');
+        setStatusText(`✓ Uploaded media auto-transcribed!`);
+      } catch (err) {
+        console.warn('Upload auto-transcribe error:', err);
+      } finally {
+        setIsTranscribing(false);
+        if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+      }
     } else {
       setStatusText(`✓ Added ${newItems.length} file(s) to queue`);
     }
@@ -980,34 +1065,8 @@ export default function LiveRecordStudio({
     setStatusText('All takes cleared');
   };
 
-  // --- Batch Transcribe All Takes into Raw Transcript ---
+  // --- Transcribe Action (Transcribe takes in queue into raw transcript) ---
   const handleTranscribeAllTakes = async () => {
-    if (recordingsQueue.length === 0) {
-      alert('No takes in queue. Please record a take or upload an audio file first.');
-      return;
-    }
-
-    setIsTranscribing(true);
-    if (setIsAutoTranscribing) setIsAutoTranscribing(true);
-    setStatusText(`⚡ Transcribing ${recordingsQueue.length} takes with speaker diarization & timestamps...`);
-
-    const pendingTakes = recordingsQueue.filter((t) => !t.transcript || t.isAutoTranscribing);
-    const takesToRun = pendingTakes.length > 0 ? pendingTakes : recordingsQueue;
-
-    await transcribeAudioItems(takesToRun, languageRef.current || 'auto');
-
-    setIsTranscribing(false);
-    if (setIsAutoTranscribing) setIsAutoTranscribing(false);
-    setStatusText(`✓ All ${recordingsQueue.length} takes transcribed into raw transcript!`);
-    if (scrollToSection) scrollToSection('section-transcripts');
-  };
-
-  // --- Big Transcribe Action (Step 2: Transcribe uploaded/recorded speech into raw transcript) ---
-  const handleBigTranscribe = async () => {
-    if (isRecording) {
-      handleStopAndSaveTake();
-    }
-
     let itemsToProcess = [...recordingsQueue];
     if (itemsToProcess.length === 0 && selectedFile) {
       const url = URL.createObjectURL(selectedFile);
@@ -1027,7 +1086,7 @@ export default function LiveRecordStudio({
     }
 
     if (itemsToProcess.length === 0 && !liveTranscript.trim()) {
-      alert('Please record audio or upload a media file first.');
+      alert('No takes in queue. Please record a take or upload an audio file first.');
       return;
     }
 
@@ -1041,13 +1100,20 @@ export default function LiveRecordStudio({
 
     setIsTranscribing(true);
     if (setIsAutoTranscribing) setIsAutoTranscribing(true);
-    setStatusText('⚡ Transcribing audio with speaker diarization & timestamps...');
+    setStatusText(`Transcribing ${itemsToProcess.length} take(s)...`);
 
-    await transcribeAudioItems(itemsToProcess, languageRef.current || 'auto');
+    const pendingTakes = itemsToProcess.filter((t) => !t.transcript || t.isAutoTranscribing);
+    const takesToRun = pendingTakes.length > 0 ? pendingTakes : itemsToProcess;
 
-    setIsTranscribing(false);
-    if (setIsAutoTranscribing) setIsAutoTranscribing(false);
-    setStatusText('✓ Audio transcribed with speaker diarization & timestamps!');
+    try {
+      await transcribeAudioItems(takesToRun, languageRef.current || 'auto');
+      setStatusText(`✓ Transcribed ${takesToRun.length} take(s) into raw transcript!`);
+    } catch (err) {
+      console.warn('Transcribe error:', err);
+    } finally {
+      setIsTranscribing(false);
+      if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+    }
     if (scrollToSection) scrollToSection('section-transcripts');
   };
 
@@ -1059,7 +1125,7 @@ export default function LiveRecordStudio({
       <div className="hero-actions-container">
         {/* CARD 1: RECORD BUTTON */}
         <div className={`hero-action-card record-card ${isRecording ? 'is-recording' : ''}`}>
-          {/* Top visual button */}
+          {/* Circular Record Action Button */}
           {!isRecording ? (
             <button
               type="button"
@@ -1068,10 +1134,10 @@ export default function LiveRecordStudio({
               title="Click to start recording"
               className="hero-action-circle-btn record-circle"
             >
-              <Mic size={36} color="#ffffff" strokeWidth={2.4} />
+              <Mic size={38} color="#ffffff" strokeWidth={2.4} />
             </button>
           ) : (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', justifyContent: 'center' }}>
               <button
                 type="button"
                 onClick={handleStopAndSaveTake}
@@ -1079,7 +1145,7 @@ export default function LiveRecordStudio({
                 className="hero-action-circle-btn stop-circle"
                 title="Stop recording and save take"
               >
-                <Square size={26} fill="#ffffff" color="#ffffff" />
+                <Square size={28} fill="#ffffff" color="#ffffff" />
               </button>
 
               <button
@@ -1087,8 +1153,8 @@ export default function LiveRecordStudio({
                 onClick={handleTogglePause}
                 className="btn btn-secondary"
                 style={{
-                  width: '42px',
-                  height: '42px',
+                  width: '46px',
+                  height: '46px',
                   borderRadius: '50%',
                   padding: 0,
                   display: 'flex',
@@ -1098,14 +1164,14 @@ export default function LiveRecordStudio({
                 }}
                 title={isPaused ? 'Resume recording' : 'Pause recording'}
               >
-                {isPaused ? <Play size={18} color="var(--accent-color)" /> : <Pause size={18} />}
+                {isPaused ? <Play size={20} color="var(--accent-color)" /> : <Pause size={20} />}
               </button>
             </div>
           )}
 
           {/* Text Information */}
-          <div className="hero-action-text">
-            <h3 className="hero-action-title">
+          <div className="hero-action-text" style={{ textAlign: 'center', width: '100%' }}>
+            <h3 className="hero-action-title" style={{ justifyContent: 'center' }}>
               <span>Record</span>
               {isRecording && (
                 <span
@@ -1124,8 +1190,8 @@ export default function LiveRecordStudio({
             </h3>
             <p className="hero-action-desc">
               {isRecording
-                ? 'Microphone is active. Speak naturally, then click Stop when finished.'
-                : 'Speak live into your microphone to record consultations or meeting discussions.'}
+                ? 'Microphone is active. Speak naturally, then click the red Stop circle when finished.'
+                : 'Click the red circle to record consultations or meeting discussions.'}
             </p>
           </div>
 
@@ -1162,7 +1228,7 @@ export default function LiveRecordStudio({
                 marginTop: '4px'
               }}
             >
-              <Sparkles size={13} color="#34d399" className="spin" />
+              <Radio size={13} color="#34d399" />
               <div
                 id="live-speech-stream-display"
                 style={{
@@ -1172,105 +1238,34 @@ export default function LiveRecordStudio({
                   fontFamily: "'Hind Siliguri', 'Inter', sans-serif",
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap'
+                  whiteSpace: 'nowrap',
+                  flex: 1
                 }}
               >
                 {interimText || 'Listening live...'}
               </div>
+              <span
+                style={{
+                  fontSize: '0.68rem',
+                  padding: '1px 6px',
+                  borderRadius: '6px',
+                  background: 'rgba(52, 211, 153, 0.18)',
+                  color: '#34d399',
+                  fontWeight: 700,
+                  border: '1px solid rgba(52, 211, 153, 0.35)',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                Auto (Verbatim)
+              </span>
             </div>
           )}
-
-          {/* Speaker & Language Controls */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', alignItems: 'center', margin: '8px 0 4px 0' }}>
-            {/* Speaker Selector */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                <Users size={12} color="var(--accent-color)" /> Speaker:
-              </span>
-              {['Speaker 1', 'Speaker 2', 'Speaker 3'].map((spk) => {
-                const isSelected = activeSpeaker === spk;
-                return (
-                  <button
-                    key={spk}
-                    type="button"
-                    onClick={() => setActiveSpeaker(spk)}
-                    style={{
-                      padding: '2px 8px',
-                      borderRadius: '12px',
-                      fontSize: '0.72rem',
-                      fontWeight: isSelected ? 700 : 500,
-                      border: isSelected ? '1.5px solid #38bdf8' : '1px solid var(--border-color)',
-                      background: isSelected ? 'rgba(56, 189, 248, 0.15)' : 'transparent',
-                      color: isSelected ? '#38bdf8' : 'var(--text-secondary)',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {spk}
-                  </button>
-                );
-              })}
+          {/* Symmetrical Tag when not recording */}
+          {!isRecording && (
+            <div className="hero-file-tag" style={{ margin: '4px 0 0 0' }}>
+              Mic & Live Stream
             </div>
-
-            {/* Language Selector */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'center' }}>
-              <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '3px' }}>
-                <Globe size={12} /> Spoken:
-              </span>
-              {[
-                { id: 'auto', label: '🌐 Auto' },
-                { id: 'bn', label: '🇧🇩 বাংলা' },
-                { id: 'en', label: '🇬🇧 English' }
-              ].map((pill) => {
-                const isSelected = language === pill.id;
-                return (
-                  <button
-                    key={pill.id}
-                    type="button"
-                    onClick={() => {
-                      setLanguage(pill.id);
-                      languageRef.current = pill.id;
-                      if (isRecording) restartSpeechRecognition(100);
-                    }}
-                    style={{
-                      padding: '2px 8px',
-                      borderRadius: '12px',
-                      fontSize: '0.72rem',
-                      fontWeight: isSelected ? 700 : 500,
-                      border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
-                      background: isSelected ? 'var(--accent-glow)' : 'transparent',
-                      color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    {pill.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Primary Action Button (Doctor-Friendly) */}
-          <div className="hero-btn-container">
-            {!isRecording ? (
-              <button
-                type="button"
-                onClick={handleStartRecording}
-                className="btn hero-btn record-btn"
-              >
-                <Mic size={18} />
-                <span>Record</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={handleStopAndSaveTake}
-                className="btn hero-btn stop-btn"
-              >
-                <Square size={16} fill="#ffffff" />
-                <span>Stop & Save</span>
-              </button>
-            )}
-          </div>
+          )}
         </div>
 
         {/* CARD 2: UPLOAD BUTTON */}
@@ -1296,134 +1291,77 @@ export default function LiveRecordStudio({
             multiple
             accept="audio/*,video/*,image/*,.pdf,.doc,.docx,.txt,.srt,.vtt,.hevc,.mov,.mp4,.m4a,.wav,.mp3"
             style={{ display: 'none' }}
-            onChange={(e) => handleAddUploadedFiles(e.target.files)}
+            onChange={(e) => {
+              handleAddUploadedFiles(e.target.files);
+              e.target.value = '';
+            }}
           />
 
-          {/* Top visual button */}
-          <div className="hero-action-circle-btn upload-circle">
-            <UploadCloud size={36} color="#ffffff" strokeWidth={2.4} />
-          </div>
+          {/* Circular Upload Action Button */}
+          <button
+            type="button"
+            className="hero-action-circle-btn upload-circle"
+            aria-label="Upload audio or document"
+            title="Click to select audio or document"
+            onClick={(e) => {
+              e.stopPropagation();
+              fileInputRef.current?.click();
+            }}
+          >
+            <UploadCloud size={38} color="#ffffff" strokeWidth={2.4} />
+          </button>
 
           {/* Text Information */}
-          <div className="hero-action-text">
-            <h3 className="hero-action-title">
+          <div className="hero-action-text" style={{ textAlign: 'center', width: '100%' }}>
+            <h3 className="hero-action-title" style={{ justifyContent: 'center' }}>
               <span>Upload</span>
             </h3>
             <p className="hero-action-desc">
               {isDragging
                 ? 'Drop your audio recording, voice memo or document here!'
-                : 'Select an audio file, iPhone voice memo, or meeting document.'}
+                : 'Click the blue circle or drop audio files, voice memos & documents.'}
             </p>
           </div>
 
-          {/* File Support Tag */}
-          <div className="hero-file-tag">
-            MP3, WAV, M4A, Voice Memos & Docs
-          </div>
-
-          {/* Primary Action Button (Doctor-Friendly) */}
-          <div className="hero-btn-container">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                fileInputRef.current?.click();
-              }}
-              className="btn hero-btn upload-btn"
-            >
-              <UploadCloud size={18} />
-              <span>Upload</span>
-            </button>
+          {/* File Support Tag - Clean and fit to card without overflow */}
+          <div className="hero-file-tag" style={{ margin: '4px 0 0 0' }}>
+            MP3, WAV, M4A & Docs
           </div>
         </div>
       </div>
 
-      {/* BIG PROMINENT TRANSCRIBE BUTTON (Step 2 of Workflow) */}
-      <div style={{ maxWidth: '720px', margin: '14px auto 18px auto', width: '100%', boxSizing: 'border-box' }}>
+      {/* 2. TARGET DOCUMENT FORMAT SELECTOR & DRAFT NOTES INLINE BAR */}
+      <div className="hero-format-bar">
+        {templates && templates.length > 0 && (
+          <div className="hero-format-select-group">
+            <label className="hero-format-label">
+              <FileCode size={13} color="var(--accent-color)" />
+              <span className="hero-format-text">Format:</span>
+            </label>
+            <select
+              className="form-control hero-format-select"
+              value={activeTemplateId || 'easd_default_minutes'}
+              onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
+            >
+              {templates.map((tpl) => (
+                <option key={tpl.id} value={tpl.id}>
+                  {tpl.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
         <button
           type="button"
-          onClick={handleBigTranscribe}
-          disabled={isTranscribing || (recordingsQueue.length === 0 && !selectedFile && !isRecording && !liveTranscript.trim())}
-          className="btn btn-primary"
-          style={{
-            width: '100%',
-            padding: '14px 22px',
-            fontSize: '1.18rem',
-            fontWeight: 800,
-            borderRadius: '12px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '10px',
-            background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
-            border: '2px solid #38bdf8',
-            boxShadow: '0 6px 20px rgba(14, 165, 233, 0.3)',
-            cursor: (recordingsQueue.length > 0 || selectedFile || isRecording || liveTranscript.trim()) && !isTranscribing ? 'pointer' : 'not-allowed',
-            opacity: (recordingsQueue.length > 0 || selectedFile || isRecording || liveTranscript.trim()) && !isTranscribing ? 1 : 0.65,
-            transition: 'all 0.2s ease'
-          }}
+          className={`hero-draft-btn ${showDirectTextInput ? 'active' : ''}`}
+          onClick={() => setShowDirectTextInput((prev) => !prev)}
+          title="Paste raw notes or draft text directly"
         >
-          <Cpu size={22} color="#facc15" />
-          <span>
-            {isTranscribing
-              ? 'Transcribing Audio...'
-              : isRecording
-              ? 'Stop Recording & Transcribe'
-              : recordingsQueue.length > 0
-              ? `Transcribe Audio (${recordingsQueue.length} ${recordingsQueue.length === 1 ? 'Take' : 'Takes'})`
-              : selectedFile
-              ? `Transcribe Uploaded File (${selectedFile.name})`
-              : 'Transcribe'}
-          </span>
+          <Edit3 size={12} color="var(--accent-color)" />
+          <span>{showDirectTextInput ? 'Hide Notes ▲' : 'Draft Notes ▼'}</span>
         </button>
       </div>
-
-      {/* 2. TARGET DOCUMENT FORMAT SELECTOR (COMPACT SUB-BAR) */}
-      {templates && templates.length > 0 && (
-        <div className="hero-format-bar">
-          <label className="hero-format-label">
-            <FileCode size={15} color="var(--accent-color)" />
-            <span>Document Format:</span>
-          </label>
-          <select
-            className="form-control hero-format-select"
-            value={activeTemplateId || 'easd_default_minutes'}
-            onChange={(e) => onSelectTemplate && onSelectTemplate(e.target.value)}
-          >
-            {templates.map((tpl) => (
-              <option key={tpl.id} value={tpl.id}>
-                {tpl.name} {tpl.is_builtin ? '(Standard Official Template)' : '(Custom)'}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* 3. DIRECT DRAFT TEXT & DOCUMENT SYNTHESIS DRAWER */}
-      <div style={{ maxWidth: '720px', margin: '0 auto 18px auto', width: '100%', boxSizing: 'border-box' }}>
-        <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <button
-            type="button"
-            onClick={() => setShowDirectTextInput((prev) => !prev)}
-            style={{
-              background: 'rgba(255, 255, 255, 0.04)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-primary)',
-              fontSize: '0.8rem',
-              fontWeight: 700,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 14px',
-              borderRadius: '20px',
-              transition: 'all 0.15s ease'
-            }}
-          >
-            <Edit3 size={13} color="var(--accent-color)" />
-            {showDirectTextInput ? 'Hide Draft Text Input ▲' : '📝 Or Paste Draft Notes / Direct Text Directly ▼'}
-          </button>
-        </div>
 
         {showDirectTextInput && (
           <div
@@ -1457,13 +1395,11 @@ export default function LiveRecordStudio({
                 disabled={isProcessing || (!directText.trim() && !selectedFile)}
                 style={{ fontWeight: 800, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
-                <Sparkles size={14} />
-                {isProcessing ? 'Processing with AI...' : '⚡ Generate Meeting Minutes from Draft / Media'}
+                {isProcessing ? 'Processing with AI...' : 'Generate Meeting Minutes from Draft / Media'}
               </button>
             </div>
           </div>
         )}
-      </div>
 
 
 
@@ -1481,8 +1417,11 @@ export default function LiveRecordStudio({
                 disabled={isTranscribing || isRecording}
                 style={{ fontWeight: 800, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
               >
-                <Sparkles size={14} />
-                {isTranscribing ? 'Transcribing...' : `⚡ Transcribe All (${recordingsQueue.length})`}
+                {isTranscribing
+                  ? 'Transcribing...'
+                  : recordingsQueue.length > 1
+                  ? `Transcribe All (${recordingsQueue.length})`
+                  : 'Transcribe'}
               </button>
               <button
                 className="btn btn-secondary btn-sm"
@@ -1571,6 +1510,16 @@ export default function LiveRecordStudio({
 
                       <button
                         className="btn btn-secondary btn-sm"
+                        onClick={() => transcribeAudioItems([item], languageRef.current || 'auto')}
+                        disabled={isTranscribing}
+                        title="Transcribe this take into transcript box"
+                        style={{ fontSize: '0.75rem', padding: '4px 8px', color: 'var(--accent-color)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '4px' }}
+                      >
+                        <Mic size={12} /> Transcribe
+                      </button>
+
+                      <button
+                        className="btn btn-secondary btn-sm"
                         onClick={() => handleDownloadTake(item)}
                         title="Download audio file"
                         style={{ fontSize: '0.75rem', padding: '4px 8px' }}
@@ -1625,8 +1574,7 @@ export default function LiveRecordStudio({
                         border: '1px solid rgba(56, 189, 248, 0.25)'
                       }}
                     >
-                      <Sparkles size={14} className="spin" />
-                      <span>⚡ Auto-transcribing take with Gemini AI in authentic Bengali script...</span>
+                      <span>Transcribing take...</span>
                     </div>
                   ) : (
                     item.transcript && (
@@ -1657,30 +1605,16 @@ export default function LiveRecordStudio({
       )}
 
       {/* ADVANCED AI ENGINE SETTINGS (COLLAPSED BY DEFAULT FOR DOCTORS & NON-TECHNICAL USERS) */}
-      <div style={{ marginTop: '22px', borderTop: '1px solid var(--border-color)', paddingTop: '14px' }}>
-        <div style={{ display: 'flex', justifyContent: 'center' }}>
-          <button
-            type="button"
-            onClick={() => setShowAdvancedEngineSettings((prev) => !prev)}
-            style={{
-              background: 'rgba(255, 255, 255, 0.03)',
-              border: '1px solid var(--border-color)',
-              color: 'var(--text-secondary)',
-              fontSize: '0.78rem',
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '6px 14px',
-              borderRadius: '20px',
-              transition: 'all 0.15s ease'
-            }}
-          >
-            <Cpu size={13} color="var(--accent-color)" />
-            {showAdvancedEngineSettings ? 'Hide AI Engine Settings ▲' : '⚙️ Advanced AI Engine Settings (For Administrators) ▼'}
-          </button>
-        </div>
+      <div className="drawer-toggles-container mobile-hide-admin" style={{ marginTop: '12px' }}>
+        <button
+          type="button"
+          className="drawer-toggle-btn"
+          onClick={() => setShowAdvancedEngineSettings((prev) => !prev)}
+        >
+          <Cpu size={14} color="var(--accent-color)" />
+          <span>{showAdvancedEngineSettings ? 'Hide AI Engine Settings ▲' : 'Advanced AI Engine Settings (For Administrators) ▼'}</span>
+        </button>
+      </div>
 
         {showAdvancedEngineSettings && (
           <div style={{ marginTop: '12px' }}>
@@ -1714,7 +1648,7 @@ export default function LiveRecordStudio({
                       border: '1px solid rgba(2, 132, 199, 0.3)'
                     }}
                   >
-                    STT: {aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.7-flash'}
+                    STT: {aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'} | LLM: {aiConfig?.summarizationModel || 'gemini-3.8-flash'}
                   </span>
                 </div>
 
@@ -1739,7 +1673,7 @@ export default function LiveRecordStudio({
                     title="Actively send synthetic audio to test transcription model"
                   >
                     <Mic size={13} color="#8b5cf6" />
-                    {testingSTT ? 'Testing STT...' : sttTestResult?.success ? `STT OK (${sttTestResult.latency_ms || 280}ms)` : '⚡ Test STT'}
+                    {testingSTT ? 'Testing STT...' : sttTestResult?.success ? `STT OK (${sttTestResult.latency_ms || 280}ms)` : 'Test STT'}
                   </button>
 
                   {/* Direct LLM Engine Test Button */}
@@ -1761,8 +1695,8 @@ export default function LiveRecordStudio({
                     }}
                     title="Actively send test prompt to verify summary model"
                   >
-                    <Zap size={13} color="var(--accent-color)" />
-                    {testingLLM ? 'Testing LLM...' : llmTestResult?.success ? `LLM OK (${llmTestResult.latency_ms || 320}ms)` : '⚡ Test LLM'}
+                    <Cpu size={13} color="var(--accent-color)" />
+                    {testingLLM ? 'Testing LLM...' : llmTestResult?.success ? `LLM OK (${llmTestResult.latency_ms || 320}ms)` : 'Test LLM'}
                   </button>
 
                   {onOpenSettings && (
@@ -1846,13 +1780,13 @@ export default function LiveRecordStudio({
                 <ModelSectionHeader
                   icon={<Mic size={14} color="#8b5cf6" />}
                   label="🎙️ Transcription STT Model:"
-                  activeModel={aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}
+                  activeModel={aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'}
                 />
 
                 {/* Quick Segmented Buttons for STT */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                   {QUICK_STT_MODELS.map((item) => {
-                    const isSelected = (aiConfig?.transcriptionModel || 'whisper-large-v3-turbo') === item.id;
+                    const isSelected = (aiConfig?.transcriptionModel || 'gemini-3.5-transcribe') === item.id;
                     return (
                       <button
                         key={item.id}
@@ -1885,11 +1819,11 @@ export default function LiveRecordStudio({
                   <select
                     className="form-control"
                     style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-                    value={aiConfig?.transcriptionModel || 'whisper-large-v3-turbo'}
+                    value={aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'}
                     onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: e.target.value })}
                   >
-                    <option value="whisper-large-v3-turbo">More STT options...</option>
-                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).stt || []).map((opt) => (
+                    <option value="gemini-3.5-transcribe">More STT options...</option>
+                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.gemini).stt || []).map((opt) => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
@@ -1900,14 +1834,14 @@ export default function LiveRecordStudio({
               <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
                 <ModelSectionHeader
                   icon={<Cpu size={14} color="var(--accent-color)" />}
-                  label="⚡ Summary LLM Model:"
-                  activeModel={aiConfig?.summarizationModel || 'gemini-3.7-flash'}
+                  label="Summary LLM Model:"
+                  activeModel={aiConfig?.summarizationModel || 'gemini-3.8-flash'}
                 />
 
                 {/* Quick Segmented Buttons for LLM */}
                 <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
                   {QUICK_LLM_MODELS.map((item) => {
-                    const isSelected = (aiConfig?.summarizationModel || 'gemini-3.7-flash') === item.id;
+                    const isSelected = (aiConfig?.summarizationModel || 'gemini-3.8-flash') === item.id;
                     return (
                       <button
                         key={item.id}
@@ -1940,11 +1874,11 @@ export default function LiveRecordStudio({
                   <select
                     className="form-control"
                     style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-                    value={aiConfig?.summarizationModel || 'gemini-3.7-flash'}
+                    value={aiConfig?.summarizationModel || 'gemini-3.8-flash'}
                     onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
                   >
-                    <option value="gemini-3.7-flash">More LLM options...</option>
-                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.groq).llm || []).map((opt) => (
+                    <option value="gemini-3.8-flash">More LLM options...</option>
+                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.gemini).llm || []).map((opt) => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
@@ -1953,7 +1887,14 @@ export default function LiveRecordStudio({
             </div>
           </div>
         )}
-      </div>
+
+      {/* Multi-Cloud File Ingestion Modal */}
+      <CloudImportModal
+        isOpen={cloudModalOpen}
+        onClose={() => setCloudModalOpen(false)}
+        initialProvider={selectedCloudProvider}
+        onImportFiles={(files) => handleAddUploadedFiles(files)}
+      />
     </div>
   );
 }

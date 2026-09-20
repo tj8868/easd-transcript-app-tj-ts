@@ -8,10 +8,6 @@ import {
   UploadCloud, RotateCcw, Image as ImageIcon
 } from 'lucide-react';
 import {
-  getSavedCustomApis,
-  saveCustomApi,
-  deleteCustomApi,
-  activateCustomApi,
   activateProvider,
   saveKeyForProvider,
   getSavedKeyForProvider,
@@ -128,8 +124,10 @@ export default function SettingsModal({
   setTheme,
   settings,
   setSettings,
-  aiConfig = { provider: 'gemini', model: 'gemini-3.7-flash', apiKey: '' },
-  setAiConfig = () => {}
+  aiConfig = { provider: 'gemini', model: 'gemini-3.8-flash', apiKey: '' },
+  setAiConfig = () => {},
+  onOpenDeviceViewer,
+  onOpenGDrive
 }) {
   const [activeTab, setActiveTab] = useState('keys');
   const [auditData, setAuditData] = useState(null);
@@ -140,21 +138,9 @@ export default function SettingsModal({
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [geminiFeedback, setGeminiFeedback] = useState('');
 
-  // Custom Named APIs State
-  const [customApisList, setCustomApisList] = useState(() => getSavedCustomApis());
-  const [customName, setCustomName] = useState('');
-  const [customBaseUrl, setCustomBaseUrl] = useState('http://localhost:11434/v1');
-  const [customApiKey, setCustomApiKey] = useState('');
-  const [customModel, setCustomModel] = useState('llama3.3');
-  const [showCustomKey, setShowCustomKey] = useState(false);
-  const [customFeedback, setCustomFeedback] = useState('');
-
-  // Secondary Provider Keys State (Groq, OpenAI, Anthropic)
-  const [otherProvider, setOtherProvider] = useState('groq');
-  const [otherKey, setOtherKey] = useState(() => getSavedKeyForProvider('groq') || '');
-  const [showOtherKey, setShowOtherKey] = useState(false);
-  const [otherFeedback, setOtherFeedback] = useState('');
-  const [showOtherProviders, setShowOtherProviders] = useState(false);
+  // Local Whisper (Fallback) State
+  const [localWhisperModel, setLocalWhisperModel] = useState(() => localStorage.getItem('local_whisper_model') || 'auto');
+  const [localWhisperFeedback, setLocalWhisperFeedback] = useState('');
 
   const [envKeys, setEnvKeys] = useState(null);
   const [loadingEnvKeys, setLoadingEnvKeys] = useState(false);
@@ -231,7 +217,6 @@ export default function SettingsModal({
   useEffect(() => {
     if (isOpen) {
       fetchEnvKeys();
-      setCustomApisList(getSavedCustomApis());
       setGeminiKeyInput(getSavedKeyForProvider('gemini') || (aiConfig?.provider === 'gemini' ? aiConfig?.apiKey : '') || '');
     }
   }, [isOpen, aiConfig]);
@@ -256,12 +241,28 @@ export default function SettingsModal({
     activateProvider('gemini', setAiConfig);
     saveServerSettings({
       gemini_api_key: clean,
+      transcription_provider: 'gemini',
+      transcription_model: 'gemini-3.5-transcribe',
       summarization_api_key: clean,
       summarization_provider: 'gemini',
-      summarization_model: aiConfig?.summarizationModel || 'gemini-3.7-flash'
+      summarization_model: 'gemini-3.8-flash'
     });
-    setGeminiFeedback('✅ Google Gemini saved and activated as default engine!');
+    setGeminiFeedback('✅ Google Gemini saved & activated as default engine (Live 3.5 Transcribe + Flash 3.8 Low)!');
     setTimeout(() => setGeminiFeedback(''), 4000);
+  };
+
+  const handleSaveLocalWhisper = () => {
+    localStorage.setItem('local_whisper_model', localWhisperModel);
+    activateProvider('local_whisper', setAiConfig);
+    saveServerSettings({
+      transcription_provider: 'local_whisper',
+      transcription_model: localWhisperModel,
+      local_whisper_model: localWhisperModel,
+      summarization_provider: 'local_whisper',
+      summarization_model: 'local_synthesis'
+    });
+    setLocalWhisperFeedback(`✅ Local Whisper (${localWhisperModel}) activated as active engine!`);
+    setTimeout(() => setLocalWhisperFeedback(''), 4000);
   };
 
   const runVerifyKey = async (statusKey, provider, apiKey, baseUrl = '', successLabel = '') => {
@@ -296,6 +297,9 @@ export default function SettingsModal({
 
   const handleTestActiveEngine = () => {
     const p = aiConfig?.provider || 'gemini';
+    if (p === 'local_whisper') {
+      return handleTestLocalWhisper();
+    }
     const k = aiConfig?.apiKey || getSavedKeyForProvider(p) || '';
     const u = aiConfig?.baseUrl || '';
     return runVerifyKey('active_engine', p, k, u, 'Active engine verified & connected!');
@@ -305,76 +309,35 @@ export default function SettingsModal({
     return runVerifyKey('gemini', 'gemini', geminiKeyInput.trim(), '', 'Gemini connected successfully!');
   };
 
-  const handleSaveCustomApi = () => {
-    const nameTrimmed = customName.trim();
-    if (!nameTrimmed) {
-      setCustomFeedback('⚠️ Please enter an API Name (e.g. "Office Ollama").');
-      return;
+  const handleTestLocalWhisper = async () => {
+    setTestStatus(prev => ({ ...prev, local_whisper: { loading: true, message: 'Testing Local Whisper engine...' } }));
+    try {
+      const res = await axios.post('/api/test_engine', {
+        test_type: 'stt',
+        stt_provider: 'local_whisper',
+        stt_model: localWhisperModel
+      });
+      const stt = res.data?.stt || {};
+      const isValid = Boolean(stt.success);
+      const lat = stt.latency_ms ? ` (${stt.latency_ms}ms)` : '';
+      setTestStatus(prev => ({
+        ...prev,
+        local_whisper: {
+          loading: false,
+          success: isValid,
+          message: (stt.message || 'Local Whisper engine verified & ready!') + lat
+        }
+      }));
+    } catch (err) {
+      setTestStatus(prev => ({
+        ...prev,
+        local_whisper: {
+          loading: false,
+          success: false,
+          message: err.response?.data?.detail || err.message || 'Local Whisper test failed'
+        }
+      }));
     }
-    const saved = saveCustomApi({
-      name: nameTrimmed,
-      baseUrl: customBaseUrl.trim() || 'http://localhost:11434/v1',
-      apiKey: customApiKey.trim(),
-      modelName: customModel.trim() || 'llama3.3',
-      transcriptionModel: 'whisper-large-v3-turbo'
-    });
-    if (saved) {
-      const updated = getSavedCustomApis();
-      setCustomApisList(updated);
-      activateCustomApi(saved.id, setAiConfig);
-      setCustomName('');
-      setCustomApiKey('');
-      setCustomFeedback(`✅ Saved & Activated "${saved.name}"!`);
-      setTimeout(() => setCustomFeedback(''), 4000);
-    }
-  };
-
-  const handleActivateCustom = (item) => {
-    activateCustomApi(item.id, setAiConfig);
-    setCustomFeedback(`✅ Activated "${item.name}" as active engine!`);
-    setTimeout(() => setCustomFeedback(''), 4000);
-  };
-
-  const handleDeleteCustom = (id) => {
-    deleteCustomApi(id);
-    const updated = getSavedCustomApis();
-    setCustomApisList(updated);
-    if (aiConfig.customApiId === id || (aiConfig.provider === 'custom' && !updated.length)) {
-      activateProvider('gemini', setAiConfig);
-    }
-  };
-
-  const handleTestCustom = (itemOrNew) => {
-    const keyId = itemOrNew.id || 'custom_new';
-    return runVerifyKey(keyId, 'custom', itemOrNew.apiKey || '', itemOrNew.baseUrl || 'http://localhost:11434/v1', 'Custom endpoint connected!');
-  };
-
-  const handleTestOtherProvider = () => {
-    return runVerifyKey(otherProvider, otherProvider, otherKey.trim(), '', `${otherProvider.toUpperCase()} key verified!`);
-  };
-
-  const handleSaveOtherProvider = () => {
-    const clean = otherKey.trim();
-    saveKeyForProvider(otherProvider, clean);
-    activateProvider(otherProvider, setAiConfig);
-    const update = {
-      [`${otherProvider}_api_key`]: clean
-    };
-    if (otherProvider === 'whisperx') {
-      update.hf_token = clean;
-      update.transcription_provider = 'whisperx';
-      update.transcription_api_key = clean;
-      update.transcription_model = 'pyannote/speaker-diarization-community-1';
-      update.whisperx_model = 'pyannote/speaker-diarization-community-1';
-    } else if (otherProvider === 'groq') {
-      update.transcription_provider = 'groq';
-      update.transcription_api_key = clean;
-      update.transcription_model = aiConfig?.transcriptionModel || 'whisper-large-v3-turbo';
-    }
-    saveServerSettings(update);
-    const provDisplay = otherProvider === 'whisperx' ? 'WhisperX (Hugging Face)' : otherProvider.toUpperCase();
-    setOtherFeedback(`✅ ${provDisplay} saved & activated!`);
-    setTimeout(() => setOtherFeedback(''), 4000);
   };
 
   const handleRunAudit = async () => {
@@ -438,7 +401,40 @@ export default function SettingsModal({
           </button>
         </div>
 
-        {/* Tab Navigation */}
+        {/* Quick Tools & Cloud Sync Row (Controls from Header cleanly housed in Settings) */}
+        {(onOpenDeviceViewer || onOpenGDrive) && (
+          <div style={{ display: 'flex', gap: '8px', marginBottom: '14px', flexWrap: 'wrap' }}>
+            {onOpenDeviceViewer && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  onClose();
+                  onOpenDeviceViewer();
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600 }}
+                title="Open responsive 3-device simulator"
+              >
+                📱 3-Device View
+              </button>
+            )}
+            {onOpenGDrive && (
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  onClose();
+                  onOpenGDrive();
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600 }}
+                title="Open Google Drive Sync"
+              >
+                ☁️ Google Drive Sync
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Tab Navigation */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', borderBottom: '1px solid var(--border-color)', paddingBottom: '8px', flexWrap: 'wrap' }}>
           <button
@@ -521,7 +517,7 @@ export default function SettingsModal({
                     {getActiveApiDisplayName(aiConfig)}
                   </h4>
                   <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                    Provider: <strong>{aiConfig.provider?.toUpperCase()}</strong> • Model: <code>{aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.7-flash'}</code>
+                    Provider: <strong>{aiConfig.provider?.toUpperCase()}</strong> • Model: <code>{aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.8-flash'}</code>
                     {aiConfig.baseUrl && <> • Endpoint: <code>{aiConfig.baseUrl}</code></>}
                   </div>
                 </div>
@@ -537,7 +533,7 @@ export default function SettingsModal({
                   style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, padding: '7px 14px', background: 'var(--bg-primary)' }}
                   title="Run connection test on active API engine"
                 >
-                  <Zap size={14} color="var(--accent-color)" /> {testStatus.active_engine?.loading ? 'Testing API...' : '⚡ Test Active API'}
+                  <Cpu size={14} color="var(--accent-color)" /> {testStatus.active_engine?.loading ? 'Testing API...' : 'Test Active API'}
                 </button>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'rgba(16, 185, 129, 0.15)', border: '1px solid rgba(16, 185, 129, 0.3)', padding: '6px 12px', borderRadius: '20px' }}>
                   <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }}></span>
@@ -578,7 +574,7 @@ export default function SettingsModal({
             >
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <span style={{ fontSize: '1.2rem' }}>⭐</span>
+                  <Cpu size={20} color="var(--accent-color)" />
                   <div>
                     <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800, color: 'var(--text-primary)' }}>
                       Google Gemini API (Default Engine)
@@ -648,7 +644,7 @@ export default function SettingsModal({
                     disabled={testStatus.gemini?.loading || !geminiKeyInput.trim()}
                     style={{ padding: '6px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
                   >
-                    <Zap size={14} /> {testStatus.gemini?.loading ? 'Testing...' : 'Test Gemini API'}
+                    <Cpu size={14} /> {testStatus.gemini?.loading ? 'Testing...' : 'Test Gemini API'}
                   </button>
                   <button
                     type="button"
@@ -662,342 +658,108 @@ export default function SettingsModal({
               </div>
             </div>
 
-            {/* SECTION 2: CUSTOM API SETUP (LOCAL OLLAMA / CUSTOM ENDPOINT) */}
+            {/* SECTION 2: LOCAL WHISPER (OFFLINE & HARDWARE-ADAPTIVE FALLBACK) */}
             <div
               style={{
                 background: 'var(--bg-secondary)',
-                border: '2px solid #10b981',
+                border: aiConfig.provider === 'local_whisper' ? '2px solid #10b981' : '1px solid var(--border-color)',
                 borderRadius: '12px',
                 padding: '18px 20px',
                 marginBottom: '20px',
-                boxShadow: '0 4px 16px rgba(16, 185, 129, 0.12)'
+                boxShadow: aiConfig.provider === 'local_whisper' ? '0 4px 16px rgba(16, 185, 129, 0.15)' : 'none'
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <div style={{ background: '#10b981', color: '#ffffff', borderRadius: '8px', padding: '6px', display: 'flex' }}>
                     <Server size={18} />
                   </div>
                   <div>
                     <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                      Add Custom API
+                      Local Whisper Engine (Offline & Hardware-Adaptive Fallback)
                     </h4>
                     <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                      Connect local Ollama, LM Studio, vLLM, DeepSeek, or any OpenAI-compatible custom server.
+                      100% Free & Zero Cloud Dependency. Automatically adapts model size to available system RAM.
                     </span>
                   </div>
                 </div>
+                <span style={{ fontSize: '0.74rem', padding: '3px 8px', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 700 }}>
+                  Offline Engine
+                </span>
+              </div>
+
+              {/* Hardware Sizing Architecture Banner */}
+              <div style={{ background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '8px', padding: '10px 14px', marginBottom: '14px', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
+                <strong style={{ color: '#10b981' }}>Dynamic RAM Sizing:</strong> ≤4GB: <code>whisper-tiny</code> • 4–8GB: <code>whisper-base</code> • 8–16GB: <code>whisper-small</code> • ≥16GB: <code>whisper-medium</code>. Runs with multi-threaded INT8 quantization on your CPU.
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginBottom: '12px' }}>
-                {/* 1. Custom API Name */}
                 <div className="form-group" style={{ marginBottom: 0 }}>
                   <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    API Name: <span style={{ color: '#ef4444' }}>*</span>
+                    Whisper Model Selection:
+                  </label>
+                  <select
+                    id="localWhisperModelSelect"
+                    className="form-control"
+                    value={localWhisperModel}
+                    onChange={(e) => setLocalWhisperModel(e.target.value)}
+                    style={{ fontSize: '0.85rem', padding: '8px 12px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                  >
+                    <option value="auto">auto (Hardware Adaptive: Auto-size to system RAM)</option>
+                    <option value="whisper-tiny">whisper-tiny (Ultra-Fast / Low RAM: &lt;= 4GB)</option>
+                    <option value="whisper-base">whisper-base (Fast Lightweight: 4-8GB)</option>
+                    <option value="whisper-small">whisper-small (Standard Balance: 8-16GB)</option>
+                    <option value="whisper-medium">whisper-medium (High Precision: 16+ GB)</option>
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Offline Meeting Minutes Synthesis:
                   </label>
                   <input
                     type="text"
-                    id="customApiNameInput"
                     className="form-control"
-                    placeholder="e.g. Office Ollama, DeepSeek Gateway, Local vLLM"
-                    value={customName}
-                    onChange={(e) => setCustomName(e.target.value)}
-                    style={{ fontSize: '0.85rem', padding: '8px 12px' }}
+                    disabled
+                    value="Deep Semantic Synthesis (Built-in Rule Engine)"
+                    style={{ fontSize: '0.82rem', padding: '8px 12px', background: 'var(--bg-primary)', color: 'var(--text-secondary)', borderStyle: 'dashed' }}
                   />
                   <small style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                    This name will appear on the front page top API button.
+                    Structures discussions, decisions, and action items locally without external API tokens.
                   </small>
-                </div>
-
-                {/* 2. Custom Base URL */}
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    Base URL / Endpoint: <span style={{ color: '#ef4444' }}>*</span>
-                  </label>
-                  <input
-                    type="text"
-                    id="customApiUrlInput"
-                    className="form-control"
-                    placeholder="http://localhost:11434/v1"
-                    value={customBaseUrl}
-                    onChange={(e) => setCustomBaseUrl(e.target.value)}
-                    style={{ fontSize: '0.85rem', fontFamily: 'monospace', padding: '8px 12px' }}
-                  />
-                  <small style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                    Target OpenAI-compatible endpoint URL.
-                  </small>
-                </div>
-
-                {/* 3. Custom API Key / Bearer Token */}
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    API Key / Bearer Token: (Optional)
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <input
-                      type={showCustomKey ? 'text' : 'password'}
-                      id="customApiKeyInput"
-                      className="form-control"
-                      placeholder="Leave blank for local Ollama without auth"
-                      value={customApiKey}
-                      onChange={(e) => setCustomApiKey(e.target.value)}
-                      style={{ flex: 1, fontSize: '0.85rem', fontFamily: 'monospace', padding: '8px 12px' }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => setShowCustomKey(!showCustomKey)}
-                      style={{ padding: '8px 10px' }}
-                    >
-                      {showCustomKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
-                  </div>
-                </div>
-
-                {/* 4. Custom Model Name */}
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    Model Identifier:
-                  </label>
-                  <input
-                    type="text"
-                    id="customApiModelInput"
-                    className="form-control"
-                    placeholder="llama3.3, deepseek-r1, qwen2.5"
-                    value={customModel}
-                    onChange={(e) => setCustomModel(e.target.value)}
-                    style={{ fontSize: '0.85rem', fontFamily: 'monospace', padding: '8px 12px' }}
-                  />
                 </div>
               </div>
 
               {/* Action row & Feedback */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', paddingTop: '6px', borderTop: '1px solid var(--border-color)' }}>
-                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: customFeedback.startsWith('✅') ? '#10b981' : testStatus.custom_new?.success ? '#10b981' : '#ef4444' }}>
-                  {customFeedback || testStatus.custom_new?.message || ''}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
+                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: localWhisperFeedback ? '#10b981' : testStatus.local_whisper?.success ? '#10b981' : '#ef4444' }}>
+                  {localWhisperFeedback || testStatus.local_whisper?.message || ''}
                 </div>
                 <div style={{ display: 'flex', gap: '8px' }}>
                   <button
                     type="button"
-                    id="testCustomNewBtn"
+                    id="testLocalWhisperBtn"
                     className="btn btn-secondary btn-sm"
-                    onClick={() => handleTestCustom({ id: 'custom_new', baseUrl: customBaseUrl, apiKey: customApiKey })}
-                    disabled={testStatus.custom_new?.loading}
+                    onClick={handleTestLocalWhisper}
+                    disabled={testStatus.local_whisper?.loading}
                     style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
                   >
-                    <Zap size={14} /> {testStatus.custom_new?.loading ? 'Testing...' : 'Test API Endpoint'}
+                    <Server size={14} /> {testStatus.local_whisper?.loading ? 'Testing Engine...' : 'Test Local Whisper'}
                   </button>
                   <button
                     type="button"
-                    id="saveCustomApiBtn"
+                    id="saveLocalWhisperBtn"
                     className="btn btn-primary btn-sm"
-                    onClick={handleSaveCustomApi}
+                    onClick={handleSaveLocalWhisper}
                     style={{ padding: '7px 16px', fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
                   >
-                    <Check size={15} /> Save & Activate Custom API
+                    <Check size={15} /> Set as Active Engine
                   </button>
                 </div>
               </div>
             </div>
 
-            {/* SECTION 3: SAVED CUSTOM APIS VAULT */}
-            <div style={{ marginBottom: '20px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <label style={{ fontSize: '0.9rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <Key size={15} color="var(--accent-color)" /> Saved Custom APIs & Engines:
-                </label>
-                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                  {customApisList.length} saved custom API{customApisList.length === 1 ? '' : 's'}
-                </span>
-              </div>
-
-              {customApisList.length === 0 ? (
-                <div style={{ padding: '14px', borderRadius: '10px', background: 'var(--bg-secondary)', border: '1px dashed var(--border-color)', textAlign: 'center', fontSize: '0.84rem', color: 'var(--text-secondary)' }}>
-                  No custom APIs saved yet. Fill out the form above to add a named custom API (e.g. "Office Ollama").
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-                  {customApisList.map((item) => {
-                    const isItemActive = aiConfig.provider === 'custom' && (aiConfig.customApiId === item.id || aiConfig.customName === item.name);
-                    const itemTest = testStatus[item.id];
-                    return (
-                      <div
-                        key={item.id}
-                        style={{
-                          padding: '12px 16px',
-                          borderRadius: '10px',
-                          border: isItemActive ? '2px solid #10b981' : '1px solid var(--border-color)',
-                          background: isItemActive ? 'rgba(16, 185, 129, 0.08)' : 'var(--bg-secondary)',
-                          display: 'flex',
-                          flexDirection: 'column',
-                          gap: '8px'
-                        }}
-                      >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                          <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <strong style={{ fontSize: '0.92rem', color: 'var(--text-primary)' }}>{item.name}</strong>
-                              <span style={{ fontSize: '0.7rem', padding: '2px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 700 }}>
-                                CUSTOM API
-                              </span>
-                              {isItemActive && (
-                                <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '10px', background: '#10b981', color: '#ffffff', fontWeight: 700 }}>
-                                  Active Now
-                                </span>
-                              )}
-                            </div>
-                            <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
-                              Endpoint: <code>{item.baseUrl}</code> • Model: <code>{item.modelName}</code>
-                            </div>
-                          </div>
-
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                            {!isItemActive ? (
-                              <button
-                                type="button"
-                                className="btn btn-secondary btn-sm"
-                                onClick={() => handleActivateCustom(item)}
-                                style={{ fontSize: '0.78rem', padding: '4px 10px', fontWeight: 700 }}
-                              >
-                                Activate
-                              </button>
-                            ) : (
-                              <span style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 700, padding: '4px 8px' }}>
-                                ✓ Active
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              id={`testCustomVaultBtn_${item.id}`}
-                              className="btn btn-secondary btn-sm"
-                              onClick={() => handleTestCustom(item)}
-                              disabled={itemTest?.loading}
-                              style={{ fontSize: '0.78rem', padding: '4px 10px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                            >
-                              <Zap size={12} /> {itemTest?.loading ? 'Testing...' : 'Test API'}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteCustom(item.id)}
-                              style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '6px' }}
-                              title="Delete this custom API"
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </div>
-                        </div>
-
-                        {itemTest?.message && (
-                          <div style={{
-                            padding: '6px 10px',
-                            borderRadius: '6px',
-                            fontSize: '0.76rem',
-                            fontWeight: 600,
-                            background: itemTest.success ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)',
-                            color: itemTest.success ? '#10b981' : '#ef4444',
-                            border: itemTest.success ? '1px solid rgba(16, 185, 129, 0.25)' : '1px solid rgba(239, 68, 68, 0.25)'
-                          }}>
-                            {itemTest.message}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            {/* SECTION 4: STANDARD PROVIDERS (COLLAPSIBLE) */}
-            <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden', marginBottom: '14px' }}>
-              <div
-                onClick={() => setShowOtherProviders(!showOtherProviders)}
-                style={{
-                  padding: '12px 16px',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  cursor: 'pointer',
-                  userSelect: 'none'
-                }}
-              >
-                <span style={{ fontSize: '0.84rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)' }}>
-                  <Globe size={14} color="var(--accent-color)" /> Other Providers (WhisperX / Hugging Face, Groq, OpenAI, Anthropic)
-                </span>
-                {showOtherProviders ? <ChevronUp size={16} color="var(--text-secondary)" /> : <ChevronDown size={16} color="var(--text-secondary)" />}
-              </div>
-
-              {showOtherProviders && (
-                <div style={{ padding: '14px 16px', borderTop: '1px solid var(--border-color)' }}>
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                    {['whisperx', 'groq', 'openai', 'anthropic'].map((pId) => (
-                      <button
-                        key={pId}
-                        type="button"
-                        className={`btn ${otherProvider === pId ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                        onClick={() => {
-                          setOtherProvider(pId);
-                          setOtherKey(getSavedKeyForProvider(pId) || '');
-                          setOtherFeedback('');
-                        }}
-                      >
-                        {pId === 'whisperx' ? 'WhisperX (Hugging Face)' : pId.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
-
-                  {otherProvider === 'whisperx' && (
-                    <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '10px', background: 'rgba(234, 179, 8, 0.08)', border: '1px solid rgba(234, 179, 8, 0.25)', borderRadius: '6px', padding: '8px 12px' }}>
-                      🤗 <strong>Hugging Face WhisperX Diarization:</strong> Uses <code>pyannote/speaker-diarization-community-1</code> for neural speaker attribution. Provide your Hugging Face User Access Token (<code>hf_...</code>) or configure <code>HF_TOKEN</code> in your environment.
-                    </div>
-                  )}
-
-                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
-                    <input
-                      type={showOtherKey ? 'text' : 'password'}
-                      className="form-control"
-                      placeholder={otherProvider === 'whisperx' ? 'Paste Hugging Face Token (e.g. hf_...)' : `Paste ${otherProvider.toUpperCase()} Key...`}
-                      value={otherKey}
-                      onChange={(e) => setOtherKey(e.target.value)}
-                      style={{ flex: 1, fontSize: '0.85rem', fontFamily: 'monospace', padding: '8px 12px' }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => setShowOtherKey(!showOtherKey)}
-                      style={{ padding: '8px 10px' }}
-                    >
-                      {showOtherKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
-                    <button
-                      type="button"
-                      id="testOtherProviderBtn"
-                      className="btn btn-secondary btn-sm"
-                      onClick={handleTestOtherProvider}
-                      disabled={testStatus[otherProvider]?.loading || !otherKey.trim()}
-                      style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <Zap size={13} /> {testStatus[otherProvider]?.loading ? 'Testing...' : 'Test Key'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={handleSaveOtherProvider}
-                      style={{ padding: '8px 14px' }}
-                    >
-                      Save & Activate
-                    </button>
-                  </div>
-                  {testStatus[otherProvider]?.message && (
-                    <div style={{ fontSize: '0.8rem', color: testStatus[otherProvider].success ? '#10b981' : '#ef4444', fontWeight: 600, marginBottom: '6px' }}>
-                      {testStatus[otherProvider].message}
-                    </div>
-                  )}
-                  {otherFeedback && <div style={{ fontSize: '0.8rem', color: '#10b981', fontWeight: 600 }}>{otherFeedback}</div>}
-                </div>
-              )}
-            </div>
-
-            {/* SECTION 5: SYSTEM & .ENV DETECTED KEYS (COLLAPSIBLE) */}
+            {/* SECTION 3: SYSTEM & .ENV ENVIRONMENT AUDIT (COLLAPSIBLE) */}
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden' }}>
               <div
                 onClick={() => setShowEnvKeys(!showEnvKeys)}
@@ -1011,7 +773,7 @@ export default function SettingsModal({
                 }}
               >
                 <span style={{ fontSize: '0.84rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)' }}>
-                  <Terminal size={14} color="var(--accent-color)" /> System & .env Detected Environment Variables
+                  <Terminal size={14} color="var(--accent-color)" /> System Environment & Key Detection
                 </span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <button
@@ -1086,7 +848,7 @@ export default function SettingsModal({
             {/* Bangla / Govt Font Selector */}
             <div className="form-group">
               <label style={{ fontSize: '0.88rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Sparkles size={14} color="var(--accent-color)" /> Bangladesh Government / Bangla Font Standard:
+                <Type size={14} color="var(--accent-color)" /> Bangladesh Government / Bangla Font Standard:
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {BANGLA_FONTS.map((font) => (
@@ -1104,7 +866,7 @@ export default function SettingsModal({
             {/* English Font Selector */}
             <div className="form-group" style={{ marginTop: '20px' }}>
               <label style={{ fontSize: '0.88rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Sparkles size={14} color="var(--accent-color)" /> English Document & Minutes Font Standard:
+                <Type size={14} color="var(--accent-color)" /> English Document & Minutes Font Standard:
               </label>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {ENGLISH_FONTS.map((font) => (
@@ -1424,7 +1186,7 @@ export default function SettingsModal({
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <CheckCircle size={14} color="#10b981" />
-                      <span><strong>OCR Engine:</strong> {auditData.toolchains?.tesseract_ocr?.found ? 'Tesseract Local Active' : 'Gemini/OpenAI Vision Active'}</span>
+                      <span><strong>OCR Engine:</strong> {auditData.toolchains?.tesseract_ocr?.found ? 'Tesseract Local Active' : 'Google Gemini Vision Active'}</span>
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                       {auditData.toolchains?.nodejs?.found ? <CheckCircle size={14} color="#10b981" /> : <AlertTriangle size={14} color="#f59e0b" />}
@@ -1437,7 +1199,7 @@ export default function SettingsModal({
                 {auditData.recommendations && auditData.recommendations.length > 0 && (
                   <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', padding: '14px' }}>
                     <div style={{ fontSize: '0.84rem', fontWeight: 700, marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <Sparkles size={15} color="#f59e0b" /> Daily Improvement Recommendations
+                      <Check size={15} color="#10b981" /> Daily Improvement Recommendations
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                       {auditData.recommendations.map((rec, idx) => (

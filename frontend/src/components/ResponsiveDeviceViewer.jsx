@@ -137,7 +137,7 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
             }}
           >
             <LayoutGrid size={14} />
-            <span>⚡ 3-Device View</span>
+            <span>3-Device View</span>
           </button>
 
           <button

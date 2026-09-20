@@ -156,12 +156,13 @@ export default function DocumentPreview({
 
   return (
     <div className="card" id="section-export" style={{ marginBottom: '40px' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
+      {/* Floating / Sticky Preview Header & Export Command Bar */}
+      <div className="preview-floating-header">
         <div>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 800, display: 'flex', gap: '8px', alignItems: 'center', margin: 0 }}>
             <FileText size={20} color="var(--accent-color)" /> Preview
           </h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '2px' }}>
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '2px', marginBottom: 0 }}>
             Current Output: <strong>{activeTemplate.name}</strong> • Live formatted document preview & 1-click export
           </p>
         </div>

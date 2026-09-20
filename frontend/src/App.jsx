@@ -5,6 +5,7 @@ import {
   Cpu,
   FileCode,
   Sparkles,
+  Layers,
   Calendar,
   MessageSquare,
   Users,
@@ -56,12 +57,12 @@ export default function App() {
   const [isDeviceViewerOpen, setIsDeviceViewerOpen] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [activeSection, setActiveSection] = useState('section-live');
+  const [templateSubTab, setTemplateSubTab] = useState('templates');
 
   // Collapsed state for sections below Transcripts (all collapsed by default)
   const [collapsedSections, setCollapsedSections] = useState({
     'section-input': true,
     'section-templates': true,
-    'section-skills': true,
     'section-meta': true,
     'section-discussions': true,
     'section-attendance': true,
@@ -108,6 +109,16 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isAutoTranscribing, setIsAutoTranscribing] = useState(false);
   const [clearQueueTrigger, setClearQueueTrigger] = useState(0);
+
+  // Safety watchdog: ensure isAutoTranscribing never stays stuck true indefinitely
+  useEffect(() => {
+    if (!isAutoTranscribing) return;
+    const timer = setTimeout(() => {
+      console.warn('[Safety Watchdog] Auto-resetting isAutoTranscribing flag after 65s safety window');
+      setIsAutoTranscribing(false);
+    }, 65000);
+    return () => clearTimeout(timer);
+  }, [isAutoTranscribing]);
 
   // Document Type & Template State
   const [documentType, setDocumentType] = useState(localStorage.getItem('documentType') || 'meeting_minutes');
@@ -313,15 +324,15 @@ export default function App() {
           const s = res.data.settings;
           setAiConfig((prev) => ({
             ...prev,
-            transcriptionProvider: s.transcription_provider || prev.transcriptionProvider || 'groq',
-            transcriptionApiKey: s.transcription_api_key || s.groq_api_key || prev.transcriptionApiKey || '',
-            transcriptionModel: s.transcription_model || prev.transcriptionModel || 'whisper-large-v3-turbo',
+            transcriptionProvider: s.transcription_provider || prev.transcriptionProvider || 'gemini',
+            transcriptionApiKey: s.transcription_api_key || s.gemini_api_key || prev.transcriptionApiKey || '',
+            transcriptionModel: s.transcription_model || prev.transcriptionModel || 'gemini-3.5-transcribe',
             summarizationProvider: s.summarization_provider || prev.summarizationProvider || 'gemini',
             summarizationApiKey: s.summarization_api_key || s.gemini_api_key || prev.summarizationApiKey || '',
-            summarizationModel: s.summarization_model || prev.summarizationModel || 'gemini-3.7-flash',
+            summarizationModel: s.summarization_model || prev.summarizationModel || 'gemini-3.8-flash',
             provider: s.summarization_provider || prev.provider || 'gemini',
             apiKey: s.summarization_api_key || s.gemini_api_key || prev.apiKey || '',
-            modelName: s.summarization_model || prev.modelName || 'gemini-3.7-flash'
+            modelName: s.summarization_model || prev.modelName || 'gemini-3.8-flash'
           }));
         }
       })
@@ -463,20 +474,19 @@ export default function App() {
     }
 
     setIsProcessing(true);
-    const sttKey = (aiConfig.transcriptionApiKey || getSavedKeyForProvider('groq') || (aiConfig.apiKey && aiConfig.apiKey.startsWith('gsk_') ? aiConfig.apiKey : '')).trim();
-    const sumKey = (aiConfig.summarizationApiKey || getSavedKeyForProvider('gemini') || (aiConfig.apiKey && !aiConfig.apiKey.startsWith('gsk_') ? aiConfig.apiKey : '')).trim();
+    const gemKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
 
     const formData = new FormData();
-    formData.append('provider', aiConfig.provider);
-    formData.append('api_key', (aiConfig.provider === 'gemini' ? sumKey : (aiConfig.provider === 'groq' ? sttKey : aiConfig.apiKey)).trim());
-    formData.append('base_url', aiConfig.baseUrl.trim());
-    formData.append('model_name', aiConfig.summarizationModel || aiConfig.modelName || 'gemini-3.7-flash');
-    formData.append('transcription_provider', aiConfig.transcriptionProvider || (aiConfig.transcriptionModel?.includes('whisper') ? 'groq' : 'gemini'));
-    formData.append('transcription_api_key', sttKey);
-    formData.append('transcription_model', aiConfig.transcriptionModel || 'whisper-large-v3-turbo');
-    formData.append('summarization_provider', aiConfig.summarizationProvider || 'gemini');
-    formData.append('summarization_api_key', sumKey);
-    formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.7-flash');
+    formData.append('provider', aiConfig.provider || 'gemini');
+    formData.append('api_key', gemKey);
+    formData.append('base_url', (aiConfig.baseUrl || '').trim());
+    formData.append('model_name', aiConfig.summarizationModel || 'gemini-3.8-flash');
+    formData.append('transcription_provider', aiConfig.transcriptionProvider || aiConfig.provider || 'gemini');
+    formData.append('transcription_api_key', gemKey);
+    formData.append('transcription_model', aiConfig.transcriptionModel || 'gemini-3.5-transcribe');
+    formData.append('summarization_provider', aiConfig.summarizationProvider || aiConfig.provider || 'gemini');
+    formData.append('summarization_api_key', gemKey);
+    formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.8-flash');
     formData.append('org_context', orgContext);
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
     
@@ -501,47 +511,39 @@ export default function App() {
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
         }
-        alert('Document synthesized successfully into active template format! Scrolled down to Document Preview.');
         scrollToSection('section-export');
       } else {
-        alert('Processing failed: ' + (res.data?.detail || 'Unknown error'));
+        console.warn('Processing notice:', res.data?.detail);
       }
     } catch (err) {
       setIsProcessing(false);
-      alert('AI Server Error: ' + (err.response?.data?.detail || err.message));
+      console.error('AI Server Error:', err);
     }
   };
 
   // Summarize Transcript with selected model
   const handleSummarizeTranscript = async (transcriptText, selectedModel = 'default') => {
     setIsSummarizing(true);
-    let chosenProvider = aiConfig.provider;
-    let chosenModelName = aiConfig.summarizationModel || aiConfig.modelName;
+    let chosenProvider = aiConfig.provider || 'gemini';
+    let chosenModelName = aiConfig.summarizationModel || 'gemini-3.8-flash';
 
-    if (selectedModel === 'groq') {
-      chosenProvider = 'groq';
-      chosenModelName = 'llama-3.3-70b-versatile';
-    } else if (selectedModel === 'gemini') {
+    if (selectedModel === 'gemini') {
       chosenProvider = 'gemini';
-      chosenModelName = 'gemini-3.7-flash';
-    } else if (selectedModel === 'claude') {
-      chosenProvider = 'anthropic';
-      chosenModelName = 'claude-3-5-sonnet-20241022';
-    } else if (selectedModel === 'openai') {
-      chosenProvider = 'openai';
-      chosenModelName = 'gpt-4o';
+      chosenModelName = 'gemini-3.8-flash';
+    } else if (selectedModel === 'local_whisper' || selectedModel === 'local') {
+      chosenProvider = 'local_whisper';
+      chosenModelName = 'local_synthesis';
     }
 
-    const geminiKey = (aiConfig.summarizationApiKey || getSavedKeyForProvider('gemini') || (aiConfig.apiKey && !aiConfig.apiKey.startsWith('gsk_') ? aiConfig.apiKey : '')).trim();
-    const effectiveKey = chosenProvider === 'gemini' ? geminiKey : (chosenProvider === 'groq' ? (aiConfig.transcriptionApiKey || getSavedKeyForProvider('groq') || aiConfig.apiKey) : aiConfig.apiKey).trim();
+    const gemKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
 
     const formData = new FormData();
     formData.append('transcript', transcriptText);
     formData.append('provider', chosenProvider);
-    formData.append('api_key', effectiveKey);
-    formData.append('summarization_api_key', geminiKey);
+    formData.append('api_key', gemKey);
+    formData.append('summarization_api_key', gemKey);
     formData.append('summarization_provider', chosenProvider);
-    formData.append('base_url', aiConfig.baseUrl.trim());
+    formData.append('base_url', (aiConfig.baseUrl || '').trim());
     formData.append('model_name', chosenModelName);
     formData.append('summarization_model', chosenModelName);
     formData.append('org_context', orgContext);
@@ -561,18 +563,13 @@ export default function App() {
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
         }
-        if (payload.warning) {
-          alert('⚠️ AI Provider Notice:\n' + payload.warning);
-        } else {
-          alert('Raw transcript structured and fitted to active template successfully!');
-        }
         scrollToSection('section-export');
       } else {
-        alert('Fit to Template failed: ' + (res.data?.detail || 'Unknown error'));
+        console.warn('Fit to Template notice:', res.data?.detail);
       }
     } catch (err) {
       setIsSummarizing(false);
-      alert('Fit to Template Error: ' + (err.response?.data?.detail || err.message));
+      console.error('Fit to Template Error:', err);
     }
   };
 
@@ -707,12 +704,7 @@ export default function App() {
       <Header
         theme={theme}
         toggleTheme={toggleTheme}
-        onOpenGDrive={() => setIsGDriveOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onOpenApiSettings={() => setIsSettingsOpen(true)}
-        activeApiName={activeApiName}
-        onOpenDeviceViewer={() => setIsDeviceViewerOpen(true)}
-        isFrameView={isFrameView}
         customLogo={settings.customLogo}
       />
       <NavTabs
@@ -769,44 +761,55 @@ export default function App() {
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}
 
-        {/* 5. Templates */}
+        {/* 5. Templates & Directives (Merged Templates + Skills) */}
         <CollapsibleCard
           id="section-templates"
-          title="Templates"
-          icon={FileCode}
-          badge={activeTemplate?.name || 'Standard'}
-          summary="Choose or generate document templates & directives"
+          title="Templates & Directives"
+          icon={Layers}
+          badge={`${activeTemplate?.name || 'Standard'} • ${activeSkills.length} active`}
+          summary="Document frameworks, formatting directives & specialized AI skills"
           isCollapsed={collapsedSections['section-templates']}
           onToggle={() => toggleSectionCollapse('section-templates')}
         >
-          <TemplateGenerator
-            templates={templates}
-            activeTemplateId={activeTemplateId}
-            onSelectTemplate={handleSelectTemplate}
-            onTemplatesUpdated={loadTemplates}
-            documentType={documentType}
-            onSelectDocumentType={handleSelectDocumentType}
-          />
-        </CollapsibleCard>
+          {/* Subtabs for Templates vs Skills */}
+          <div className="merged-subtabs">
+            <button
+              type="button"
+              className={`merged-subtab-btn ${templateSubTab === 'templates' ? 'active' : ''}`}
+              onClick={() => setTemplateSubTab('templates')}
+            >
+              <FileCode size={16} />
+              <span>Document Templates ({templates.length})</span>
+            </button>
+            <button
+              type="button"
+              className={`merged-subtab-btn ${templateSubTab === 'skills' ? 'active' : ''}`}
+              onClick={() => setTemplateSubTab('skills')}
+            >
+              <Sparkles size={16} />
+              <span>AI Skills & Directives ({activeSkills.length} active)</span>
+            </button>
+          </div>
 
-        {/* 6. Skills */}
-        <CollapsibleCard
-          id="section-skills"
-          title="Skills"
-          icon={Sparkles}
-          badge={`${activeSkills.length} active`}
-          summary="Specialized AI directives and institutional rules"
-          isCollapsed={collapsedSections['section-skills']}
-          onToggle={() => toggleSectionCollapse('section-skills')}
-        >
-          <AiSkillsSelector
-            activeSkills={activeSkills}
-            setActiveSkills={setActiveSkills}
-            customSkillsList={customSkillsList}
-            setCustomSkillsList={setCustomSkillsList}
-            orgContext={orgContext}
-            setOrgContext={setOrgContext}
-          />
+          {templateSubTab === 'templates' ? (
+            <TemplateGenerator
+              templates={templates}
+              activeTemplateId={activeTemplateId}
+              onSelectTemplate={handleSelectTemplate}
+              onTemplatesUpdated={loadTemplates}
+              documentType={documentType}
+              onSelectDocumentType={handleSelectDocumentType}
+            />
+          ) : (
+            <AiSkillsSelector
+              activeSkills={activeSkills}
+              setActiveSkills={setActiveSkills}
+              customSkillsList={customSkillsList}
+              setCustomSkillsList={setCustomSkillsList}
+              orgContext={orgContext}
+              setOrgContext={setOrgContext}
+            />
+          )}
         </CollapsibleCard>
 
         {/* DYNAMIC FORMS (COLLAPSED BY DEFAULT) */}
@@ -940,6 +943,8 @@ export default function App() {
         setSettings={setSettings}
         aiConfig={aiConfig}
         setAiConfig={setAiConfig}
+        onOpenDeviceViewer={() => setIsDeviceViewerOpen(true)}
+        onOpenGDrive={() => setIsGDriveOpen(true)}
       />
 
       {isDeviceViewerOpen && !isFrameView && (

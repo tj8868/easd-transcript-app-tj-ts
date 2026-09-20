@@ -1,4 +1,4 @@
-# Eminence Transcription & Meeting Minutes AI Hub
+# eCommunicator - EASD Meeting Minutes AI
 
 An enterprise-grade, privacy-first AI speech transcription and multi-document generation hub. Transforms audio recordings, phone voice memos, videos, transcripts, or meeting notes into official, publication-ready Microsoft Word (`.docx`) documents with 100% fidelity to organizational templates.
 
@@ -75,7 +75,7 @@ The app supports multiple AI providers. You only need **one** API key to get sta
   - Select **AI Provider**: `Google Gemini`.
   - Paste your key (starts with `AIzaSy...`).
   - STT Model: `gemini-2.5-flash` or `gemini-3.5-flash-lite`.
-  - LLM Model: `gemini-3.5-flash-lite` or `gemini-3.7-flash`.
+  - LLM Model: `gemini-3.5-flash-lite` or `gemini-3.8-flash`.
   - Click **"Test Key"** to verify connection.
 
 ### 2. Groq Cloud (Ultra-Fast 216x Whisper STT - Free)

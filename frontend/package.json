@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "test": "node test_api_button_and_vault.js",
+    "build": "node --max_semi_space_size=128 ./node_modules/vite/bin/vite.js build",
+    "test": "node --max-old-space-size=256 test_api_button_and_vault.js && node --max-old-space-size=256 test_raw_transcript_speaker_time.js && node --max-old-space-size=256 test_audio_upload_to_transcript_flow.js",
     "lint": "oxlint",
     "preview": "vite preview"
   },

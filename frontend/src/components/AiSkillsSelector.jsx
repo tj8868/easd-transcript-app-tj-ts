@@ -395,9 +395,7 @@ export default function AiSkillsSelector({
               <label style={{ fontSize: '0.82rem', fontWeight: 600 }}>Category / Model Family</label>
               <select className="form-control" value={newSkillCategory} onChange={(e) => setNewSkillCategory(e.target.value)}>
                 <option value="Gemini">Google Gemini Directive</option>
-                <option value="Claude">Anthropic Claude Reasoning</option>
-                <option value="Groq">Groq High-Speed Prompt</option>
-                <option value="OpenAI">OpenAI GPT-4o Schema</option>
+                <option value="Local">Local Synthesis Directive</option>
                 <option value="Domain">Public Health / Domain Specialist</option>
               </select>
             </div>

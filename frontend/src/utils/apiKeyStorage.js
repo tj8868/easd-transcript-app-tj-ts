@@ -1,109 +1,34 @@
-// Centralized API Key Management & Provider Storage
+// Centralized API Key Management & Provider Storage (Strictly Gemini & Local Whisper)
 
 export const PROVIDERS = [
   {
-    id: 'local_whisper',
-    name: 'Local Whisper (Offline & Free)',
-    shortName: 'Local Whisper',
-    tag: '⚡ 100% Free / Auto-Detects Bangla & English',
-    badgeColor: '#10b981',
-    defaultSTT: 'whisper-small-int8',
-    defaultLLM: 'gemini-3.7-flash',
-    defaultBaseUrl: '',
-    placeholder: 'No API Key required (Offline Engine)',
-    keyPrefix: '',
-    docsUrl: ''
-  },
-  {
     id: 'gemini',
-    name: 'Google Gemini',
+    name: 'Google Gemini (Live & Flash)',
     shortName: 'Gemini',
-    tag: '⭐ Recommended (Default)',
+    tag: 'Default (Live Audio STT & Flash Minutes)',
     badgeColor: '#0284c7',
     defaultSTT: 'gemini-3.5-transcribe',
-    defaultLLM: 'gemini-3.7-flash',
+    defaultLLM: 'gemini-3.8-flash',
     defaultBaseUrl: '',
     placeholder: 'Paste Google Gemini key (e.g. AIzaSy...)',
     keyPrefix: 'AIzaSy',
     docsUrl: 'https://aistudio.google.com/app/apikey'
   },
   {
-    id: 'whisperx',
-    name: 'WhisperX (Hugging Face Diarization)',
-    shortName: 'WhisperX',
-    tag: '👥 Neural Speaker Diarization + STT',
-    badgeColor: '#eab308',
-    defaultSTT: 'pyannote/speaker-diarization-community-1',
-    defaultLLM: 'gemini-3.7-flash',
-    defaultBaseUrl: '',
-    placeholder: 'Paste Hugging Face Token (e.g. hf_...)',
-    keyPrefix: 'hf_',
-    docsUrl: 'https://huggingface.co/settings/tokens'
-  },
-  {
-    id: 'custom',
-    name: 'Custom API (Local / Remote)',
-    shortName: 'Custom API',
-    tag: 'Self-Hosted / OpenAI-Compatible',
+    id: 'local_whisper',
+    name: 'Local Whisper (Offline & Hardware-Adaptive)',
+    shortName: 'Local Whisper',
+    tag: 'Offline Fallback (Auto Hardware Sizing)',
     badgeColor: '#10b981',
-    defaultSTT: 'whisper-large-v3-turbo',
-    defaultLLM: 'llama3.3',
-    defaultBaseUrl: 'http://localhost:11434/v1',
-    placeholder: 'Optional Bearer Token or API key',
-    keyPrefix: '',
-    docsUrl: 'https://ollama.com/'
-  },
-  {
-    id: 'groq',
-    name: 'Groq Cloud',
-    shortName: 'Groq',
-    tag: 'Ultra-Fast Whisper',
-    badgeColor: '#8b5cf6',
-    defaultSTT: 'whisper-large-v3-turbo',
-    defaultLLM: 'llama-3.3-70b-versatile',
-    defaultBaseUrl: 'https://api.groq.com/openai/v1',
-    placeholder: 'Paste Groq API key (e.g. gsk_...)',
-    keyPrefix: 'gsk_',
-    docsUrl: 'https://console.groq.com/keys'
-  },
-  {
-    id: 'openai',
-    name: 'OpenAI',
-    shortName: 'GPT-4o',
-    tag: 'Flagship & Whisper',
-    badgeColor: '#059669',
-    defaultSTT: 'whisper-1',
-    defaultLLM: 'gpt-4o-mini',
-    defaultBaseUrl: 'https://api.openai.com/v1',
-    placeholder: 'Paste OpenAI key (e.g. sk-proj-... or sk-...)',
-    keyPrefix: 'sk-',
-    docsUrl: 'https://platform.openai.com/api-keys'
-  },
-  {
-    id: 'anthropic',
-    name: 'Anthropic Claude',
-    shortName: 'Claude',
-    tag: 'Executive Reasoning',
-    badgeColor: '#d97706',
-    defaultSTT: 'gemini-3.6-flash',
-    defaultLLM: 'claude-3-5-sonnet-20241022',
+    defaultSTT: 'auto',
+    defaultLLM: 'local_synthesis',
     defaultBaseUrl: '',
-    placeholder: 'Paste Anthropic key (e.g. sk-ant-api03-...)',
-    keyPrefix: 'sk-ant-',
-    docsUrl: 'https://console.anthropic.com/'
+    placeholder: 'No API Key required (Offline Engine)',
+    keyPrefix: '',
+    docsUrl: ''
   }
 ];
 
-const detectProviderFromKey = (keyVal) => {
-  const trimmed = (keyVal || '').trim();
-  if (!trimmed) return null;
-  if (trimmed.startsWith('AIzaSy') || trimmed.startsWith('AQ.')) return 'gemini';
-  if (trimmed.startsWith('hf_')) return 'whisperx';
-  if (trimmed.startsWith('sk-ant-')) return 'anthropic';
-  if (trimmed.startsWith('sk-proj-') || (trimmed.startsWith('sk-') && !trimmed.startsWith('sk-ant-'))) return 'openai';
-  if (trimmed.startsWith('gsk_')) return 'groq';
-  return null;
-};
 
 export const getSavedKeyForProvider = (providerId) => {
   try {
@@ -175,110 +100,6 @@ export const saveKeyForProvider = (providerId, keyVal, baseUrl = '') => {
   }
 };
 
-// --- CUSTOM NAMED APIS MANAGEMENT ---
-
-export const getSavedCustomApis = () => {
-  try {
-    const saved = localStorage.getItem('easd_custom_apis_list');
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return parsed;
-    }
-  } catch (e) {
-    console.warn('Failed to load custom APIs list:', e);
-  }
-  return [];
-};
-
-export const saveCustomApi = ({ id, name, baseUrl, apiKey = '', modelName = '', transcriptionModel = '' }) => {
-  try {
-    const list = getSavedCustomApis();
-    const cleanName = (name || '').trim() || 'Custom API';
-    const cleanUrl = (baseUrl || '').trim() || 'http://localhost:11434/v1';
-    const cleanKey = (apiKey || '').trim();
-    const cleanModel = (modelName || '').trim() || 'llama3.3';
-    const cleanSTT = (transcriptionModel || '').trim();
-
-    const targetId = id || `custom_${Date.now()}`;
-    const entry = {
-      id: targetId,
-      name: cleanName,
-      provider: 'custom',
-      baseUrl: cleanUrl,
-      apiKey: cleanKey,
-      modelName: cleanModel,
-      transcriptionModel: cleanSTT,
-      updatedAt: new Date().toISOString()
-    };
-
-    const idx = list.findIndex((item) => item.id === targetId);
-    if (idx >= 0) {
-      list[idx] = entry;
-    } else {
-      list.push(entry);
-    }
-
-    localStorage.setItem('easd_custom_apis_list', JSON.stringify(list));
-    return entry;
-  } catch (e) {
-    console.error('Failed to save custom API:', e);
-    return null;
-  }
-};
-
-export const deleteCustomApi = (id) => {
-  try {
-    const list = getSavedCustomApis();
-    const filtered = list.filter((item) => item.id !== id);
-    localStorage.setItem('easd_custom_apis_list', JSON.stringify(filtered));
-    return true;
-  } catch (e) {
-    console.error('Failed to delete custom API:', e);
-    return false;
-  }
-};
-
-export const activateCustomApi = (customApiOrId, setAiConfig) => {
-  let customApi = customApiOrId;
-  if (typeof customApiOrId === 'string') {
-    const list = getSavedCustomApis();
-    customApi = list.find((item) => item.id === customApiOrId);
-  }
-
-  if (!customApi) return null;
-
-  try {
-    localStorage.setItem('aiProvider', 'custom');
-    localStorage.setItem('apiKey', customApi.apiKey || '');
-    localStorage.setItem('baseUrl', customApi.baseUrl || 'http://localhost:11434/v1');
-    localStorage.setItem('modelName', customApi.modelName || 'llama3.3');
-    localStorage.setItem('summarizationModel', customApi.modelName || 'llama3.3');
-    localStorage.setItem('transcriptionModel', customApi.transcriptionModel || 'whisper-large-v3-turbo');
-    localStorage.setItem('activeCustomApiId', customApi.id);
-    localStorage.setItem('activeCustomApiName', customApi.name);
-  } catch (e) {}
-
-  const newConfig = {
-    provider: 'custom',
-    name: customApi.name,
-    customName: customApi.name,
-    customApiId: customApi.id,
-    apiKey: customApi.apiKey || '',
-    baseUrl: customApi.baseUrl || 'http://localhost:11434/v1',
-    modelName: customApi.modelName || 'llama3.3',
-    summarizationModel: customApi.modelName || 'llama3.3',
-    transcriptionModel: customApi.transcriptionModel || 'whisper-large-v3-turbo'
-  };
-
-  if (typeof setAiConfig === 'function') {
-    setAiConfig((prev) => ({
-      ...prev,
-      ...newConfig
-    }));
-  }
-
-  return newConfig;
-};
 
 export const getActiveApiDisplayName = (aiConfig) => {
   if (!aiConfig) {
@@ -347,19 +168,13 @@ export const activateProvider = (providerId, setAiConfig) => {
 // --- QUICK SELECTION BUTTON CONFIGURATIONS ---
 
 export const QUICK_STT_MODELS = [
-  { id: 'gemini-3.5-transcribe', label: 'Gemini 3.5 Transcribe STT (⭐ Recommended)', shortLabel: 'Gemini 3.5 Transcribe', provider: 'gemini', icon: '🎙️' },
-  { id: 'whisper-small-int8', label: '⚡ Local Whisper Small (Offline & Free)', shortLabel: 'Local Whisper', provider: 'local_whisper', icon: '🎙️' },
-  { id: 'gemini-3.6-flash', label: 'Gemini 3.6 Flash STT', shortLabel: 'Gemini 3.6 STT', provider: 'gemini', icon: '🎙️' },
-  { id: 'pyannote/speaker-diarization-community-1', label: 'WhisperX Diarization (Hugging Face)', shortLabel: 'WhisperX Diarize', provider: 'whisperx', icon: '👥' },
-  { id: 'whisper-large-v3-turbo', label: 'Groq Whisper Turbo', shortLabel: 'Groq Whisper Turbo', provider: 'groq', icon: '🎙️' },
-  { id: 'whisper-1', label: 'OpenAI Whisper', shortLabel: 'OpenAI Whisper', provider: 'openai', icon: '🎙️' }
+  { id: 'gemini-3.5-transcribe', label: 'Gemini 3.5 Transcribe Live (Default Cloud)', shortLabel: 'Gemini 3.5 Transcribe', provider: 'gemini' },
+  { id: 'auto', label: 'Local Whisper (Hardware Adaptive Fallback)', shortLabel: 'Local Whisper', provider: 'local_whisper' }
 ];
 
 export const QUICK_LLM_MODELS = [
-  { id: 'gemini-3.7-flash', label: 'Gemini 3.7 Flash (⭐ Recommended)', shortLabel: 'Gemini 3.7 Flash', provider: 'gemini', icon: '⚡' },
-  { id: 'gemini-3.5-flash-lite', label: 'Gemini 3.5 Flash Lite (Fast)', shortLabel: 'Gemini 3.5 Lite', provider: 'gemini', icon: '⚡' },
-  { id: 'llama-3.3-70b-versatile', label: 'Groq Llama 3.3', shortLabel: 'Groq Llama 3.3', provider: 'groq', icon: '⚡' },
-  { id: 'gpt-4o', label: 'GPT-4o', shortLabel: 'GPT-4o', provider: 'openai', icon: '⚡' }
+  { id: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash (Fast Executive Synthesis - Low)', shortLabel: 'Gemini Flash 3.8 Low', provider: 'gemini' },
+  { id: 'local_synthesis', label: 'Local Deep Semantic Synthesis (Offline)', shortLabel: 'Local Synthesis', provider: 'local_whisper' }
 ];
 
 // --- SERVER PERSISTENCE & TWO-WAY API TESTING ---

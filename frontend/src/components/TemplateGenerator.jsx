@@ -62,7 +62,7 @@ export default function TemplateGenerator({
     }
 
     setIsUploading(true);
-    setGeneralizingStatus(`⚡ Analyzing '${file.name}', extracting document schema, Context, Rules, and Requirements...`);
+    setGeneralizingStatus(`Analyzing '${file.name}', extracting document schema, Context, Rules, and Requirements...`);
 
     const formData = new FormData();
     formData.append('file', file);
@@ -255,7 +255,7 @@ export default function TemplateGenerator({
             style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 700, padding: '8px 16px' }}
           >
             <Upload size={16} />
-            {isUploading ? 'Generalizing Template...' : '⚡ Upload .DOCX Template'}
+            {isUploading ? 'Generalizing Template...' : 'Upload .DOCX Template'}
           </button>
         </div>
       </div>
@@ -608,7 +608,7 @@ export default function TemplateGenerator({
             {/* Reusable 3-Component AI Directives Block */}
             <div>
               <label style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-primary)', display: 'block', marginBottom: '8px' }}>
-                ⚡ 3 Core AI Directives (Context, Rules, Requirements)
+                3 Core AI Directives (Context, Rules, Requirements)
               </label>
               <AiDirectivesEditor
                 context={editingTemplate.context || ''}
