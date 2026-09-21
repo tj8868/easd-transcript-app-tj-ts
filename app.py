@@ -695,7 +695,7 @@ async def websocket_live_transcribe(websocket: WebSocket):
         "api_key": "",
         "provider": "gemini",
         "language": "auto",
-        "model_name": "gemini-3.5-flash-lite"
+        "model_name": "gemini-3.5-transcribe-live"
     }
     
     try:
@@ -708,7 +708,7 @@ async def websocket_live_transcribe(websocket: WebSocket):
                 session_config["api_key"] = data.get("api_key", "").strip()
                 session_config["provider"] = data.get("provider", "gemini").strip()
                 session_config["language"] = data.get("language", "auto").strip()
-                session_config["model_name"] = data.get("model_name", "gemini-3.5-flash-lite").strip()
+                session_config["model_name"] = data.get("model_name", "gemini-3.5-transcribe-live").strip()
                 
                 if not session_config["api_key"]:
                     disk_cfg = get_default_api_key_from_disk()
@@ -764,7 +764,7 @@ async def live_transcribe_chunk_endpoint(
     file: Optional[UploadFile] = File(None),
     provider: str = Form("gemini"),
     api_key: str = Form(""),
-    model_name: str = Form("gemini-3.5-transcribe"),
+    model_name: str = Form("gemini-3.5-transcribe-live"),
     language: str = Form("auto")
 ):
     """
@@ -795,7 +795,7 @@ async def live_transcribe_chunk_endpoint(
             media_bytes=content,
             api_key=clean_key,
             provider=chosen_prov,
-            model_name=model_name or "gemini-3.5-transcribe",
+            model_name=model_name or "gemini-3.5-transcribe-live",
             mime_type=mime,
             language=language or "auto"
         )
@@ -968,6 +968,9 @@ async def transcribe_take_endpoint(
         return JSONResponse(content={
             "status": "success",
             "transcript": transcript,
+            "raw_transcript": transcript,
+            "clean_text": transcript,
+            "text": transcript,
             "language": lang
         })
     except Exception as e:

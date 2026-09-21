@@ -19,10 +19,10 @@ def get_optimal_cpu_threads() -> int:
     try:
         import psutil
         avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-        if avail_gb < 2.0:
+        if avail_gb < 0.5:
             return 1
         cores = os.cpu_count() or 4
-        return max(1, min(cores - 1, 4))
+        return max(1, min(cores - 1, 3))
     except Exception:
         return 1
 
@@ -63,9 +63,8 @@ _MODEL_LOAD_ERROR = None
 _MODEL_LOAD_TIME = 0.0
 
 DEFAULT_BILINGUAL_PROMPT = (
-    "বাংলা এবং English আলোচনা ও কার্যবিবরণী। "
-    "Verbatim meeting transcript: agenda, budget, review, decisions, action items, participants. "
-    "হুবহু বাংলা ও ইংরেজি প্রতিলিপি।"
+    "Ajker meeting er alochna ebong karjobiboroni. "
+    "Verbatim meeting transcript: agenda, budget, review, decisions, action items, participants."
 )
 
 
@@ -105,23 +104,25 @@ def detect_audio_language(
         top_lang = max(probs, key=probs.get)
         top_prob = probs.get(top_lang, 0.0)
 
-        # 1. Prominent Bengali / Assamese
-        if prob_bn >= 0.18 and (top_lang in ["bn", "as"] or (top_prob - prob_bn) < 0.15):
+        # 1. Prominent Bengali / Assamese or Indic acoustic match
+        # Whisper frequently confuses Bengali with Hindi (hi), Nepali (ne), or Urdu (ur).
+        # If Bengali probability is >= 0.10, or top_lang is an Indic language while bn has non-trivial prob, resolve to bn!
+        if prob_bn >= 0.10 or top_lang in ["bn", "as"] or (top_lang in ["hi", "ne", "ur"] and prob_bn >= 0.05):
             return "bn", min(1.0, max(0.5, prob_bn))
 
-        # 2. Prominent English (especially when top_prob is low or top_lang is an Indic accent mismatch like 'hi'/'ne'/'ja')
-        if prob_en >= 0.12 and (top_lang == "en" or top_prob < 0.35 or (top_prob - prob_en) < 0.12):
+        # 2. Prominent English
+        if prob_en >= 0.25 or top_lang == "en":
             return "en", min(1.0, max(0.5, prob_en))
 
         # 3. High confidence for any other language (Spanish, Arabic, French, Hindi, Chinese, etc.)
         if top_prob >= 0.35:
             return top_lang, top_prob
 
-        # 4. Fallback for diffuse probabilities: use top_lang if plausible, otherwise English
-        return (top_lang if top_prob >= 0.28 else "en"), top_prob
+        # 4. Fallback for diffuse probabilities
+        return (top_lang if top_prob >= 0.20 else "bn"), top_prob
     except Exception as e:
         logger.warning(f"Audio language detection notice: {e}")
-        return "en", 0.5
+        return "bn", 0.5
 
 # Alias for backwards compatibility
 detect_bilingual_audio_language = detect_audio_language
@@ -589,18 +590,21 @@ def transcribe_local_audio(
 
     # Check if a specific language was explicitly requested
     explicit_lang = normalize_language_code(language)
-    # CRITICAL: If language is "auto", "detect", "", or None, do NOT force any specific language!
-    # Passing language=None lets faster-whisper decode naturally without forced bias.
-    target_language = explicit_lang
+    
+    # Intelligently resolve spoken language from audio when auto or None is selected:
+    if explicit_lang is None:
+        target_language, detected_conf = detect_audio_language(model, temp_audio_file)
+        logger.info(f"Auto-resolved audio language: '{target_language}' (confidence: {detected_conf:.2f})")
+    else:
+        target_language = explicit_lang
 
     if prompt:
         init_prompt = prompt
-    elif explicit_lang == "en":
+    elif target_language == "bn":
+        init_prompt = "Ajker meeting er alochna ebong karjobiboroni. Agenda, budget, review, decisions."
+    elif target_language == "en":
         init_prompt = "Meeting discussion and proceedings in English verbatim. Agenda, budget, review, action items."
-    elif explicit_lang == "bn":
-        init_prompt = "বাংলা এবং English আলোচনা ও কার্যবিবরণী। এজেন্ডা, বাজেট, সিদ্ধান্ত, কর্মপরিকল্পনা।"
     else:
-        # Neutral unforced prompt: do not bias towards any single language
         init_prompt = "Verbatim speech transcription with timestamps and speaker tags."
 
     import wave, math, gc
@@ -634,7 +638,7 @@ def transcribe_local_audio(
         current_spk = 1
         last_end = 0.0
         last_clean_text = ""
-        detected_whisper_lang = None
+        detected_whisper_lang = target_language
         detected_whisper_prob = 1.0
 
         for slice_idx, (chunk_start_sec, chunk_dur_sec) in enumerate(chunk_slices):
@@ -659,11 +663,9 @@ def transcribe_local_audio(
                         initial_prompt=init_prompt,
                         language=target_language,
                         condition_on_previous_text=False,
-                        vad_filter=True,
-                        vad_parameters=dict(min_silence_duration_ms=500),
+                        vad_filter=False,
                         no_speech_threshold=0.6,
-                        log_prob_threshold=None,
-                        compression_ratio_threshold=None
+                        compression_ratio_threshold=2.4
                     )
 
                 if detected_whisper_lang is None and hasattr(info, "language"):
@@ -749,14 +751,14 @@ def transcribe_local_audio(
         except Exception as io_err:
             logger.warning(f"Could not save raw_transcript.txt: {io_err}")
 
-        detected_lang = explicit_lang or detected_whisper_lang or "auto"
+        detected_lang = target_language or explicit_lang or detected_whisper_lang or "auto"
         if clean_text:
             import re
             bengali_chars = len(re.findall(r'[\u0980-\u09FF]', clean_text))
             latin_chars = len(re.findall(r'[a-zA-Z]', clean_text))
-            if bengali_chars > 0 and bengali_chars >= latin_chars * 0.2:
+            if bengali_chars > 0 and bengali_chars >= latin_chars * 0.15:
                 detected_lang = "bn"
-            elif latin_chars > 0:
+            elif detected_lang != "bn" and latin_chars > 0 and bengali_chars == 0:
                 detected_lang = "en"
         duration_sec = total_duration_sec or 0.0
 

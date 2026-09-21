@@ -3,7 +3,7 @@ ocr_engine.py - Universal OCR, Document Extraction & Optimization Engine
 Supports:
   - Images: PNG, JPEG, WEBP, BMP, TIFF, HEIC
   - Documents: PDF (Digital text extraction + Scanned page OCR)
-  - Multimodal AI Vision: Google Gemini (gemini-2.5-flash, gemini-3.5-flash-lite, gemini-3.7-flash)
+  - Multimodal AI Vision: Google Gemini (gemini-3.8-flash)
   - OpenAI Vision: gpt-4o, gpt-4o-mini
   - Local Fallback: pytesseract with auto-discovery & Pillow image pre-processing
   - OCR Post-Processing: Error repair, Bengali ligature fixes, bullet standardization
@@ -297,10 +297,10 @@ def perform_ai_vision_ocr(
         from google.genai import types
 
         client = genai.Client(api_key=api_key)
-        models_to_try = [model_name or "gemini-3.5-flash-lite", "gemini-3.5-flash-lite", "gemini-3.7-flash"]
-        models_to_try = list(dict.fromkeys([m for m in models_to_try if m and not any(old in m for old in ["1.5", "2.0", "2.5"])]))
+        models_to_try = [model_name or "gemini-3.8-flash", "gemini-3.8-flash"]
+        models_to_try = list(dict.fromkeys([m for m in models_to_try if m and not any(old in m for old in ["1.5", "2.0", "2.5", "3.6", "3.7"])]))
         if not models_to_try:
-            models_to_try = ["gemini-3.5-flash-lite", "gemini-3.7-flash"]
+            models_to_try = ["gemini-3.8-flash"]
 
         # Optimize image if not PDF
         target_bytes = media_bytes

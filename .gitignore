@@ -18,6 +18,7 @@ build/
 # Temporary files & Local outputs
 temp_outputs/
 test_output.docx
+raw_transcript.txt
 *.log
 Test Input .txt
 

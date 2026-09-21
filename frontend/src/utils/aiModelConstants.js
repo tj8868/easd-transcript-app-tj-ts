@@ -2,13 +2,10 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   gemini: {
     stt: [
       { value: 'gemini-3.5-transcribe', label: 'gemini-3.5-transcribe (Default - Verbatim Audio STT)' },
-      { value: 'gemini-3.5-transcribe-live', label: 'gemini-3.5-transcribe-live (Live Streaming Audio STT)' },
-      { value: 'gemini-3.6-flash', label: 'gemini-3.6-flash (Fast Audio Transcription)' }
+      { value: 'gemini-3.5-transcribe-live', label: 'gemini-3.5-transcribe-live (Live Streaming Audio STT)' }
     ],
     llm: [
-      { value: 'gemini-3.8-flash', label: 'gemini-3.8-flash (Gemini Flash 3.8 Low - Fast Executive Synthesis)' },
-      { value: 'gemini-3.6-flash', label: 'gemini-3.6-flash (Fast Meeting Minutes Synthesis)' },
-      { value: 'gemini-3.5-flash-lite', label: 'gemini-3.5-flash-lite (Ultra-Low Latency)' }
+      { value: 'gemini-3.8-flash', label: 'gemini-3.8-flash (Executive Meeting Minutes Synthesis)' }
     ]
   },
   local_whisper: {

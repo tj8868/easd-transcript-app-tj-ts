@@ -54,20 +54,20 @@ You must produce a valid JSON object with the following schema:
       {
         "sn": "2",
         "topic": "Action items",
-        "details": "• All action directives issued during this session with responsible owners.\n• Deadlines, quality benchmarks, and compliance requirements per action."
+        "details": "All action directives issued during this session with responsible owners.\n• Deadlines, quality benchmarks, and compliance requirements per action."
       },
       {
         "sn": "3",
         "topic": "Task Assignments",
-        "details": "• Specific tasks allocated to named team leads with agreed delivery timelines.\n• Workstream ownership confirmed by the meeting chair."
+        "details": "Specific tasks allocated to named team leads with agreed delivery timelines.\n• Workstream ownership confirmed by the meeting chair."
       },
       {
         "sn": "4",
         "topic": "Meeting Decisions",
-        "details": "• All formally approved strategic and institutional decisions taken in this session.\n• Locked deadlines, approved frameworks, and next scheduled review date."
+        "details": "All formally approved strategic and institutional decisions taken in this session.\n• Locked deadlines, approved frameworks, and next scheduled review date."
       }
     ],
-    "decisions": "• Formally approved strategic decisions.\n• Locked submission deadlines and milestone commitments.\n• Directives for institutional compliance and next review schedule.",
+    "decisions": "Formally approved strategic decisions.\n• Locked submission deadlines and milestone commitments.\n• Directives for institutional compliance and next review schedule.",
     "present_members": [
       "Names of all team members who participated, presented, or were assigned tasks"
     ]
@@ -680,33 +680,7 @@ def transcribe_audio_gemini(
             if raw_t:
                 return {"text": raw_t, "raw_transcript": raw_t, "language": detect_text_language(raw_t), "provider": "gemini"}
         except Exception as e:
-            print(f"[Gemini 3.5 Transcribe Error] {e}. Engaging Gemini Flash multilingual verbatim STT...")
-            if not is_fatal_auth_error(e):
-                try:
-                    client = genai.Client(api_key=clean_key)
-                    prompt_text = (
-                        "Transcribe the provided audio 100% verbatim with timestamps and speaker tags.\n"
-                        "CRITICAL REQUIREMENTS:\n"
-                        "1. Auto-detect speakers: tag each dialogue strictly as '[MM:SS] Speaker X: <text>'.\n"
-                        "2. Dynamic language shift: Auto-detect spoken language sentence-by-sentence and word-by-word across ANY spoken language (Bengali, English, Hindi, Urdu, Arabic, Spanish, French, Chinese, Japanese, etc.).\n"
-                        "3. Verbatim authenticity: If a speaker speaks Bengali, transcribe in authentic Bengali script (বাংলা). "
-                        "If the speaker speaks English or another language, transcribe verbatim in that language's native script. "
-                        "If code-switching occurs mid-sentence, transcribe each word in its authentic language script without translation.\n"
-                        "4. NEVER translate into English or Bengali. NEVER summarize. Transcribe 100% verbatim."
-                    )
-                    resp = client.models.generate_content(
-                        model="gemini-3.6-flash",
-                        contents=[
-                            types.Part.from_text(prompt_text),
-                            types.Part.from_bytes(data=media_bytes, mime_type=audio_mime)
-                        ],
-                        config=types.GenerateContentConfig(temperature=0.0)
-                    )
-                    t = getattr(resp, "text", "") or ""
-                    if t.strip():
-                        return {"text": t.strip(), "raw_transcript": t.strip(), "language": detect_text_language(t), "provider": "gemini"}
-                except Exception as e_flash:
-                    print(f"[Gemini Flash Verbatim STT Fallback Error] {e_flash}")
+            print(f"[Gemini 3.5 Transcribe Notice] {e}. Engaging Local Whisper fallback...")
 
     # Seamless Fallback to Local Whisper
     try:
@@ -987,7 +961,7 @@ def process_ai_request(
         raw_transcript = "Weekly Strategic, Programmatic and Presentation Review Meeting discussion and proceedings."
 
     # 5. Summarization & Meeting Minutes Stage (LLM)
-    if llm_prov == "local":
+    if llm_prov in ["local", "local_whisper", "offline"]:
         return deep_semantic_synthesis(raw_transcript, custom_skills, org_context)
 
     return summarize_text_gemini(

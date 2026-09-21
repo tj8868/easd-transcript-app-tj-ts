@@ -10,7 +10,10 @@ console.log('🧪 TESTING AUDIO FILE UPLOAD -> TRANSCRIPTION -> TRANSCRIPT STATE
 console.log('======================================================================');
 
 async function run() {
-  const audioFilePath = path.resolve('../test_slice2.mp3');
+  let audioFilePath = path.resolve('test_slice2.mp3');
+  if (!fs.existsSync(audioFilePath)) {
+    audioFilePath = path.resolve('../test_slice2.mp3');
+  }
   assert(fs.existsSync(audioFilePath), `Test audio file must exist at ${audioFilePath}`);
   const audioBuffer = fs.readFileSync(audioFilePath);
   console.log(`[1] Loaded test audio file (${audioBuffer.length} bytes / ${(audioBuffer.length / 1024).toFixed(1)} KB)`);

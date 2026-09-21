@@ -195,7 +195,6 @@ export default function LiveRecordStudio({
   const liveTranscriptForTakeRef = useRef('');
   const [liveDetectedLang, setLiveDetectedLang] = useState('bn');
   const detectedLiveLangRef = useRef('bn');
-  const shouldSwitchLangOnPauseRef = useRef(null);
 
   useEffect(() => {
     detectedLiveLangRef.current = liveDetectedLang;
@@ -547,9 +546,6 @@ export default function LiveRecordStudio({
         if (detected !== detectedLiveLangRef.current) {
           detectedLiveLangRef.current = detected;
           setLiveDetectedLang(detected);
-          if (languageRef.current === 'auto') {
-            shouldSwitchLangOnPauseRef.current = detected === 'en' ? 'en-US' : 'bn-BD';
-          }
         }
       }
 
@@ -606,14 +602,8 @@ export default function LiveRecordStudio({
     recognition.onend = () => {
       isStartingRecognitionRef.current = false;
       if (isRecordingRef.current && !isPausedRef.current) {
-        if (shouldSwitchLangOnPauseRef.current && languageRef.current === 'auto') {
-          const nextLocale = shouldSwitchLangOnPauseRef.current;
-          shouldSwitchLangOnPauseRef.current = null;
-          restartSpeechRecognition(100, nextLocale === 'en-US' ? 'en' : 'bn');
-        } else {
-          // Seamlessly auto-restart using fresh SpeechRecognition instance after micro-pause
-          restartSpeechRecognition(150);
-        }
+        // Seamlessly auto-restart using fresh SpeechRecognition instance after micro-pause
+        restartSpeechRecognition(150);
       }
     };
 

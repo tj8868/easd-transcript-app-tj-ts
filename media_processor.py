@@ -40,7 +40,7 @@ IMAGE_EXTENSIONS = {
 
 PDF_EXTENSIONS = {".pdf"}
 
-# Maximum chunk size for API uploads (20 MB safe limit to stay well below 25MB Groq / OpenAI limits)
+# Maximum chunk size for API uploads (20 MB safe limit)
 MAX_CHUNK_BYTES = 20 * 1024 * 1024
 
 def find_ffmpeg_binary() -> Optional[str]:
@@ -203,7 +203,7 @@ def normalize_audio_chunk_for_stt(chunk_bytes: bytes, mime_type: str = "audio/we
     """
     Normalizes a standalone audio recording chunk or streaming slice
     into a valid 16kHz mono MP3 file with complete headers.
-    Ensures Groq Whisper and Gemini STT never receive corrupt/headerless containers.
+    Ensures Local Whisper and Gemini STT never receive corrupt/headerless containers.
     """
     if not chunk_bytes or len(chunk_bytes) < 64:
         return None, mime_type

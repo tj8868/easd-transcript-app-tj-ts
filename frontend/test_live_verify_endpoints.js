@@ -63,16 +63,16 @@ async function runLiveVerification() {
     console.log('   ✅ PASSED: Gemini verification handled correctly with server fallback.');
   }
 
-  // 3. Test Groq API Verification with empty key (using server key)
-  console.log('\n[3] Testing Live Groq API Verification...');
-  const groqRes = await postJson('http://localhost:8000/api/verify_key', {
-    provider: 'groq',
+  // 3. Test Local Whisper Engine Verification
+  console.log('\n[3] Testing Local Whisper Engine Verification...');
+  const whisperRes = await postJson('http://localhost:8000/api/verify_key', {
+    provider: 'local_whisper',
     api_key: ''
   });
-  console.log('   Response Status:', groqRes.status);
-  console.log('   Response Data:', groqRes.data);
-  if (groqRes.status === 200) {
-    console.log('   ✅ PASSED: Groq verification handled correctly.');
+  console.log('   Response Status:', whisperRes.status);
+  console.log('   Response Data:', whisperRes.data);
+  if (whisperRes.status === 200) {
+    console.log('   ✅ PASSED: Local Whisper verification handled correctly.');
   }
 
   // 4. Test Simulated Button Clicks and State Transitions

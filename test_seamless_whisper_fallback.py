@@ -52,7 +52,7 @@ def test_seamless_whisper_fallback():
         data={
             "provider": "gemini",
             "api_key": "AQ.SIMULATED_403_PERMISSION_DENIED_KEY",
-            "model_name": "gemini-3.7-flash",
+            "model_name": "gemini-3.8-flash",
             "transcription_provider": "gemini",
             "transcription_api_key": "AQ.SIMULATED_403_PERMISSION_DENIED_KEY",
             "transcription_model": "gemini-3.5-transcribe",
