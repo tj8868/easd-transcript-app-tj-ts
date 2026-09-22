@@ -232,9 +232,9 @@ def is_low_ram_system() -> bool:
 
 def select_optimal_model_name() -> str:
     """
-    Dynamically select between whisper-base, whisper-small, and whisper-tiny
+    Dynamically select between whisper-small, whisper-base, and whisper-tiny
     based on host system specifications and available model weights.
-    Base model (75MB) is the stable default standard, avoiding tiny-model hallucinations.
+    When available, whisper-small provides superior bilingual Bangla/English accuracy.
     """
     specs = get_system_ram_specs()
     total_gb = specs.get("total_ram_gb", 8.0)
@@ -252,7 +252,11 @@ def select_optimal_model_name() -> str:
         if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
             return "base"
 
-    # Base model is the optimal balance: 75MB weights, uses ~150MB RAM, fast, and does not hallucinate like tiny
+    # Standard systems (>= 6GB RAM) prefer whisper-small if present for accurate bilingual speech
+    if total_gb >= 6.0 and os.path.isdir(_SMALL_MODEL_DIR) and (os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.safetensors"))):
+        return "small"
+
+    # Base model is the fast lightweight fallback (145MB)
     if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
         return "base"
     if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
@@ -262,47 +266,76 @@ def select_optimal_model_name() -> str:
     return "base"
 
 
+def _model_has_weights(directory: str) -> bool:
+    """Returns True if the directory exists and contains valid model weights."""
+    if not os.path.isdir(directory):
+        return False
+    return (
+        os.path.isfile(os.path.join(directory, "model.bin")) or
+        os.path.isfile(os.path.join(directory, "model.safetensors"))
+    )
+
+
 def get_model_path(preferred_name: Optional[str] = None) -> str:
-    """Resolve the local model path on disk."""
+    """Resolve the local model path on disk, gracefully falling back to available weights."""
     if preferred_name:
         pref_clean = preferred_name.strip().lower()
         if "medium" in pref_clean:
-            if os.path.isdir(_MEDIUM_MODEL_DIR) and (os.path.isfile(os.path.join(_MEDIUM_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_MEDIUM_MODEL_DIR, "model.safetensors"))):
+            if _model_has_weights(_MEDIUM_MODEL_DIR):
                 return _MEDIUM_MODEL_DIR
-            return _SMALL_MODEL_DIR
-        elif "tiny" in pref_clean:
-            if os.path.isdir(_TINY_MODEL_DIR) and (os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.safetensors"))):
-                return _TINY_MODEL_DIR
-            if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
-                return _BASE_MODEL_DIR
-        elif "base" in pref_clean:
-            if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
-                return _BASE_MODEL_DIR
-        elif "small" in pref_clean:
-            if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
+            if _model_has_weights(_SMALL_MODEL_DIR):
                 return _SMALL_MODEL_DIR
+            if _model_has_weights(_BASE_MODEL_DIR):
+                return _BASE_MODEL_DIR
+            return _MEDIUM_MODEL_DIR
+        elif "tiny" in pref_clean:
+            if _model_has_weights(_TINY_MODEL_DIR):
+                return _TINY_MODEL_DIR
+            if _model_has_weights(_BASE_MODEL_DIR):
+                return _BASE_MODEL_DIR
+            if _model_has_weights(_SMALL_MODEL_DIR):
+                return _SMALL_MODEL_DIR
+            return _TINY_MODEL_DIR
+        elif "base" in pref_clean:
+            if _model_has_weights(_BASE_MODEL_DIR):
+                return _BASE_MODEL_DIR
+            if _model_has_weights(_SMALL_MODEL_DIR):
+                return _SMALL_MODEL_DIR
+            return _BASE_MODEL_DIR
+        elif "small" in pref_clean:
+            if _model_has_weights(_SMALL_MODEL_DIR):
+                return _SMALL_MODEL_DIR
+            if _model_has_weights(_BASE_MODEL_DIR):
+                return _BASE_MODEL_DIR
+            return _SMALL_MODEL_DIR
 
     # Automatic spec-based resolution
     optimal = select_optimal_model_name()
-    if optimal == "medium" and os.path.isdir(_MEDIUM_MODEL_DIR):
+    if optimal == "medium" and _model_has_weights(_MEDIUM_MODEL_DIR):
         return _MEDIUM_MODEL_DIR
-    if optimal == "tiny" and os.path.isdir(_TINY_MODEL_DIR):
-        return _TINY_MODEL_DIR
-    if optimal == "base" and os.path.isdir(_BASE_MODEL_DIR):
-        return _BASE_MODEL_DIR
-    if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
+    if optimal == "small" and _model_has_weights(_SMALL_MODEL_DIR):
         return _SMALL_MODEL_DIR
-    if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
+    if optimal == "base" and _model_has_weights(_BASE_MODEL_DIR):
         return _BASE_MODEL_DIR
-    if os.path.isdir(_TINY_MODEL_DIR):
+    if optimal == "tiny" and _model_has_weights(_TINY_MODEL_DIR):
         return _TINY_MODEL_DIR
+
+    # Fallback to any model that has weights
+    if _model_has_weights(_SMALL_MODEL_DIR):
+        return _SMALL_MODEL_DIR
+    if _model_has_weights(_BASE_MODEL_DIR):
+        return _BASE_MODEL_DIR
+    if _model_has_weights(_TINY_MODEL_DIR):
+        return _TINY_MODEL_DIR
+
     return _SMALL_MODEL_DIR
 
 
 def get_local_whisper_model(model_name_or_path: Optional[str] = None):
     """
     Get or initialize the singleton WhisperModel instance for the target model.
-    Runs with device='cpu', compute_type='int8', dynamic cpu_threads, local_files_only=True.
+    Runs with device='cpu', compute_type='int8', dynamic cpu_threads.
+    Auto-downloads weights if missing from disk.
     """
     global _LOCAL_MODEL, _LOCAL_MODELS, _MODEL_STATUS, _MODEL_LOAD_ERROR, _MODEL_LOAD_TIME
 
@@ -317,19 +350,28 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             _LOCAL_MODEL = _LOCAL_MODELS[resolved_path]
             return _LOCAL_MODEL
 
-        if not os.path.exists(resolved_path):
-            _MODEL_STATUS = "error"
-            _MODEL_LOAD_ERROR = f"Model directory not found at {resolved_path}"
-            logger.error(_MODEL_LOAD_ERROR)
-            raise FileNotFoundError(_MODEL_LOAD_ERROR)
+        # If resolved path does not have weights, fallback to another local model or auto-download
+        if not _model_has_weights(resolved_path):
+            fallback_found = False
+            for cand in [_SMALL_MODEL_DIR, _BASE_MODEL_DIR, _TINY_MODEL_DIR, _MEDIUM_MODEL_DIR]:
+                if _model_has_weights(cand):
+                    logger.info(f"Target '{resolved_path}' missing weights, using local '{os.path.basename(cand)}'")
+                    resolved_path = cand
+                    fallback_found = True
+                    break
 
-        model_bin = os.path.join(resolved_path, "model.bin")
-        model_safe = os.path.join(resolved_path, "model.safetensors")
-        if not os.path.exists(model_bin) and not os.path.exists(model_safe):
-            _MODEL_STATUS = "error"
-            _MODEL_LOAD_ERROR = f"model weights missing in {resolved_path}"
-            logger.error(_MODEL_LOAD_ERROR)
-            raise FileNotFoundError(_MODEL_LOAD_ERROR)
+            if not fallback_found:
+                target_size = "small" if "small" in resolved_path else ("base" if "base" in resolved_path else "tiny")
+                logger.info(f"Downloading local Whisper model '{target_size}' to '{resolved_path}'...")
+                try:
+                    from faster_whisper import download_model
+                    os.makedirs(resolved_path, exist_ok=True)
+                    download_model(target_size, output_dir=resolved_path)
+                except Exception as dl_err:
+                    _MODEL_STATUS = "error"
+                    _MODEL_LOAD_ERROR = f"Model directory missing and download failed: {dl_err}"
+                    logger.error(_MODEL_LOAD_ERROR)
+                    raise FileNotFoundError(_MODEL_LOAD_ERROR)
 
         _MODEL_STATUS = "loading"
         t0 = time.time()
@@ -344,10 +386,9 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             last_err = None
 
             paths_to_try = [resolved_path]
-            if resolved_path != _BASE_MODEL_DIR and os.path.exists(_BASE_MODEL_DIR):
-                paths_to_try.append(_BASE_MODEL_DIR)
-            if resolved_path != _TINY_MODEL_DIR and os.path.exists(_TINY_MODEL_DIR):
-                paths_to_try.append(_TINY_MODEL_DIR)
+            for cand_dir in [_SMALL_MODEL_DIR, _BASE_MODEL_DIR, _TINY_MODEL_DIR]:
+                if cand_dir != resolved_path and _model_has_weights(cand_dir):
+                    paths_to_try.append(cand_dir)
 
             for target_path in paths_to_try:
                 for c_type in compute_types:
@@ -470,15 +511,21 @@ def convert_to_wav_pcm16k(media_input: Union[bytes, bytearray, io.BytesIO, str],
             temp_in = temp_in_file.name
             input_path = temp_in
 
+        try:
+            import media_processor
+            ffmpeg_bin = media_processor.find_ffmpeg_binary() or "ffmpeg"
+        except Exception:
+            ffmpeg_bin = "ffmpeg"
+
         cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
+            ffmpeg_bin, "-y", "-nostdin", "-loglevel", "error",
             "-i", input_path,
             "-ar", "16000",
             "-ac", "1",
             "-c:a", "pcm_s16le",
             temp_wav.name
         ]
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45)
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=600)
         if res.returncode == 0 and os.path.exists(temp_wav.name) and os.path.getsize(temp_wav.name) > 0:
             return temp_wav.name
     except Exception as e:

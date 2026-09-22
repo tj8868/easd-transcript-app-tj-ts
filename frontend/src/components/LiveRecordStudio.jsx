@@ -86,7 +86,7 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
   formData.append('provider', provider);
   formData.append('api_key', apiKey);
   formData.append('model_name', modelName);
-  const res = await axios.post('/api/transcribe_take', formData, { timeout: 900000 });
+  const res = await axios.post('/api/transcribe_take', formData, { timeout: 1800000 });
   const raw = res.data?.transcript?.trim() || '';
   if (!raw) return '';
 
@@ -941,7 +941,7 @@ export default function LiveRecordStudio({
       const isMedia =
         file.type.startsWith('audio/') ||
         file.type.startsWith('video/') ||
-        /\.(mp3|wav|m4a|aac|ogg|webm|mp4|mov|mkv|flac)$/i.test(file.name);
+        /\.(mp3|wav|m4a|aac|ogg|opus|webm|mp4|mov|mkv|flac|avi|wmv|m4v|3gp|amr|wma|hevc|h265|ts|mts|alac|caf)$/i.test(file.name);
 
       const url = URL.createObjectURL(file);
       const itemId = 'upload_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7) + '_' + fIdx;
@@ -1279,7 +1279,7 @@ export default function LiveRecordStudio({
             ref={fileInputRef}
             type="file"
             multiple
-            accept="audio/*,video/*,image/*,.pdf,.doc,.docx,.txt,.srt,.vtt,.hevc,.mov,.mp4,.m4a,.wav,.mp3"
+            accept="audio/*,video/*,image/*,.pdf,.doc,.docx,.txt,.srt,.vtt,.hevc,.h265,.mov,.mp4,.m4a,.wav,.mp3,.mkv,.avi,.webm,.flac,.aac,.ogg,.opus,.wmv,.m4v,.3gp,.amr"
             style={{ display: 'none' }}
             onChange={(e) => {
               handleAddUploadedFiles(e.target.files);

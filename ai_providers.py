@@ -934,23 +934,32 @@ def process_ai_request(
     chunks = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
 
     if chunks:
-        def _transcribe_single(chunk_bytes: bytes) -> str:
+        def _transcribe_single(indexed_chunk) -> str:
+            idx, chunk_bytes = indexed_chunk
             if not chunk_bytes or len(chunk_bytes) < 32:
                 return ""
             if stt_prov in ["local_whisper", "local", "whisper_local"]:
                 import local_whisper_engine
                 res = local_whisper_engine.transcribe_local_audio(chunk_bytes, language="auto", beam_size=1)
-                return res.get("raw_transcript") or res.get("clean_text", "")
+                t = res.get("raw_transcript") or res.get("clean_text", "")
             else:
                 res = transcribe_audio_gemini(chunk_bytes, api_key=stt_key, model_name=stt_model, mime_type=mime_type)
-                return res.get("text", "")
+                t = res.get("text", "")
+            if idx > 0 and t:
+                try:
+                    from media_processor import offset_transcript_timestamps
+                    t = offset_transcript_timestamps(t, idx * 600.0)
+                except Exception:
+                    pass
+            return t
 
         # Parallelize multi-chunk transcription for ultra-low latency
+        indexed_chunks = list(enumerate(chunks))
         if len(chunks) == 1:
-            transcripts = [_transcribe_single(chunks[0])]
+            transcripts = [_transcribe_single(indexed_chunks[0])]
         else:
             with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
-                transcripts = list(executor.map(_transcribe_single, chunks))
+                transcripts = list(executor.map(_transcribe_single, indexed_chunks))
 
         audio_parts = [t.strip() for t in transcripts if t and t.strip()]
         if audio_parts:

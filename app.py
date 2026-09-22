@@ -1,6 +1,50 @@
 import sys
 import os
+import subprocess
 import io
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 1. Automatic Virtual Environment Hand-off:
+# If app.py is clicked or executed directly using system Python rather than .venv,
+# automatically re-execute inside the project's dedicated virtual environment (.venv)
+venv_py = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
+venv_pyw = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
+
+current_exe = os.path.abspath(sys.executable).lower()
+is_in_venv = False
+for vp in [venv_py, venv_pyw]:
+    if os.path.isfile(vp) and current_exe == os.path.abspath(vp).lower():
+        is_in_venv = True
+        break
+
+if not is_in_venv:
+    has_console = sys.stdout is not None and hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+    if has_console and os.path.isfile(venv_py):
+        cmd = [venv_py, os.path.abspath(__file__)] + sys.argv[1:]
+        try:
+            sys.exit(subprocess.call(cmd, cwd=BASE_DIR))
+        except Exception:
+            pass
+    target_py = venv_pyw if os.path.isfile(venv_pyw) else (venv_py if os.path.isfile(venv_py) else None)
+    if target_py:
+        cmd = [target_py, os.path.abspath(__file__)] + sys.argv[1:]
+        subprocess.Popen(cmd, cwd=BASE_DIR)
+        sys.exit(0)
+
+# Ensure sys.stdout and sys.stderr are valid streams under pythonw (GUI mode)
+# When pythonw runs without a console, sys.stdout and sys.stderr are None, which causes uvicorn logging to crash on isatty()
+if sys.stdout is None:
+    try:
+        sys.stdout = open(os.path.join(BASE_DIR, "app_service.log"), "a", encoding="utf-8", buffering=1)
+    except Exception:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+
+if sys.stderr is None:
+    try:
+        sys.stderr = open(os.path.join(BASE_DIR, "app_service.log"), "a", encoding="utf-8", buffering=1)
+    except Exception:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 if hasattr(sys.stdout, "reconfigure"):
     try:
@@ -14,7 +58,10 @@ import uuid
 import re
 import time
 import asyncio
-from typing import Dict, Any, List, Optional
+import shutil
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Any, List, Optional, Tuple
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -459,39 +506,50 @@ async def transcribe_and_summarize(
                 if f and f.filename:
                     upload_list.append(f)
                     
+        temp_files_to_cleanup = []
         for uploaded in upload_list:
-            clean_filename = os.path.basename(uploaded.filename or "upload_audio.mp3")
-            content = await uploaded.read()
-            if len(content) > MAX_UPLOAD_SIZE:
-                raise HTTPException(status_code=413, detail=f"File {clean_filename} exceeds 1GB limit.")
+                clean_filename = os.path.basename(uploaded.filename or "upload_audio.mp3")
+                _, ext = os.path.splitext(clean_filename.lower())
+                safe_ext = ext if ext else ".mp4"
                 
-            proc_res = process_uploaded_media(
-                media_bytes=content,
-                filename=clean_filename,
-                content_type=uploaded.content_type or ""
-            )
-            
-            fmt = proc_res.get("format_detected", "")
-            if fmt and fmt not in detected_formats:
-                detected_formats.append(fmt)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=safe_ext) as tmp_f:
+                    shutil.copyfileobj(uploaded.file, tmp_f, length=1024 * 1024)
+                    tmp_path = tmp_f.name
+                temp_files_to_cleanup.append(tmp_path)
+
+                upload_size = os.path.getsize(tmp_path)
+                if upload_size > MAX_UPLOAD_SIZE:
+                    raise HTTPException(status_code=413, detail=f"File {clean_filename} exceeds 1GB limit ({upload_size / (1024*1024):.1f} MB).")
+                    
+                proc_res = await asyncio.to_thread(
+                    process_uploaded_media,
+                    media_bytes=None,
+                    filename=clean_filename,
+                    content_type=uploaded.content_type or "",
+                    file_path=tmp_path
+                )
                 
-            if proc_res.get("type") == "text":
-                extracted = proc_res.get("text", "")
-                text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
-            elif proc_res.get("type") in ["image_ocr", "pdf_ocr"]:
-                media_bytes = proc_res.get("media_bytes")
-                mime_type = proc_res.get("mime_type", "image/jpeg")
-                if proc_res.get("text"):
-                    extracted = proc_res.get("text")
+                fmt = proc_res.get("format_detected", "")
+                if fmt and fmt not in detected_formats:
+                    detected_formats.append(fmt)
+                    
+                if proc_res.get("type") == "text":
+                    extracted = proc_res.get("text", "")
                     text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
-            else:
-                chunks = proc_res.get("audio_chunks", [])
-                single_audio = proc_res.get("audio_bytes")
-                if chunks:
-                    all_audio_chunks.extend(chunks)
-                elif single_audio:
-                    all_audio_chunks.append(single_audio)
-                mime_type = proc_res.get("mime_type", "audio/mp3")
+                elif proc_res.get("type") in ["image_ocr", "pdf_ocr"]:
+                    media_bytes = proc_res.get("media_bytes")
+                    mime_type = proc_res.get("mime_type", "image/jpeg")
+                    if proc_res.get("text"):
+                        extracted = proc_res.get("text")
+                        text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
+                else:
+                    chunks = proc_res.get("audio_chunks", [])
+                    single_audio = proc_res.get("audio_bytes")
+                    if chunks:
+                        all_audio_chunks.extend(chunks)
+                    elif single_audio:
+                        all_audio_chunks.append(single_audio)
+                    mime_type = proc_res.get("mime_type", "audio/mp3")
 
         detected_format_str = ", ".join(detected_formats) if detected_formats else ""
         
@@ -541,6 +599,13 @@ async def transcribe_and_summarize(
             return JSONResponse(content={"status": "success", "data": fallback})
         except Exception:
             raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        for tf in temp_files_to_cleanup:
+            if tf and os.path.exists(tf):
+                try:
+                    os.remove(tf)
+                except Exception:
+                    pass
 
 @app.post("/api/summarize_transcript")
 async def summarize_transcript_endpoint(
@@ -847,27 +912,62 @@ async def transcribe_take_endpoint(
     language: str = Form("auto")
 ):
     """
-    Instant auto-transcription for a completed recorded take.
-    Ensures that when a user finishes recording, an authentic transcript in any spoken language is generated immediately.
+    Instant auto-transcription for a completed recorded take or uploaded media file (up to 1 GB).
+    Routes through universal media conversion (FFmpeg normalize to 16kHz mono MP3 + 10-min chunking)
+    so all formats (WebM, MOV, MP4, MKV, M4A, AMR, HEVC, etc.) and long recordings transcribe seamlessly.
     """
+    uploaded_tmp_path = None
     try:
-        content = await file.read()
-        if len(content) < 32:
+        clean_filename = os.path.basename(file.filename or "take_audio.webm")
+        _, ext = os.path.splitext(clean_filename.lower())
+        safe_ext = ext if ext else ".mp4"
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=safe_ext) as tmp_f:
+            shutil.copyfileobj(file.file, tmp_f, length=1024 * 1024)
+            uploaded_tmp_path = tmp_f.name
+
+        upload_size = os.path.getsize(uploaded_tmp_path)
+        if upload_size > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail=f"File {clean_filename} exceeds 1GB limit ({upload_size / (1024*1024):.1f} MB).")
+        if upload_size < 32:
             return JSONResponse(content={"status": "success", "transcript": "", "language": "auto"})
-            
-        mime = file.content_type or "audio/webm"
-        if not mime or mime == "application/octet-stream":
-            fn_low = (file.filename or "").lower()
-            if fn_low.endswith(".mp3"): mime = "audio/mp3"
-            elif fn_low.endswith(".wav"): mime = "audio/wav"
-            elif fn_low.endswith(".m4a"): mime = "audio/m4a"
-            elif fn_low.endswith(".ogg"): mime = "audio/ogg"
-            elif fn_low.endswith(".mp4"): mime = "audio/mp4"
-            elif fn_low.endswith(".webm"): mime = "audio/webm"
-            elif fn_low.endswith(".mov"): mime = "video/quicktime"
+
+        # Route through universal media processor (FFmpeg normalize + chunking)
+        proc_res = await asyncio.to_thread(
+            process_uploaded_media,
+            media_bytes=None,
+            filename=clean_filename,
+            content_type=file.content_type or "",
+            file_path=uploaded_tmp_path
+        )
+
+        res_type = proc_res.get("type", "audio_single")
+
+        # 1. Document / Text extraction
+        if res_type in ["text", "image_ocr", "pdf_ocr"]:
+            extracted_text = proc_res.get("text", "")
+            from ai_providers import detect_text_language
+            detected_l = detect_text_language(extracted_text) if extracted_text else "auto"
+            return JSONResponse(content={
+                "status": "success",
+                "transcript": extracted_text,
+                "raw_transcript": extracted_text,
+                "clean_text": extracted_text,
+                "text": extracted_text,
+                "language": detected_l
+            })
+
+        # 2. Audio / Video media chunks
+        chunks = proc_res.get("audio_chunks", [])
+        if not chunks and proc_res.get("audio_bytes"):
+            chunks = [proc_res.get("audio_bytes")]
+        mime = proc_res.get("mime_type", "audio/mp3")
+        segment_time_sec = proc_res.get("chunk_duration_sec", 600)
 
         cfg = load_api_settings_from_disk()
         from ai_providers import transcribe_audio_gemini, detect_text_language
+        from media_processor import offset_transcript_timestamps
+        import local_whisper_engine
 
         def _do_transcribe():
             chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
@@ -883,63 +983,89 @@ async def transcribe_take_endpoint(
                 key = clean_key or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
 
             target_lang = language if language and language not in ["auto", "detect", ""] else "auto"
+            target_gem_stt = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
 
-            if chosen_prov in ["local_whisper", "local", "whisper_local"]:
-                import local_whisper_engine
-                opt_m = local_whisper_engine.select_optimal_model_name()
-                res = local_whisper_engine.transcribe_local_audio(
-                    media_input=content,
-                    language=None if target_lang == "auto" else target_lang,
-                    model_name=opt_m,
-                    mime_type=mime,
-                    beam_size=1,
-                    temperature=0.0
-                )
-                return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", target_lang)
-            else:
-                # Default: Gemini with instant fallback to local Whisper
-                target_gem_stt = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
-                try:
-                    res = transcribe_audio_gemini(
-                        media_bytes=content,
-                        api_key=key,
-                        model_name=target_gem_stt,
-                        mime_type=mime,
-                        language_hint=target_lang
-                    )
-                    t = res.get("text", "") or res.get("raw_transcript", "")
-                    l = res.get("language", target_lang)
-                    if t and t.strip():
-                        return t.strip(), l
-                except Exception as e_gem:
-                    print(f"[transcribe_take Gemini STT Notice] {e_gem}")
+            def _transcribe_one_chunk(chunk_bytes: bytes) -> Tuple[str, str]:
+                if not chunk_bytes or len(chunk_bytes) < 32:
+                    return "", target_lang
 
-                # If Gemini returned empty or was denied, transcribe_audio_gemini already ran local whisper fallback.
-                # If still empty, perform one quick greedy pass with local whisper:
-                import local_whisper_engine
-                opt_m = local_whisper_engine.select_optimal_model_name()
-                r_loc = local_whisper_engine.transcribe_local_audio(
-                    content,
-                    language=None if target_lang in ["auto", "detect", ""] else target_lang,
-                    model_name=opt_m,
-                    mime_type=mime,
-                    beam_size=1,
-                    temperature=0.0
-                )
-                t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-                l = r_loc.get("detected_language", target_lang)
-                if (not t or not t.strip()) and target_lang not in ["auto", "detect", ""]:
-                    r_loc2 = local_whisper_engine.transcribe_local_audio(
-                        content,
-                        language=None,
+                if chosen_prov in ["local_whisper", "local", "whisper_local"]:
+                    opt_m = local_whisper_engine.select_optimal_model_name()
+                    res = local_whisper_engine.transcribe_local_audio(
+                        media_input=chunk_bytes,
+                        language=None if target_lang in ["auto", "detect", ""] else target_lang,
                         model_name=opt_m,
                         mime_type=mime,
                         beam_size=1,
                         temperature=0.0
                     )
-                    t = r_loc2.get("raw_transcript") or r_loc2.get("clean_text", "")
-                    l = r_loc2.get("detected_language", "auto")
-                return t, l
+                    return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", target_lang)
+                else:
+                    # Default: Gemini with instant fallback to local Whisper
+                    try:
+                        res = transcribe_audio_gemini(
+                            media_bytes=chunk_bytes,
+                            api_key=key,
+                            model_name=target_gem_stt,
+                            mime_type=mime,
+                            language_hint=target_lang
+                        )
+                        t = res.get("text", "") or res.get("raw_transcript", "")
+                        l = res.get("language", target_lang)
+                        if t and t.strip():
+                            return t.strip(), l
+                    except Exception as e_gem:
+                        print(f"[transcribe_take Gemini STT Notice] {e_gem}")
+
+                    # Fallback to local Whisper
+                    opt_m = local_whisper_engine.select_optimal_model_name()
+                    r_loc = local_whisper_engine.transcribe_local_audio(
+                        chunk_bytes,
+                        language=None if target_lang in ["auto", "detect", ""] else target_lang,
+                        model_name=opt_m,
+                        mime_type=mime,
+                        beam_size=1,
+                        temperature=0.0
+                    )
+                    t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
+                    l = r_loc.get("detected_language", target_lang)
+                    if (not t or not t.strip()) and target_lang not in ["auto", "detect", ""]:
+                        r_loc2 = local_whisper_engine.transcribe_local_audio(
+                            chunk_bytes,
+                            language=None,
+                            model_name=opt_m,
+                            mime_type=mime,
+                            beam_size=1,
+                            temperature=0.0
+                        )
+                        t = r_loc2.get("raw_transcript") or r_loc2.get("clean_text", "")
+                        l = r_loc2.get("detected_language", "auto")
+                    return t, l
+
+            def _transcribe_chunk_with_offset(item: Tuple[int, bytes]) -> Tuple[int, str, str]:
+                c_idx, c_bytes = item
+                t_txt, c_lang = _transcribe_one_chunk(c_bytes)
+                offset_sec = c_idx * segment_time_sec
+                if offset_sec > 0 and t_txt:
+                    t_txt = offset_transcript_timestamps(t_txt, offset_sec)
+                return c_idx, t_txt, c_lang
+
+            if not chunks:
+                return "", target_lang
+
+            if len(chunks) == 1:
+                _, full_text, detected_l = _transcribe_chunk_with_offset((0, chunks[0]))
+                return full_text, detected_l
+
+            with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
+                chunk_results = list(executor.map(_transcribe_chunk_with_offset, enumerate(chunks)))
+
+            chunk_results.sort(key=lambda x: x[0])
+            valid_parts = [r[1].strip() for r in chunk_results if r[1] and r[1].strip()]
+            combined = "\n\n".join(valid_parts)
+            detected_langs = [r[2] for r in chunk_results if r[2] and r[2] not in ["auto", "detect", ""]]
+            final_lang = detected_langs[0] if detected_langs else target_lang
+            return combined, final_lang
 
         try:
             transcript, lang = await asyncio.to_thread(_do_transcribe)
@@ -948,7 +1074,6 @@ async def transcribe_take_endpoint(
             transcript, lang = "", language
 
         # Sanitize lines to guarantee no hallucination loops, CJK ideographs, or Tibetan symbols leak out
-        import local_whisper_engine
         cleaned_lines = []
         for line in (transcript or "").splitlines():
             s_line = line.strip()
@@ -973,12 +1098,19 @@ async def transcribe_take_endpoint(
             "text": transcript,
             "language": lang
         })
+
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[transcribe_take Top-Level Exception] {e}. Engaging emergency local Whisper fallback...")
         try:
             import local_whisper_engine
             opt_m = local_whisper_engine.select_optimal_model_name()
-            r_loc = local_whisper_engine.transcribe_local_audio(content, language=None, model_name=opt_m)
+            target_input = uploaded_tmp_path if (uploaded_tmp_path and os.path.exists(uploaded_tmp_path)) else None
+            if not target_input:
+                return JSONResponse(content={"status": "success", "transcript": "", "language": "auto"})
+
+            r_loc = local_whisper_engine.transcribe_local_audio(target_input, language=None, model_name=opt_m)
             raw_t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
             emerg_lang = r_loc.get("detected_language", "auto")
             cleaned_emergency = []
@@ -998,14 +1130,24 @@ async def transcribe_take_endpoint(
             return JSONResponse(content={
                 "status": "success",
                 "transcript": "\n".join(cleaned_emergency),
-                "language": r_loc.get("detected_language", "auto")
+                "raw_transcript": "\n".join(cleaned_emergency),
+                "clean_text": "\n".join(cleaned_emergency),
+                "text": "\n".join(cleaned_emergency),
+                "language": emerg_lang
             })
-        except Exception:
+        except Exception as e_emerg:
+            print(f"[transcribe_take Emergency Fallback Error] {e_emerg}")
             return JSONResponse(content={
                 "status": "success",
                 "transcript": "",
                 "language": "auto"
             })
+    finally:
+        if uploaded_tmp_path and os.path.exists(uploaded_tmp_path):
+            try:
+                os.remove(uploaded_tmp_path)
+            except Exception:
+                pass
 
 @app.post("/api/generate_docx")
 async def generate_docx(payload: MeetingDocPayload):
@@ -1246,9 +1388,24 @@ def open_native_app_window(url: str, delay: float = 0.5):
     import shutil
     import webbrowser
     import os
+    import urllib.request
 
     def _launcher():
-        time.sleep(delay)
+        # 1. Wait until server is listening and responding with 200 before launching browser
+        start = time.time()
+        while time.time() - start < 10.0:
+            try:
+                test_url = f"{url.rstrip('/')}/api/default_config"
+                req = urllib.request.Request(test_url)
+                with urllib.request.urlopen(req, timeout=0.4) as resp:
+                    if resp.status == 200:
+                        break
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+        # Brief delay to allow FastAPI static mounts to settle
+        time.sleep(max(0.1, delay))
 
         # Candidate paths for native Chromium app mode
         candidates = [
@@ -1266,11 +1423,10 @@ def open_native_app_window(url: str, delay: float = 0.5):
             if candidate and os.path.isfile(candidate):
                 try:
                     cmd = [candidate, f"--app={url}"]
-                    p = subprocess.Popen(cmd)
-                    time.sleep(0.8)
-                    if p.poll() is None or p.poll() == 0:
-                        opened = True
-                        return
+                    subprocess.Popen(cmd)
+                    time.sleep(0.5)
+                    opened = True
+                    break
                 except Exception:
                     continue
 
@@ -1278,15 +1434,15 @@ def open_native_app_window(url: str, delay: float = 0.5):
         if not opened:
             try:
                 os.startfile(url)
-                return
             except Exception:
-                pass
-            try:
-                webbrowser.open(url, new=2)
-            except Exception:
-                pass
+                try:
+                    webbrowser.open(url, new=2)
+                except Exception:
+                    pass
 
-    threading.Thread(target=_launcher, daemon=True).start()
+    t = threading.Thread(target=_launcher, daemon=False)
+    t.start()
+    return t
 
 if __name__ == "__main__":
     import uvicorn
@@ -1295,8 +1451,8 @@ if __name__ == "__main__":
     # If server is already running, open the application window and exit
     if is_server_already_running(8000):
         print("EASD Meeting Assistant is already running. Opening application window...")
-        open_native_app_window("http://localhost:8000/", delay=0.1)
-        time.sleep(1.5)
+        t = open_native_app_window("http://localhost:8000/", delay=0.1)
+        t.join(timeout=2.0)
         sys.exit(0)
 
     port = find_available_port(8000)

@@ -497,7 +497,7 @@ export default function App() {
     if (directText.trim()) formData.append('text_content', directText.trim());
 
     try {
-      const res = await axios.post('/api/transcribe_and_summarize', formData);
+      const res = await axios.post('/api/transcribe_and_summarize', formData, { timeout: 1800000 });
       setIsProcessing(false);
 
       if (res.data && res.data.status === 'success') {

@@ -3,19 +3,22 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 strDir = fso.GetParentFolderName(WScript.ScriptFullName)
 WshShell.CurrentDirectory = strDir
 
-' Full path to app.py
-strApp = strDir & "\app.py"
+' Resolve target runner script
+If fso.FileExists(strDir & "\run_app.pyw") Then
+    strApp = strDir & "\run_app.pyw"
+Else
+    strApp = strDir & "\app.py"
+End If
 
-' Resolve Python virtual environment
-strPyw = "C:\Users\Emenance-T1\AppData\Local\hermes\hermes-agent\venv\Scripts\pythonw.exe"
-If Not fso.FileExists(strPyw) Then
-    If fso.FileExists(strDir & "\venv\Scripts\pythonw.exe") Then
-        strPyw = strDir & "\venv\Scripts\pythonw.exe"
-    ElseIf fso.FileExists(strDir & "\.venv\Scripts\pythonw.exe") Then
-        strPyw = strDir & "\.venv\Scripts\pythonw.exe"
-    Else
-        strPyw = "pythonw.exe"
-    End If
+strLocalHermes = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\pythonw.exe")
+If fso.FileExists(strDir & "\.venv\Scripts\pythonw.exe") Then
+    strPyw = strDir & "\.venv\Scripts\pythonw.exe"
+ElseIf fso.FileExists(strDir & "\venv\Scripts\pythonw.exe") Then
+    strPyw = strDir & "\venv\Scripts\pythonw.exe"
+ElseIf fso.FileExists(strLocalHermes) Then
+    strPyw = strLocalHermes
+Else
+    strPyw = "pythonw.exe"
 End If
 
 ' Launch Python GUI runner with WindowStyle 0 (Completely hidden, NO command prompt window)

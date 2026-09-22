@@ -42,6 +42,32 @@ PDF_EXTENSIONS = {".pdf"}
 
 # Maximum chunk size for API uploads (20 MB safe limit)
 MAX_CHUNK_BYTES = 20 * 1024 * 1024
+# Split audio into 10-minute chunks if normalized MP3 is larger than 4 MB (~11 mins of 48kbps audio)
+CHUNK_SPLIT_THRESHOLD_BYTES = 4 * 1024 * 1024
+
+def offset_transcript_timestamps(text: str, offset_seconds: float) -> str:
+    """Offsets timestamps like [02:15] or [01:12:30] in a transcript by offset_seconds."""
+    if offset_seconds <= 0 or not text:
+        return text
+
+    def _repl(match):
+        inside = match.group(1)
+        parts = [int(p) for p in inside.split(':')]
+        if len(parts) == 2:
+            total_sec = parts[0] * 60 + parts[1]
+        elif len(parts) == 3:
+            total_sec = parts[0] * 3600 + parts[1] * 60 + parts[2]
+        else:
+            return match.group(0)
+        new_sec = int(total_sec + offset_seconds)
+        h = new_sec // 3600
+        m = (new_sec % 3600) // 60
+        s = new_sec % 60
+        if h > 0:
+            return f"[{h:02d}:{m:02d}:{s:02d}]"
+        return f"[{m:02d}:{s:02d}]"
+
+    return re.sub(r'\[(\d{1,2}:\d{2}(?::\d{2})?)\]', _repl, text)
 
 def find_ffmpeg_binary() -> Optional[str]:
     """Finds the ffmpeg executable in system PATH or common local paths."""
@@ -65,6 +91,62 @@ def find_ffmpeg_binary() -> Optional[str]:
         elif os.path.isfile(c):
             return c
     return None
+
+def find_ffprobe_binary() -> Optional[str]:
+    """Finds the ffprobe executable matching the ffmpeg installation."""
+    ffmpeg_path = find_ffmpeg_binary()
+    if ffmpeg_path:
+        for name in ["ffprobe.exe", "ffprobe.EXE", "ffprobe"]:
+            candidate = os.path.join(os.path.dirname(ffmpeg_path), name)
+            if os.path.isfile(candidate):
+                return candidate
+    return shutil.which("ffprobe")
+
+def is_already_speech_normalized(file_path: str) -> bool:
+    """
+    Checks if a media file is already a 16kHz mono audio file (no video stream).
+    If it is, returns True so expensive transcoding can be skipped.
+    """
+    if not file_path or not os.path.isfile(file_path):
+        return False
+
+    # 1. Quick wave header check for .wav files
+    _, ext = os.path.splitext(file_path.lower())
+    if ext == ".wav":
+        try:
+            import wave
+            with wave.open(file_path, "rb") as wf:
+                if wf.getnchannels() == 1 and wf.getframerate() == 16000:
+                    return True
+        except Exception:
+            pass
+
+    # 2. Probe with ffprobe
+    probe_bin = find_ffprobe_binary()
+    if not probe_bin:
+        return False
+
+    try:
+        # Check if there is a video stream (ignore audio-only container)
+        cmd_v = [probe_bin, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0", file_path]
+        res_v = subprocess.run(cmd_v, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if res_v.returncode == 0 and "video" in res_v.stdout.lower():
+            return False
+
+        # Check audio stream: sample_rate, channels
+        cmd_a = [probe_bin, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels", "-of", "csv=p=0", file_path]
+        res_a = subprocess.run(cmd_a, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+        if res_a.returncode == 0 and res_a.stdout.strip():
+            parts = res_a.stdout.strip().split(",")
+            if len(parts) >= 2:
+                sr = parts[0].strip()
+                ch = parts[1].strip()
+                if sr == "16000" and ch == "1":
+                    return True
+    except Exception:
+        pass
+
+    return False
 
 def extract_text_from_docx_bytes(docx_bytes: bytes) -> str:
     """Extracts text from a DOCX file using python-docx or raw XML zip parsing as fallback."""
@@ -135,6 +217,7 @@ def convert_media_to_speech_audio(
     cmd = [
         ffmpeg_bin,
         "-y",
+        "-nostdin",
         "-i", input_file_path,
         "-vn",                   # Drop video stream
         "-ac", "1",              # Convert to mono
@@ -171,6 +254,7 @@ def split_audio_into_chunks(
     cmd = [
         ffmpeg_bin,
         "-y",
+        "-nostdin",
         "-i", audio_path,
         "-f", "segment",
         "-segment_time", str(segment_time_seconds),
@@ -184,17 +268,12 @@ def split_audio_into_chunks(
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         )
-        # Find generated chunks
-        chunks = []
-        idx = 0
-        while True:
-            chunk_file = os.path.join(temp_dir, f"{base_name}_chunk_{idx:03d}.mp3")
-            if os.path.exists(chunk_file) and os.path.getsize(chunk_file) > 0:
-                chunks.append(chunk_file)
-                idx += 1
-            else:
-                break
-        return chunks if chunks else [audio_path]
+        # Find generated chunks reliably with sorted glob
+        import glob
+        pattern = os.path.join(temp_dir, f"{base_name}_chunk_*.mp3")
+        found = sorted(glob.glob(pattern))
+        valid_chunks = [c for c in found if os.path.isfile(c) and os.path.getsize(c) > 0]
+        return valid_chunks if valid_chunks else [audio_path]
     except Exception as e:
         print(f"[FFmpeg audio chunking error] {e}")
         return [audio_path]
@@ -235,45 +314,61 @@ def normalize_audio_chunk_for_stt(chunk_bytes: bytes, mime_type: str = "audio/we
     return chunk_bytes, mime_type
 
 def process_uploaded_media(
-    media_bytes: bytes,
-    filename: str,
-    content_type: str = ""
+    media_bytes: Optional[bytes] = None,
+    filename: str = "",
+    content_type: str = "",
+    file_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Universal media processor:
     Accepts ANY file payload (HEVC/H.265 video, Apple iPhone MOV / ProRes / M4A / AAC / ALAC / CAF,
     H.264, MP4, MKV, WebM, TS, FLAC, AMR, DOCX, SRT, VTT, TXT, MD, etc.).
+    Supports streaming file_path on disk to handle large files up to 1 GB without RAM exhaustion.
     
     Returns:
     {
-        "type": "text" | "audio_single" | "audio_chunks",
+        "type": "text" | "audio_single" | "audio_chunks" | "image_ocr" | "pdf_ocr",
         "text": str (if text/document),
         "audio_bytes": bytes (if single chunk),
         "mime_type": "audio/mp3" | "audio/wav" etc,
         "audio_chunks": List[bytes] (if multi-chunk),
+        "chunk_duration_sec": int,
         "format_detected": str
     }
     """
-    clean_name = os.path.basename(filename).strip()
+    clean_name = os.path.basename(filename or (file_path if file_path else "upload_media")).strip()
     _, ext = os.path.splitext(clean_name.lower())
+
+    def _get_bytes_if_needed() -> bytes:
+        nonlocal media_bytes
+        if media_bytes is not None:
+            return media_bytes
+        if file_path and os.path.isfile(file_path):
+            with open(file_path, "rb") as bf:
+                media_bytes = bf.read()
+            return media_bytes
+        return b""
     
     # 1. Check Document / Subtitle Formats
     if ext in [".docx", ".doc"]:
-        extracted_text = extract_text_from_docx_bytes(media_bytes)
+        b = _get_bytes_if_needed()
+        extracted_text = extract_text_from_docx_bytes(b)
         return {
             "type": "text",
             "text": extracted_text,
             "format_detected": "DOCX Document",
             "audio_bytes": None,
             "mime_type": "text/plain",
-            "audio_chunks": []
+            "audio_chunks": [],
+            "chunk_duration_sec": 600
         }
         
     if ext in [".srt", ".vtt"]:
+        b = _get_bytes_if_needed()
         raw_text = ""
         for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252"]:
             try:
-                raw_text = media_bytes.decode(enc)
+                raw_text = b.decode(enc)
                 break
             except UnicodeDecodeError:
                 continue
@@ -284,14 +379,16 @@ def process_uploaded_media(
             "format_detected": "Subtitle / Caption Transcript",
             "audio_bytes": None,
             "mime_type": "text/plain",
-            "audio_chunks": []
+            "audio_chunks": [],
+            "chunk_duration_sec": 600
         }
         
     if ext in [".txt", ".md", ".rtf", ".csv", ".tsv", ".json"] or content_type.startswith("text/"):
+        b = _get_bytes_if_needed()
         raw_text = ""
         for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252"]:
             try:
-                raw_text = media_bytes.decode(enc)
+                raw_text = b.decode(enc)
                 break
             except UnicodeDecodeError:
                 continue
@@ -302,36 +399,41 @@ def process_uploaded_media(
             "media_bytes": None,
             "audio_bytes": None,
             "mime_type": "text/plain",
-            "audio_chunks": []
+            "audio_chunks": [],
+            "chunk_duration_sec": 600
         }
 
     # 2. Check PDF Documents
     if ext == ".pdf" or content_type == "application/pdf":
-        pdf_info = extract_pdf_content(media_bytes)
+        b = _get_bytes_if_needed()
+        pdf_info = extract_pdf_content(b)
         if not pdf_info["is_scanned"] and len(pdf_info["text"]) >= 60:
             return {
                 "type": "text",
                 "text": pdf_info["text"],
                 "format_detected": f"PDF Document ({pdf_info['page_count']} Pages - Digital Text)",
-                "media_bytes": media_bytes,
+                "media_bytes": b,
                 "audio_bytes": None,
                 "mime_type": "text/plain",
-                "audio_chunks": []
+                "audio_chunks": [],
+                "chunk_duration_sec": 600
             }
         else:
             return {
                 "type": "pdf_ocr",
                 "text": pdf_info.get("text", ""),
                 "format_detected": f"Scanned PDF ({pdf_info['page_count']} Pages - Vision OCR)",
-                "media_bytes": media_bytes,
+                "media_bytes": b,
                 "audio_bytes": None,
                 "mime_type": "application/pdf",
-                "audio_chunks": []
+                "audio_chunks": [],
+                "chunk_duration_sec": 600
             }
 
     # 3. Check Images for OCR (Photos, Scans, Whiteboards)
     if ext in IMAGE_EXTENSIONS or content_type.startswith("image/"):
-        opt_bytes, opt_mime = preprocess_image_for_ocr(media_bytes)
+        b = _get_bytes_if_needed()
+        opt_bytes, opt_mime = preprocess_image_for_ocr(b)
         local_text = perform_local_ocr(opt_bytes) if is_tesseract_available() else ""
         return {
             "type": "image_ocr",
@@ -340,10 +442,11 @@ def process_uploaded_media(
             "media_bytes": opt_bytes,
             "audio_bytes": None,
             "mime_type": opt_mime,
-            "audio_chunks": []
+            "audio_chunks": [],
+            "chunk_duration_sec": 600
         }
 
-    # 2. Universal Audio & Video Processing with FFmpeg
+    # 4. Universal Audio & Video Processing with FFmpeg
     ffmpeg_bin = find_ffmpeg_binary()
     detected_format = f"{ext.upper().lstrip('.')} Media" if ext else "Media File"
     
@@ -367,53 +470,62 @@ def process_uploaded_media(
         detected_format = f"{ext.upper().lstrip('.')} Audio"
 
     if ffmpeg_bin:
-        # Determine appropriate input extension for temp file
         safe_ext = ext if ext else (".mp4" if "video" in content_type else ".mp3")
         
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_input = os.path.join(temp_dir, f"input_media{safe_ext}")
             temp_output = os.path.join(temp_dir, "speech_normalized.mp3")
 
-            with open(temp_input, "wb") as f:
-                f.write(media_bytes)
+            if file_path and os.path.isfile(file_path):
+                temp_input = file_path
+            else:
+                temp_input = os.path.join(temp_dir, f"input_media{safe_ext}")
+                b = _get_bytes_if_needed()
+                with open(temp_input, "wb") as f:
+                    f.write(b)
 
             success = convert_media_to_speech_audio(temp_input, temp_output, ffmpeg_bin)
             if success and os.path.exists(temp_output):
                 output_size = os.path.getsize(temp_output)
                 
-                # Check if multi-chunk splitting is needed (> MAX_CHUNK_BYTES)
-                if output_size > MAX_CHUNK_BYTES:
+                # Split into 10-minute chunks if larger than CHUNK_SPLIT_THRESHOLD_BYTES (~11 mins of 48kbps MP3)
+                if output_size > CHUNK_SPLIT_THRESHOLD_BYTES:
                     chunk_paths = split_audio_into_chunks(temp_output, ffmpeg_bin, segment_time_seconds=600)
-                    chunks_bytes = []
-                    for cp in chunk_paths:
-                        with open(cp, "rb") as cf:
-                            chunks_bytes.append(cf.read())
-                    return {
-                        "type": "audio_chunks",
-                        "text": "",
-                        "format_detected": detected_format,
-                        "audio_bytes": None,
-                        "mime_type": "audio/mp3",
-                        "audio_chunks": chunks_bytes
-                    }
-                else:
-                    with open(temp_output, "rb") as out_f:
-                        audio_data = out_f.read()
-                    return {
-                        "type": "audio_single",
-                        "text": "",
-                        "format_detected": detected_format,
-                        "audio_bytes": audio_data,
-                        "mime_type": "audio/mp3",
-                        "audio_chunks": [audio_data]
-                    }
+                    if len(chunk_paths) > 1:
+                        chunks_bytes = []
+                        for cp in chunk_paths:
+                            with open(cp, "rb") as cf:
+                                chunks_bytes.append(cf.read())
+                        return {
+                            "type": "audio_chunks",
+                            "text": "",
+                            "format_detected": detected_format,
+                            "audio_bytes": None,
+                            "mime_type": "audio/mp3",
+                            "audio_chunks": chunks_bytes,
+                            "chunk_duration_sec": 600
+                        }
 
-    # 3. Fallback if FFmpeg is not available
+                # Single chunk
+                with open(temp_output, "rb") as out_f:
+                    audio_data = out_f.read()
+                return {
+                    "type": "audio_single",
+                    "text": "",
+                    "format_detected": detected_format,
+                    "audio_bytes": audio_data,
+                    "mime_type": "audio/mp3",
+                    "audio_chunks": [audio_data],
+                    "chunk_duration_sec": 600
+                }
+
+    # 5. Fallback if FFmpeg is not available
+    b = _get_bytes_if_needed()
     return {
         "type": "audio_single",
         "text": "",
         "format_detected": detected_format,
-        "audio_bytes": media_bytes,
+        "audio_bytes": b,
         "mime_type": content_type or "audio/webm",
-        "audio_chunks": [media_bytes]
+        "audio_chunks": [b],
+        "chunk_duration_sec": 600
     }
