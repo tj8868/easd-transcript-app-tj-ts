@@ -76,7 +76,9 @@ from template_engine import (
     analyze_and_generalize_docx,
     save_custom_template,
     delete_custom_template,
-    generate_custom_template_docx_bytes
+    generate_custom_template_docx_bytes,
+    get_template_json_schema,
+    get_template_json_example
 )
 from skills_engine import (
     load_saved_skills,
@@ -379,6 +381,29 @@ def post_templates():
     templates = load_saved_templates()
     return JSONResponse(content={"status": "success", "templates": templates})
 
+@app.get("/api/template_schema")
+@app.post("/api/template_schema")
+def get_template_schema_endpoint(template_id: Optional[str] = None):
+    """Returns the official JSON schema and illustrative example payload for a specified template."""
+    target_tpl = get_template_by_id(template_id) if template_id else None
+    if not target_tpl:
+        all_tpls = load_saved_templates()
+        target_tpl = all_tpls[0] if all_tpls else None
+        
+    if not target_tpl:
+        raise HTTPException(status_code=404, detail="Template not found")
+        
+    schema = get_template_json_schema(target_tpl)
+    example = get_template_json_example(target_tpl)
+    return JSONResponse(content={
+        "status": "success",
+        "template_id": target_tpl.get("id"),
+        "name": target_tpl.get("name"),
+        "doc_type": target_tpl.get("doc_type"),
+        "json_schema": schema,
+        "json_example": example
+    })
+
 @app.post("/api/generalize_template")
 async def generalize_template_endpoint(
     file: UploadFile = File(...),
@@ -594,7 +619,7 @@ async def transcribe_and_summarize(
         print(f"[/api/transcribe_and_summarize Exception] {e}. Engaging seamless fallback to deep_semantic_synthesis...")
         try:
             from ai_providers import deep_semantic_synthesis
-            fallback = deep_semantic_synthesis(text_content or "Weekly Strategic, Programmatic and Presentation Review Meeting", custom_skills, org_context)
+            fallback = deep_semantic_synthesis(text_content or "Weekly Strategic, Programmatic and Presentation Review Meeting", custom_skills, org_context, template_schema)
             fallback["warning"] = f"AI Provider Notice: {str(e)}. Structured using built-in semantic synthesis."
             return JSONResponse(content={"status": "success", "data": fallback})
         except Exception:
@@ -642,7 +667,7 @@ async def summarize_transcript_endpoint(
     except Exception as e:
         print(f"[/api/summarize_transcript Exception] {e}. Falling back to deep_semantic_synthesis...")
         try:
-            fallback = deep_semantic_synthesis(transcript, custom_skills, org_context)
+            fallback = deep_semantic_synthesis(transcript, custom_skills, org_context, template_schema)
             fallback["warning"] = f"AI Provider Notice: {str(e)}. Structured using built-in semantic synthesis."
             return JSONResponse(content={"status": "success", "data": fallback})
         except Exception:

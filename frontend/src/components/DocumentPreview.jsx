@@ -100,7 +100,8 @@ export default function DocumentPreview({
   const isJournal = documentType === 'journal' || activeTemplate.doc_type === 'journal';
   const isNews = documentType === 'news' || activeTemplate.doc_type === 'news';
   const isBlog = documentType === 'blog' || activeTemplate.doc_type === 'blog';
-  const isCustomUploaded = !isEasdMinutes && !isGovtReport && !isJournal && !isNews && !isBlog;
+  const isSummary = documentType === 'summary' || activeTemplate.doc_type === 'summary' || activeTemplate.id === 'transcript_summary';
+  const isCustomUploaded = !isEasdMinutes && !isGovtReport && !isJournal && !isNews && !isBlog && !isSummary;
 
   const fontClass = isGovtReport
     ? `font-${settings.banglaFont || 'nikosh'}`
@@ -573,7 +574,40 @@ export default function DocumentPreview({
         )}
 
         {/* ========================================================================= */}
-        {/* 6. CUSTOM UPLOADED DOCX TEMPLATE PREVIEW                                 */}
+        {/* 6. PURE TRANSCRIPT SUMMARY PREVIEW                                        */}
+        {/* ========================================================================= */}
+        {isSummary && (
+          <div>
+            {/* Header */}
+            <div style={{ textAlign: 'center', marginBottom: '24px', borderBottom: '2.5px solid #059669', paddingBottom: '16px' }}>
+              <span style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#059669', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                DIRECT TRANSCRIPT SYNTHESIS
+              </span>
+              <h1 style={{ fontSize: '1.65rem', fontWeight: 'bold', color: '#0f172a', margin: '8px 0 10px 0', lineHeight: '1.3' }}>
+                {sanitize(meta.title || 'Executive Summary of Proceedings')}
+              </h1>
+              <div style={{ fontSize: '0.92rem', color: '#64748b' }}>
+                {sanitize(meta.date || 'September 2026')} • Prepared from verbatim audio recording
+              </div>
+            </div>
+
+            {/* Summary Sections: Overview, Key Topics, Decisions, Action Items */}
+            <TemplateSectionsList
+              sections={activeTemplate.sections}
+              meta={meta}
+              customSectionsData={customSectionsData}
+              titleColor="#047857"
+              titleSize="1.15rem"
+              titleBorderBottom="1px solid #e2e8f0"
+              placeholder="Summary points synthesized faithfully from the transcript..."
+              marginBottom="20px"
+              cleanHtml={cleanDetailsHtml}
+            />
+          </div>
+        )}
+
+        {/* ========================================================================= */}
+        {/* 7. CUSTOM UPLOADED DOCX TEMPLATE PREVIEW                                 */}
         {/* ========================================================================= */}
         {isCustomUploaded && (
           <div>

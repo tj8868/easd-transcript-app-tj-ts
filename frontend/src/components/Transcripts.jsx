@@ -235,102 +235,6 @@ export default function Transcripts({
               Live speech recognition stream and verbatim transcript with speaker labels and timestamps.
             </p>
           </div>
-
-          {/* Action Buttons: Big Generate, Big Clear All, plus utility buttons */}
-          <div className="transcript-actions-bar" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-            {/* Big Generate Button (Fits transcript to active template) */}
-            <button
-              type="button"
-              className="btn btn-primary transcript-btn-generate"
-              onClick={() => (onGenerate || onSummarize) && (onGenerate || onSummarize)(currentText)}
-              disabled={!currentText.trim() || isSummarizing}
-              title="Generate document by fitting transcript to active template"
-              style={{
-                fontSize: '0.92rem',
-                fontWeight: 800,
-                padding: '8px 18px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
-                border: '1.5px solid #34d399',
-                color: '#ffffff',
-                borderRadius: '8px',
-                boxShadow: currentText.trim() && !isSummarizing
-                  ? '0 4px 16px rgba(16, 185, 129, 0.4), 0 0 10px rgba(52, 211, 153, 0.3)'
-                  : '0 3px 12px rgba(16, 185, 129, 0.15)',
-                cursor: currentText.trim() && !isSummarizing ? 'pointer' : 'not-allowed',
-                opacity: currentText.trim() && !isSummarizing ? 1 : 0.6,
-                transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
-              }}
-            >
-              {isSummarizing ? 'Generating...' : 'Generate'}
-            </button>
-
-            {/* Big and Visible Clear All Button */}
-            {onClearAll && (
-              <button
-                type="button"
-                className="btn btn-secondary transcript-btn-clear"
-                onClick={onClearAll}
-                title="Clear all recordings, audio queues, transcript text, and document data"
-                style={{
-                  fontSize: '0.88rem',
-                  fontWeight: 800,
-                  padding: '8px 16px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  background: 'rgba(239, 68, 68, 0.12)',
-                  border: '1.5px solid rgba(239, 68, 68, 0.45)',
-                  color: '#ef4444',
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  boxShadow: '0 2px 8px rgba(239, 68, 68, 0.15)'
-                }}
-              >
-                <Trash2 size={15} />
-                Clear All
-              </button>
-            )}
-
-            {/* Individual Clear Transcript Button */}
-            {currentText && (
-              <button
-                type="button"
-                className="btn btn-secondary btn-sm"
-                onClick={handleClear}
-                title="Clear this transcript text box only"
-                style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}
-              >
-                <Trash2 size={13} /> Clear Transcript
-              </button>
-            )}
-
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={handleDownload}
-              disabled={!currentText}
-              title="Download raw transcript (.txt)"
-              style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '5px', fontWeight: 600 }}
-            >
-              {downloaded ? <Check size={14} /> : <Download size={14} />}
-              {downloaded ? 'Downloaded!' : 'Download (.txt)'}
-            </button>
-
-            <button
-              type="button"
-              className="btn btn-secondary btn-sm"
-              onClick={handleCopy}
-              disabled={!currentText}
-              title="Copy raw transcript to clipboard"
-              style={{ fontSize: '0.78rem', display: 'flex', alignItems: 'center', gap: '5px' }}
-            >
-              {copied ? <Check size={14} color="var(--success-color)" /> : <Copy size={14} />}
-              {copied ? 'Copied!' : 'Copy'}
-            </button>
-          </div>
         </div>
 
         {/* Speaker & Timestamp Quick Tags Toolstrip */}
@@ -544,6 +448,107 @@ export default function Transcripts({
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '8px', fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
         <span>Timestamped dialogue formatted by speaker.</span>
         <span>{wordCount} words | {charCount} characters</span>
+      </div>
+
+      {/* Frozen / Sticky Bottom Command Bar directly below timestamped dialogue */}
+      <div className="transcript-frozen-footer">
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Big Generate Button (The 1 Primary Unified Generate in the Application) */}
+          <button
+            type="button"
+            className="btn btn-primary transcript-btn-generate"
+            onClick={() => (onGenerate || onSummarize) && (onGenerate || onSummarize)(currentText)}
+            disabled={!currentText.trim() || isSummarizing}
+            title="Generate document by fitting transcript to active template"
+            style={{
+              fontSize: '0.96rem',
+              fontWeight: 800,
+              padding: '10px 22px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '8px',
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              border: '1.5px solid #34d399',
+              color: '#ffffff',
+              borderRadius: '8px',
+              boxShadow: currentText.trim() && !isSummarizing
+                ? '0 4px 16px rgba(16, 185, 129, 0.45), 0 0 10px rgba(52, 211, 153, 0.35)'
+                : '0 3px 12px rgba(16, 185, 129, 0.15)',
+              cursor: currentText.trim() && !isSummarizing ? 'pointer' : 'not-allowed',
+              opacity: currentText.trim() && !isSummarizing ? 1 : 0.6,
+              transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+          >
+            <Sparkles size={16} />
+            {isSummarizing ? 'Generating Document...' : 'Generate'}
+          </button>
+
+          {/* Clear All Button */}
+          {onClearAll && (
+            <button
+              type="button"
+              className="btn btn-secondary transcript-btn-clear"
+              onClick={onClearAll}
+              title="Clear all recordings, audio queues, transcript text, and document data"
+              style={{
+                fontSize: '0.88rem',
+                fontWeight: 800,
+                padding: '9px 18px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                background: 'rgba(239, 68, 68, 0.12)',
+                border: '1.5px solid rgba(239, 68, 68, 0.45)',
+                color: '#ef4444',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                boxShadow: '0 2px 8px rgba(239, 68, 68, 0.15)'
+              }}
+            >
+              <Trash2 size={15} />
+              Clear All
+            </button>
+          )}
+
+          {/* Clear Transcript Button */}
+          {currentText && (
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={handleClear}
+              title="Clear this transcript text box only"
+              style={{ fontSize: '0.82rem', fontWeight: 600, padding: '8px 14px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '5px' }}
+            >
+              <Trash2 size={14} /> Clear Transcript
+            </button>
+          )}
+
+          {/* Download (.txt) Button */}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={handleDownload}
+            disabled={!currentText}
+            title="Download raw transcript (.txt)"
+            style={{ fontSize: '0.82rem', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
+          >
+            {downloaded ? <Check size={15} /> : <Download size={15} />}
+            {downloaded ? 'Downloaded!' : 'Download (.txt)'}
+          </button>
+
+          {/* Copy Button */}
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={handleCopy}
+            disabled={!currentText}
+            title="Copy raw transcript to clipboard"
+            style={{ fontSize: '0.82rem', padding: '8px 14px', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 600 }}
+          >
+            {copied ? <Check size={15} color="var(--success-color)" /> : <Copy size={15} />}
+            {copied ? 'Copied!' : 'Copy'}
+          </button>
+        </div>
       </div>
     </div>
   );

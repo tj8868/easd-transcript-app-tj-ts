@@ -1389,12 +1389,24 @@ export default function LiveRecordStudio({
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', flexWrap: 'wrap' }}>
               <button
                 type="button"
-                className="btn btn-primary btn-sm"
-                onClick={onProcessAi}
-                disabled={isProcessing || (!directText.trim() && !selectedFile)}
-                style={{ fontWeight: 800, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  if (directText.trim()) {
+                    if (onAppendToTranscript) {
+                      onAppendToTranscript(directText.trim());
+                    } else if (onLiveTranscriptSync) {
+                      onLiveTranscriptSync(directText.trim());
+                    }
+                    if (setDirectText) setDirectText('');
+                    if (scrollToSection) scrollToSection('section-transcripts');
+                  }
+                }}
+                disabled={!directText.trim()}
+                style={{ fontWeight: 700, padding: '7px 16px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                title="Send draft notes directly into the Transcript window"
               >
-                {isProcessing ? 'Processing with AI...' : 'Generate Meeting Minutes from Draft / Media'}
+                <FileText size={14} color="var(--accent-color)" />
+                Append to Transcript
               </button>
             </div>
           </div>

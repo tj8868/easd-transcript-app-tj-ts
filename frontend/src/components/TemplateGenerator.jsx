@@ -46,7 +46,8 @@ export default function TemplateGenerator({
     { id: 'journal', label: 'Journal (Academic / Research Paper)', icon: BookOpen },
     { id: 'news', label: 'News (Press Release / Story)', icon: Newspaper },
     { id: 'blog', label: 'Blog (Digital Article / Thought Leadership)', icon: Feather },
-    { id: 'bangladesh_govt_report', label: 'Report-Bangladesh government structure (Official Nothi)', icon: Landmark }
+    { id: 'bangladesh_govt_report', label: 'Report-Bangladesh government structure (Official Nothi)', icon: Landmark },
+    { id: 'summary', label: 'Summary (Just Summarize Transcript)', icon: Sparkles }
   ];
 
   const activeTemplate = templates.find((t) => t.id === activeTemplateId) || templates[0] || {};
