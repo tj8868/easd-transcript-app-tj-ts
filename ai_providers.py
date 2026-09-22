@@ -8,7 +8,7 @@ import io
 import wave
 import struct
 import math
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
 from google import genai
@@ -762,6 +762,148 @@ def live_transcribe_audio_chunk(
     except Exception as e:
         return {"text": "", "language": "auto", "error": str(e)}
 
+def transcribe_normalized_audio_chunks(
+    chunks: List[bytes],
+    provider: str = "gemini",
+    api_key: str = "",
+    model_name: str = "gemini-3.5-transcribe",
+    language: str = "auto",
+    mime_type: str = "audio/mp3",
+    segment_time_sec: float = 600.0
+) -> Tuple[str, str]:
+    """
+    Unified multi-chunk transcription engine for both recorded takes and uploaded media.
+    
+    1. Transcribes each audio chunk in parallel (up to 4 workers).
+    2. Preserves speaker labels and offsets timestamps across chunk boundaries [MM:SS].
+    3. Handles Gemini cloud STT with seamless automatic fallback to Local Whisper.
+    4. Post-processes text with anti-hallucination sanitization.
+    
+    Returns:
+        (combined_transcript, detected_language)
+    """
+    if not chunks:
+        return "", (language if language and language != "auto" else "bn")
+
+    prov = (provider or "gemini").lower()
+    if prov not in ["gemini", "local_whisper", "local", "whisper_local"]:
+        prov = "gemini"
+
+    cfg = load_api_settings_from_disk()
+    target_key = (api_key or cfg.get("transcription_api_key") or cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+    target_model = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
+    target_lang = language if language and language not in ["auto", "detect", ""] else "auto"
+
+    def _transcribe_one_chunk(chunk_bytes: bytes) -> Tuple[str, str]:
+        if not chunk_bytes or len(chunk_bytes) < 32:
+            return "", target_lang
+
+        if prov in ["local_whisper", "local", "whisper_local"]:
+            import local_whisper_engine
+            opt_m = local_whisper_engine.select_optimal_model_name()
+            res = local_whisper_engine.transcribe_local_audio(
+                media_input=chunk_bytes,
+                language=None if target_lang in ["auto", "detect", ""] else target_lang,
+                model_name=opt_m,
+                mime_type=mime_type,
+                beam_size=1,
+                temperature=0.0
+            )
+            raw = res.get("raw_transcript") or res.get("clean_text", "")
+            return raw, res.get("detected_language", target_lang)
+
+        # Gemini STT with fallback to Local Whisper
+        try:
+            res = transcribe_audio_gemini(
+                media_bytes=chunk_bytes,
+                api_key=target_key,
+                model_name=target_model,
+                mime_type=mime_type,
+                language_hint=target_lang
+            )
+            t = (res.get("text") or res.get("raw_transcript") or "").strip()
+            l = res.get("language", target_lang)
+            if t:
+                return t, l
+        except Exception as e_gem:
+            print(f"[transcribe_normalized_audio_chunks Gemini Notice] {e_gem}")
+
+        # Local Whisper fallback
+        try:
+            import local_whisper_engine
+            opt_m = local_whisper_engine.select_optimal_model_name()
+            res = local_whisper_engine.transcribe_local_audio(
+                media_input=chunk_bytes,
+                language=None if target_lang in ["auto", "detect", ""] else target_lang,
+                model_name=opt_m,
+                mime_type=mime_type,
+                beam_size=1,
+                temperature=0.0
+            )
+            raw = res.get("raw_transcript") or res.get("clean_text", "")
+            l = res.get("detected_language", target_lang)
+            if (not raw or not raw.strip()) and target_lang not in ["auto", "detect", ""]:
+                # Retry with auto language
+                res2 = local_whisper_engine.transcribe_local_audio(
+                    media_input=chunk_bytes,
+                    language=None,
+                    model_name=opt_m,
+                    mime_type=mime_type,
+                    beam_size=1,
+                    temperature=0.0
+                )
+                raw = res2.get("raw_transcript") or res2.get("clean_text", "")
+                l = res2.get("detected_language", "auto")
+            return raw, l
+        except Exception as e_loc:
+            print(f"[transcribe_normalized_audio_chunks Local Whisper Fallback Error] {e_loc}")
+            return "", target_lang
+
+    def _transcribe_chunk_with_offset(item: Tuple[int, bytes]) -> Tuple[int, str, str]:
+        c_idx, c_bytes = item
+        t_txt, c_lang = _transcribe_one_chunk(c_bytes)
+        offset_sec = c_idx * segment_time_sec
+        if offset_sec > 0 and t_txt:
+            try:
+                from media_processor import offset_transcript_timestamps
+                t_txt = offset_transcript_timestamps(t_txt, offset_sec)
+            except Exception:
+                pass
+        return c_idx, t_txt, c_lang
+
+    if len(chunks) == 1:
+        chunk_results = [_transcribe_chunk_with_offset((0, chunks[0]))]
+    else:
+        with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
+            chunk_results = list(executor.map(_transcribe_chunk_with_offset, enumerate(chunks)))
+
+    chunk_results.sort(key=lambda x: x[0])
+    valid_parts = [r[1].strip() for r in chunk_results if r[1] and r[1].strip()]
+    combined_raw = "\n\n".join(valid_parts)
+
+    detected_langs = [r[2] for r in chunk_results if r[2] and r[2] not in ["auto", "detect", ""]]
+    final_lang = detected_langs[0] if detected_langs else (target_lang if target_lang != "auto" else "bn")
+
+    # Anti-hallucination sanitization pass
+    import local_whisper_engine
+    cleaned_lines = []
+    for line in (combined_raw or "").splitlines():
+        s_line = line.strip()
+        if not s_line:
+            continue
+        if ": " in s_line and s_line.startswith("["):
+            prefix, content_part = s_line.split(": ", 1)
+            sanitized = local_whisper_engine.sanitize_whisper_text(content_part, language=final_lang)
+            if sanitized:
+                cleaned_lines.append(f"{prefix}: {sanitized}")
+        else:
+            sanitized = local_whisper_engine.sanitize_whisper_text(s_line, language=final_lang)
+            if sanitized:
+                cleaned_lines.append(sanitized)
+
+    final_transcript = "\n".join(cleaned_lines)
+    return final_transcript, final_lang
+
 def summarize_text_gemini(
     text_content: str,
     api_key: str,
@@ -934,37 +1076,17 @@ def process_ai_request(
     chunks = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
 
     if chunks:
-        def _transcribe_single(indexed_chunk) -> str:
-            idx, chunk_bytes = indexed_chunk
-            if not chunk_bytes or len(chunk_bytes) < 32:
-                return ""
-            if stt_prov in ["local_whisper", "local", "whisper_local"]:
-                import local_whisper_engine
-                res = local_whisper_engine.transcribe_local_audio(chunk_bytes, language="auto", beam_size=1)
-                t = res.get("raw_transcript") or res.get("clean_text", "")
-            else:
-                res = transcribe_audio_gemini(chunk_bytes, api_key=stt_key, model_name=stt_model, mime_type=mime_type)
-                t = res.get("text", "")
-            if idx > 0 and t:
-                try:
-                    from media_processor import offset_transcript_timestamps
-                    t = offset_transcript_timestamps(t, idx * 600.0)
-                except Exception:
-                    pass
-            return t
-
-        # Parallelize multi-chunk transcription for ultra-low latency
-        indexed_chunks = list(enumerate(chunks))
-        if len(chunks) == 1:
-            transcripts = [_transcribe_single(indexed_chunks[0])]
-        else:
-            with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
-                transcripts = list(executor.map(_transcribe_single, indexed_chunks))
-
-        audio_parts = [t.strip() for t in transcripts if t and t.strip()]
-        if audio_parts:
-            combined_audio_text = "\n\n".join(audio_parts)
-            raw_transcript = (f"{raw_transcript}\n\n{combined_audio_text}" if raw_transcript else combined_audio_text).strip()
+        audio_text, audio_lang = transcribe_normalized_audio_chunks(
+            chunks=chunks,
+            provider=stt_prov,
+            api_key=stt_key,
+            model_name=stt_model,
+            language="auto",
+            mime_type=mime_type,
+            segment_time_sec=600.0
+        )
+        if audio_text and audio_text.strip():
+            raw_transcript = (f"{raw_transcript}\n\n{audio_text}" if raw_transcript else audio_text).strip()
 
     if not raw_transcript:
         raw_transcript = "Weekly Strategic, Programmatic and Presentation Review Meeting discussion and proceedings."

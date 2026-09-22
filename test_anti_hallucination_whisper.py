@@ -58,6 +58,8 @@ def test_anti_hallucination():
 
     print("=== 3. Testing Local Whisper Engine Transcription on test_slice2.mp3 ===")
     audio_path = os.path.join(os.path.dirname(__file__), "test_slice2.mp3")
+    if not os.path.exists(audio_path):
+        audio_path = os.path.join(os.path.dirname(__file__), "test_slice2.wav")
     res = local_whisper_engine.transcribe_local_audio(
         media_input=audio_path,
         language="bn",

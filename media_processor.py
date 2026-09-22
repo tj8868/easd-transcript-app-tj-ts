@@ -249,7 +249,8 @@ def split_audio_into_chunks(
     """
     temp_dir = os.path.dirname(audio_path)
     base_name = os.path.splitext(os.path.basename(audio_path))[0]
-    output_pattern = os.path.join(temp_dir, f"{base_name}_chunk_%03d.mp3")
+    audio_ext = os.path.splitext(audio_path)[1].lower() or ".mp3"
+    output_pattern = os.path.join(temp_dir, f"{base_name}_chunk_%03d{audio_ext}")
 
     cmd = [
         ffmpeg_bin,
@@ -270,7 +271,7 @@ def split_audio_into_chunks(
         )
         # Find generated chunks reliably with sorted glob
         import glob
-        pattern = os.path.join(temp_dir, f"{base_name}_chunk_*.mp3")
+        pattern = os.path.join(temp_dir, f"{base_name}_chunk_*{audio_ext}")
         found = sorted(glob.glob(pattern))
         valid_chunks = [c for c in found if os.path.isfile(c) and os.path.getsize(c) > 0]
         return valid_chunks if valid_chunks else [audio_path]
@@ -483,6 +484,40 @@ def process_uploaded_media(
                 with open(temp_input, "wb") as f:
                     f.write(b)
 
+            # Check if input is already 16kHz mono speech audio (no video stream)
+            if is_already_speech_normalized(temp_input):
+                input_size = os.path.getsize(temp_input)
+                resolved_mime = "audio/wav" if ext == ".wav" else ("audio/mp3" if ext == ".mp3" else (content_type or "audio/webm"))
+                if input_size > CHUNK_SPLIT_THRESHOLD_BYTES:
+                    chunk_paths = split_audio_into_chunks(temp_input, ffmpeg_bin, segment_time_seconds=600)
+                    if len(chunk_paths) > 1:
+                        chunks_bytes = []
+                        for cp in chunk_paths:
+                            with open(cp, "rb") as cf:
+                                chunks_bytes.append(cf.read())
+                        return {
+                            "type": "audio_chunks",
+                            "text": "",
+                            "format_detected": detected_format + " (Pre-normalized 16kHz mono)",
+                            "audio_bytes": None,
+                            "mime_type": resolved_mime,
+                            "audio_chunks": chunks_bytes,
+                            "chunk_duration_sec": 600
+                        }
+
+                with open(temp_input, "rb") as in_f:
+                    audio_data = in_f.read()
+                return {
+                    "type": "audio_single",
+                    "text": "",
+                    "format_detected": detected_format + " (Pre-normalized 16kHz mono)",
+                    "audio_bytes": audio_data,
+                    "mime_type": resolved_mime,
+                    "audio_chunks": [audio_data],
+                    "chunk_duration_sec": 600
+                }
+
+            # Otherwise, convert media to speech-optimized 16kHz mono MP3
             success = convert_media_to_speech_audio(temp_input, temp_output, ffmpeg_bin)
             if success and os.path.exists(temp_output):
                 output_size = os.path.getsize(temp_output)

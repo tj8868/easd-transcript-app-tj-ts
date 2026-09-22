@@ -492,9 +492,40 @@ def convert_to_wav_pcm16k(media_input: Union[bytes, bytearray, io.BytesIO, str],
     """
     Converts audio input to a temporary 16kHz mono 16-bit PCM WAV file via FFmpeg.
     Returns the file path. Caller must remove the file after use.
+    If the audio input is already a 16kHz mono 16-bit PCM WAV, FFmpeg conversion is bypassed.
     """
+    # 1. Fast check if media_input is already a 16kHz mono PCM WAV file on disk
+    if isinstance(media_input, str) and os.path.isfile(media_input):
+        _, ext = os.path.splitext(media_input.lower())
+        if ext == ".wav":
+            try:
+                import wave
+                with wave.open(media_input, "rb") as wf:
+                    if wf.getnchannels() == 1 and wf.getframerate() == 16000 and wf.getsampwidth() == 2:
+                        return media_input
+            except Exception:
+                pass
+
     temp_wav = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
     temp_wav.close()
+
+    # 2. Fast check if in-memory bytes are already a 16kHz mono PCM WAV
+    raw_bytes = None
+    if isinstance(media_input, io.BytesIO):
+        raw_bytes = media_input.getvalue()
+    elif isinstance(media_input, (bytes, bytearray)):
+        raw_bytes = bytes(media_input)
+
+    if raw_bytes and len(raw_bytes) >= 44 and raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WAVE":
+        try:
+            import wave
+            with wave.open(io.BytesIO(raw_bytes), "rb") as wf:
+                if wf.getnchannels() == 1 and wf.getframerate() == 16000 and wf.getsampwidth() == 2:
+                    with open(temp_wav.name, "wb") as f:
+                        f.write(raw_bytes)
+                    return temp_wav.name
+        except Exception:
+            pass
 
     temp_in = None
     try:
@@ -503,7 +534,9 @@ def convert_to_wav_pcm16k(media_input: Union[bytes, bytearray, io.BytesIO, str],
         else:
             ext = f".{input_hint.lstrip('.')}" if input_hint else ".webm"
             temp_in_file = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-            if isinstance(media_input, io.BytesIO):
+            if raw_bytes is not None:
+                temp_in_file.write(raw_bytes)
+            elif isinstance(media_input, io.BytesIO):
                 temp_in_file.write(media_input.getvalue())
             elif isinstance(media_input, (bytes, bytearray)):
                 temp_in_file.write(media_input)

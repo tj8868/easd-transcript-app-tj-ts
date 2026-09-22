@@ -964,131 +964,18 @@ async def transcribe_take_endpoint(
         mime = proc_res.get("mime_type", "audio/mp3")
         segment_time_sec = proc_res.get("chunk_duration_sec", 600)
 
-        cfg = load_api_settings_from_disk()
-        from ai_providers import transcribe_audio_gemini, detect_text_language
-        from media_processor import offset_transcript_timestamps
-        import local_whisper_engine
+        from ai_providers import transcribe_normalized_audio_chunks
 
-        def _do_transcribe():
-            chosen_prov = (provider or cfg.get("transcription_provider") or "gemini").lower()
-            clean_key = api_key.strip() if api_key else ""
-
-            if chosen_prov == "gemini":
-                if not clean_key or clean_key.startswith(("hf_", "gsk_")):
-                    clean_key = cfg.get("gemini_api_key") or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key", "")
-                    if clean_key.startswith(("hf_", "gsk_")):
-                        clean_key = get_default_api_key_from_disk().get("api_key", "")
-                key = clean_key
-            else:
-                key = clean_key or cfg.get("transcription_api_key") or get_default_api_key_from_disk().get("api_key") or ""
-
-            target_lang = language if language and language not in ["auto", "detect", ""] else "auto"
-            target_gem_stt = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
-
-            def _transcribe_one_chunk(chunk_bytes: bytes) -> Tuple[str, str]:
-                if not chunk_bytes or len(chunk_bytes) < 32:
-                    return "", target_lang
-
-                if chosen_prov in ["local_whisper", "local", "whisper_local"]:
-                    opt_m = local_whisper_engine.select_optimal_model_name()
-                    res = local_whisper_engine.transcribe_local_audio(
-                        media_input=chunk_bytes,
-                        language=None if target_lang in ["auto", "detect", ""] else target_lang,
-                        model_name=opt_m,
-                        mime_type=mime,
-                        beam_size=1,
-                        temperature=0.0
-                    )
-                    return res.get("raw_transcript") or res.get("clean_text", ""), res.get("detected_language", target_lang)
-                else:
-                    # Default: Gemini with instant fallback to local Whisper
-                    try:
-                        res = transcribe_audio_gemini(
-                            media_bytes=chunk_bytes,
-                            api_key=key,
-                            model_name=target_gem_stt,
-                            mime_type=mime,
-                            language_hint=target_lang
-                        )
-                        t = res.get("text", "") or res.get("raw_transcript", "")
-                        l = res.get("language", target_lang)
-                        if t and t.strip():
-                            return t.strip(), l
-                    except Exception as e_gem:
-                        print(f"[transcribe_take Gemini STT Notice] {e_gem}")
-
-                    # Fallback to local Whisper
-                    opt_m = local_whisper_engine.select_optimal_model_name()
-                    r_loc = local_whisper_engine.transcribe_local_audio(
-                        chunk_bytes,
-                        language=None if target_lang in ["auto", "detect", ""] else target_lang,
-                        model_name=opt_m,
-                        mime_type=mime,
-                        beam_size=1,
-                        temperature=0.0
-                    )
-                    t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-                    l = r_loc.get("detected_language", target_lang)
-                    if (not t or not t.strip()) and target_lang not in ["auto", "detect", ""]:
-                        r_loc2 = local_whisper_engine.transcribe_local_audio(
-                            chunk_bytes,
-                            language=None,
-                            model_name=opt_m,
-                            mime_type=mime,
-                            beam_size=1,
-                            temperature=0.0
-                        )
-                        t = r_loc2.get("raw_transcript") or r_loc2.get("clean_text", "")
-                        l = r_loc2.get("detected_language", "auto")
-                    return t, l
-
-            def _transcribe_chunk_with_offset(item: Tuple[int, bytes]) -> Tuple[int, str, str]:
-                c_idx, c_bytes = item
-                t_txt, c_lang = _transcribe_one_chunk(c_bytes)
-                offset_sec = c_idx * segment_time_sec
-                if offset_sec > 0 and t_txt:
-                    t_txt = offset_transcript_timestamps(t_txt, offset_sec)
-                return c_idx, t_txt, c_lang
-
-            if not chunks:
-                return "", target_lang
-
-            if len(chunks) == 1:
-                _, full_text, detected_l = _transcribe_chunk_with_offset((0, chunks[0]))
-                return full_text, detected_l
-
-            with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
-                chunk_results = list(executor.map(_transcribe_chunk_with_offset, enumerate(chunks)))
-
-            chunk_results.sort(key=lambda x: x[0])
-            valid_parts = [r[1].strip() for r in chunk_results if r[1] and r[1].strip()]
-            combined = "\n\n".join(valid_parts)
-            detected_langs = [r[2] for r in chunk_results if r[2] and r[2] not in ["auto", "detect", ""]]
-            final_lang = detected_langs[0] if detected_langs else target_lang
-            return combined, final_lang
-
-        try:
-            transcript, lang = await asyncio.to_thread(_do_transcribe)
-        except Exception as e_sub:
-            print(f"[transcribe_take _do_transcribe Error] {e_sub}")
-            transcript, lang = "", language
-
-        # Sanitize lines to guarantee no hallucination loops, CJK ideographs, or Tibetan symbols leak out
-        cleaned_lines = []
-        for line in (transcript or "").splitlines():
-            s_line = line.strip()
-            if not s_line:
-                continue
-            if ": " in s_line and s_line.startswith("["):
-                prefix, content_part = s_line.split(": ", 1)
-                sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part, language=lang)
-                if sanitized_part:
-                    cleaned_lines.append(f"{prefix}: {sanitized_part}")
-            else:
-                sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line, language=lang)
-                if sanitized_part:
-                    cleaned_lines.append(sanitized_part)
-        transcript = "\n".join(cleaned_lines)
+        transcript, lang = await asyncio.to_thread(
+            transcribe_normalized_audio_chunks,
+            chunks=chunks,
+            provider=provider,
+            api_key=api_key,
+            model_name=model_name,
+            language=language,
+            mime_type=mime,
+            segment_time_sec=segment_time_sec
+        )
 
         return JSONResponse(content={
             "status": "success",

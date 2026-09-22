@@ -81,7 +81,16 @@ const cleanTranscriptText = (text, lang) => {
 
 async function requestTakeTranscription({ blob, name, language, provider, apiKey, modelName }) {
   const formData = new FormData();
-  formData.append('file', blob, blob.name || `${name}.mp3`);
+  let fileExt = 'webm';
+  if (blob?.type) {
+    if (blob.type.includes('mp4') || blob.type.includes('m4a')) fileExt = 'mp4';
+    else if (blob.type.includes('wav')) fileExt = 'wav';
+    else if (blob.type.includes('ogg') || blob.type.includes('opus')) fileExt = 'ogg';
+    else if (blob.type.includes('webm')) fileExt = 'webm';
+    else if (blob.type.includes('mp3') || blob.type.includes('mpeg')) fileExt = 'mp3';
+  }
+  const fileName = blob?.name || `${name || 'take_recording'}.${fileExt}`;
+  formData.append('file', blob, fileName);
   formData.append('language', language || 'auto');
   formData.append('provider', provider);
   formData.append('api_key', apiKey);
