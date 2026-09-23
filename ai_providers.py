@@ -8,6 +8,7 @@ import io
 import wave
 import struct
 import math
+import random
 from typing import Dict, Any, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -15,6 +16,13 @@ from google import genai
 from google.genai import types
 from document_engine import DEFAULT_MEMBERS
 from ocr_engine import optimize_ocr_text, preprocess_image_for_ocr
+from diag_logging import get_logger, describe_exception, fmt_ts
+_stt_log = get_logger("stt")
+try:
+    import google.genai as _genai_pkg
+    _GENAI_VERSION = getattr(_genai_pkg, "__version__", "?")
+except Exception:
+    _GENAI_VERSION = "?"
 
 DEFAULT_WHISPER_PROMPT = (
     "EASD Eminence Associates for Social Development. "
@@ -184,6 +192,23 @@ def match_attendance_list(present_names: List[str], text_corpus: str = "") -> Li
         })
     return results
 
+_DATE_PATTERNS = [
+    r"\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*,?\s+\d{4}\b",
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
+    r"\b\d{1,2}[/.-]\d{1,2}[/.-]\d{4}\b",
+]
+_TIME_PATTERN = r"\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b(?:\s*(?:-|to|–)\s*\d{1,2}(?::\d{2})?\s*(?:am|pm))?"
+_STANDING_FIELD_KEYS = {"location", "ministry", "department", "author", "authors", "media_contact",
+                        "signatory", "project_lead", "survey_team", "dateline"}
+
+
+def _strip_transcript_prefix(line: str) -> str:
+    """'[12:30] Speaker 2: text' -> 'text'. Gap markers are dropped entirely."""
+    if "TRANSCRIPT GAP" in line:
+        return ""
+    return re.sub(r"^\[[\d:]+\]\s*(?:⚠\s*)?(?:Speaker\s*\d+\s*:)?\s*", "", line).strip()
+
+
 def deep_semantic_synthesis(
     raw_text: str,
     custom_skills: str = "",
@@ -191,327 +216,139 @@ def deep_semantic_synthesis(
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
-    100% offline, zero-cost semantic document synthesis engine.
-    Extracts structured document data according to the target template schema
-    via robust heuristics and regular expressions when cloud LLMs are unavailable.
+    Offline, zero-cost template filling used when no cloud LLM is reachable.
+
+    v8.3 rule: this function NEVER invents content. Every value it writes is either
+    (a) text found in the transcript, (b) a standing organisational default from the
+    template (e.g. venue), or (c) left empty for the user to complete. Dates/times are
+    only filled when they literally appear in the transcript.
     """
+    from template_engine import DEFAULT_TEMPLATES
+    tpl = template_schema or next((t for t in DEFAULT_TEMPLATES if t.get("id") == "easd_default_minutes"), DEFAULT_TEMPLATES[0])
     cleaned_input = str(raw_text or "").strip()
     lang = detect_text_language(cleaned_input)
-    doc_type = (template_schema.get("doc_type") if template_schema else None) or "meeting_minutes"
-    lines = [line.strip() for line in cleaned_input.splitlines() if line.strip()]
+    doc_type = tpl.get("doc_type") or "meeting_minutes"
+    utterances = [u for u in (_strip_transcript_prefix(l) for l in cleaned_input.splitlines()) if u]
+    corpus_lower = "\n".join(utterances).lower()
 
-    def extract_bullets(patterns: List[str], fallback_bullets: List[str], max_count: int = 5) -> str:
-        extracted = []
-        capture = False
-        for l in lines:
-            l_lower = l.lower()
-            if any(re.search(pat, l_lower) for pat in patterns):
-                capture = True
-                clean_l = re.sub(r'^(?:[•\-\*\d\.\)\:]\s*)+', '', l).strip()
-                if clean_l and len(clean_l) > 5 and not any(p in clean_l.lower() for p in patterns):
-                    extracted.append(f"• {clean_l}")
-                continue
-            if capture:
-                if any(re.search(p, l_lower) for p in [r"decision", r"agenda", r"attendance", r"followup", r"task", r"recommend", r"observ"]):
-                    break
-                clean_l = re.sub(r'^(?:[•\-\*\d\.\)\:]\s*)+', '', l).strip()
-                if clean_l and len(clean_l) > 3:
-                    extracted.append(f"• {clean_l}")
-        if extracted:
-            return clean_bullet_points("\n".join(extracted[:max_count]))
-        return clean_bullet_points("\n".join([f"• {b}" if not b.startswith("•") else b for b in fallback_bullets]))
+    def find_bullets(patterns: List[str], max_count: int = 5) -> str:
+        hits, seen = [], set()
+        for u in utterances:
+            ul = u.lower()
+            if any(re.search(p, ul) for p in patterns):
+                clean_u = re.sub(r"^(?:[•\-\*\d\.\)\:]\s*)+", "", u).strip()
+                if len(clean_u) > 8 and clean_u not in seen:
+                    seen.add(clean_u)
+                    hits.append(f"• {clean_u}")
+            if len(hits) >= max_count:
+                break
+        return clean_bullet_points("\n".join(hits)) if hits else ""
 
-    # 1. Bangladesh Government Nothi / Report
-    if doc_type == "bangladesh_govt_report":
-        bg_text = extract_bullets(
-            [r"পটভূমি", r"ভূমিকা", r"background", r"উদ্দেশ্য", r"context"],
-            ["জাতীয় স্বাস্থ্য নীতি ও স্বাস্থ্যসেবা প্রোগ্রাম বাস্তবায়ন অগ্রগতি পর্যালোচনা সভার পটভূমি ও উদ্দেশ্য।",
-             "মাঠ পর্যায়ের জনস্বাস্থ্য সেবা কার্যক্রম জোরদারকরণ এবং টেকসই প্রাতিষ্ঠানিক সমন্বয় সাধনের লক্ষ্যে প্রতিবেদন।"],
-            max_count=3
-        )
-        obs_text = extract_bullets(
-            [r"পর্যবেক্ষণ", r"তথ্য", r"উপাত্ত", r"observation", r"finding"],
-            ["মাঠ পর্যায়ে ডিজিটাল ট্র্যাকিং কার্যক্রম সফলভাবে চলমান রয়েছে।",
-             "জেলা ও উপজেলা স্বাস্থ্য কমপ্লেক্সসমূহে সেবার গুণগত মান বৃদ্ধি পেয়েছে।",
-             "জরুরি স্বাস্থ্যসেবা নিশ্চিতকরণে প্রশাসনিক তদারকি অব্যাহত রয়েছে।"],
-            max_count=4
-        )
-        dec_text = extract_bullets(
-            [r"গৃহীত", r"সিদ্ধান্ত", r"decision", r"resolution"],
-            ["আগামী ত্রৈমাসিকের মধ্যে সকল পরিদর্শন প্রতিবেদন মন্ত্রণালয়ে দাখিলের নির্দেশ প্রদান করা হলো।",
-             "ডিজিটাল মনিটরিং সেলের সার্বক্ষণিক কার্যক্রম জোরদার করার সিদ্ধান্ত গৃহীত হয়।"],
-            max_count=3
-        )
-        rec_text = extract_bullets(
-            [r"সুপারিশ", r"পরামর্শ", r"recommendation", r"proposal"],
-            ["তৃণমূল পর্যায়ে জনবল সংকট নিরসনে দ্রুত পদক্ষেপ গ্রহণ করা সমীচীন।",
-             "আধুনিক স্বাস্থ্য প্রযুক্তি ও সেবা নিশ্চিতকরণে বরাদ্দ বৃদ্ধির সুপারিশ করা হলো।"],
-            max_count=3
-        )
-        action_matrix = [
-            {"sn": "১", "action": "জেলা মূল্যায়ন প্রতিবেদন চূড়ান্তকরণ", "authority": "পরিচালক (প্রশাসন ও পরিকল্পনা)", "deadline": "১৫ অক্টোবর, ২০২৬"},
-            {"sn": "২", "action": "ডিজিটাল স্বাস্থ্য ট্র্যাকিং বাস্তবায়ন", "authority": "যুগ্মসচিব (পরিকল্পনা অনুবিভাগ)", "deadline": "৩০ নভেম্বর, ২০২৬"}
-        ]
-        
-        summary = {
-            "ministry": "স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয় / Ministry of Health and Family Welfare",
-            "department": "স্বাস্থ্য সেবা বিভাগ, পরিকল্পনা অনুবিভাগ",
-            "memo_no": "৪৫.০০.০০০০.০০১.২৪.০০১.২৬-",
-            "date": "০২ সেপ্টেম্বর, ২০২৬ / 02 September 2026",
-            "subject": "জাতীয় স্বাস্থ্য নীতি ও স্বাস্থ্যসেবা প্রোগ্রাম বাস্তবায়ন অগ্রগতি পর্যালোচনা প্রতিবেদন প্রসঙ্গে।",
-            "background": bg_text,
-            "observations": obs_text,
-            "decisions": dec_text,
-            "recommendations": rec_text,
-            "signatory": "মোহাম্মদ আবদুল কাদের, যুগ্মসচিব (পরিকল্পনা), স্বাস্থ্য সেবা বিভাগ",
-            "action_matrix": action_matrix,
-            "sections_data": {
-                "background": bg_text,
-                "observations": obs_text,
-                "decisions": dec_text,
-                "recommendations": rec_text,
-                "signatory": "মোহাম্মদ আবদুল কাদের, যুগ্মসচিব (পরিকল্পনা), স্বাস্থ্য সেবা বিভাগ"
-            },
-            "tables_data": {
-                "action_matrix": action_matrix
-            }
+    def find_date() -> str:
+        for pat in _DATE_PATTERNS:
+            m = re.search(pat, corpus_lower, re.I)
+            if m:
+                return m.group(0).strip().title()
+        return ""
+
+    def find_time() -> str:
+        m = re.search(_TIME_PATTERN, corpus_lower, re.I)
+        return m.group(0).upper() if m else ""
+
+    def keyword_patterns(sec: Dict[str, Any]) -> List[str]:
+        words = re.findall(r"[a-zA-Z]{4,}", f"{sec.get('id', '')} {sec.get('title', '')}".replace("_", " "))
+        stop = {"meeting", "section", "details", "with", "from", "and", "the", "wise", "point", "points"}
+        pats = [re.escape(w.lower()) for w in words if w.lower() not in stop]
+        extra = {
+            "decisions": [r"decision", r"সিদ্ধান্ত", r"agreed", r"approved", r"গৃহীত"],
+            "recommendations": [r"recommend", r"সুপারিশ", r"suggest"],
+            "observations": [r"observ", r"পর্যবেক্ষণ", r"found", r"finding"],
+            "next_steps": [r"next step", r"will ", r"করণীয়"],
+            "key_quotes": [r"said", r"stated", r"বলেন"],
         }
+        return pats + extra.get(sec.get("id", ""), [])
 
-    # 2. Academic & Scientific Journal
-    elif doc_type == "journal":
-        res_text = extract_bullets(
-            [r"result", r"finding", r"outcome", r"empirical", r"ফলাফল"],
-            ["Primary screening coverage increased by 28.3% over the baseline cohort.",
-             "Intervention adherence demonstrated statistically significant improvements across target groups.",
-             "Follow-up evaluations confirmed high community retention rates."],
-            max_count=4
-        )
-        ref_text = clean_bullet_points(
-            "• Talukder, S., et al. (2025). Community Health Interventions in South Asia. Journal of Global Health, 15(2), 112-125.\n"
-            "• World Health Organization. (2024). Global Status Report on Noncommunicable Diseases. Geneva: WHO Press."
-        )
-        data_table = [
-            {"variable": "Screening Coverage", "baseline": "34.2%", "outcome": "62.5%", "significance": "p < 0.001"},
-            {"variable": "Adherence Rate", "baseline": "41.0%", "outcome": "72.0%", "significance": "p = 0.004"}
-        ]
-        summary = {
-            "title": "Epidemiological Trends and Public Health Interventions in Urban Communities",
-            "authors": "EASD Research & Evaluation Wing, Eminence Institute of Public Health",
-            "keywords": "Public Health, NCD Prevention, Health Systems, Community Interventions, Epidemiology",
-            "date": "September 2026",
-            "abstract": "Background: This study investigates community-based health interventions. Methods: A prospective mixed-methods evaluation was conducted over an 18-month period. Results: Marked improvement in screening coverage and treatment adherence was observed. Conclusion: Strategic policy integration is essential for sustainable grassroots outcomes.",
-            "introduction": "Rapid urban demographic transitions have altered public health priorities. This paper assesses the impact of frontline community health worker networks on preventive health indicators.",
-            "methodology": "A structured randomized cluster framework was implemented across designated urban clusters, combining empirical metrics with focus group assessments.",
-            "results": res_text,
-            "discussion": "The empirical findings support decentralized primary screening models, underscoring the vital role of frontline community engagement in sustainable public health administration.",
-            "conclusion": "Community-centered public health models offer a viable, cost-effective framework for primary care management and policy scalability.",
-            "references": ref_text,
-            "data_table": data_table,
-            "sections_data": {
-                "abstract": "Background: This study investigates community-based health interventions. Methods: A prospective mixed-methods evaluation was conducted over an 18-month period. Results: Marked improvement in screening coverage and treatment adherence was observed. Conclusion: Strategic policy integration is essential for sustainable grassroots outcomes.",
-                "introduction": "Rapid urban demographic transitions have altered public health priorities. This paper assesses the impact of frontline community health worker networks on preventive health indicators.",
-                "methodology": "A structured randomized cluster framework was implemented across designated urban clusters, combining empirical metrics with focus group assessments.",
-                "results": res_text,
-                "discussion": "The empirical findings support decentralized primary screening models, underscoring the vital role of frontline community engagement in sustainable public health administration.",
-                "conclusion": "Community-centered public health models offer a viable, cost-effective framework for primary care management and policy scalability.",
-                "references": ref_text
-            },
-            "tables_data": {
-                "data_table": data_table
-            }
-        }
+    summary: Dict[str, Any] = {}
+    sections_data: Dict[str, Any] = {}
+    tables_data: Dict[str, Any] = {}
 
-    # 3. Press Release & News Story
-    elif doc_type == "news":
-        quotes_text = extract_bullets(
-            [r"quote", r"said", r"stated", r"বলেন", r"মন্তব্য"],
-            ["'Delivering vital healthcare access directly to underserved communities is our highest priority,' stated Dr. Shamim Talukder, CEO of EASD.",
-             "'This landmark program represents a transformative leap in preventive public health delivery,' added the Program Director."],
-            max_count=3
-        )
-        highlights_text = extract_bullets(
-            [r"highlight", r"milestone", r"key", r"অর্জন", r"মূল"],
-            ["Targeting direct screening and support for over 500,000 households.",
-             "Mobilizing 2,500 trained community health champions across eight divisions.",
-             "Equipping mobile units with real-time digital diagnostic tools."],
-            max_count=4
-        )
-        summary = {
-            "title": "EASD Unveils Landmark Community Health Initiative to Combat Non-Communicable Diseases",
-            "dateline": "DHAKA, Bangladesh",
-            "date": "September 2, 2026",
-            "media_contact": "Communications Directorate, Eminence (media@eminence-bd.org)",
-            "lead_paragraph": "DHAKA, Bangladesh — Eminence Associates for Social Development (EASD) today officially announced a major nationwide community health campaign to deliver essential preventive screening and healthcare support across the country.",
-            "body_story": "The landmark initiative addresses urgent health disparities by providing free diagnostic check-ups, early detection protocols, and educational outreach to vulnerable households across Bangladesh.",
-            "key_quotes": quotes_text,
-            "highlights": highlights_text,
-            "boilerplate": "About Eminence: Eminence Associates for Social Development (EASD) is an established non-profit research and development organization advancing public health, social equity, and community resilience.",
-            "sections_data": {
-                "lead_paragraph": "DHAKA, Bangladesh — Eminence Associates for Social Development (EASD) today officially announced a major nationwide community health campaign to deliver essential preventive screening and healthcare support across the country.",
-                "body_story": "The landmark initiative addresses urgent health disparities by providing free diagnostic check-ups, early detection protocols, and educational outreach to vulnerable households across Bangladesh.",
-                "key_quotes": quotes_text,
-                "highlights": highlights_text,
-                "boilerplate": "About Eminence: Eminence Associates for Social Development (EASD) is an established non-profit research and development organization advancing public health, social equity, and community resilience."
-            },
-            "tables_data": {}
-        }
+    # Fields
+    for fld in tpl.get("fields", []):
+        key = fld.get("key", "")
+        if not key:
+            continue
+        if "date" in key:
+            val = find_date()
+        elif "time" in key or "period" in key:
+            val = find_time() if "time" in key else ""
+        elif key in _STANDING_FIELD_KEYS or (key == "title" and doc_type == "meeting_minutes"):
+            val = fld.get("default", "")
+        elif key in ("title", "subject") and utterances:
+            first = re.split(r"(?<=[.!?।])\s", utterances[0])[0].strip()
+            val = first if len(first) <= 90 else first[:87].rsplit(" ", 1)[0] + "..."
+        else:
+            val = ""
+        summary[key] = val
 
-    # 4. Digital Blog Post
-    elif doc_type == "blog":
-        tips_text = extract_bullets(
-            [r"tip", r"takeaway", r"lesson", r"পরামর্শ", r"শিক্ষা", r"পদক্ষেপ"],
-            ["Engage grassroots community stakeholders and youth leadership before intervention kickoff.",
-             "Leverage intuitive offline-first digital reporting tools to empower field staff.",
-             "Focus metrics on continuous participant trust and care retention rather than raw headcounts.",
-             "Establish swift feedback loops that turn field observations into operational adjustments."],
-            max_count=4
-        )
-        summary = {
-            "title": "Transforming Public Health from the Grassroots: 5 Key Lessons from the Field",
-            "author": "EASD Thought Leadership Team",
-            "target_audience": "Development Practitioners, Policymakers, and Global Health Advocates",
-            "date": "September 2026",
-            "hook_intro": "What if the most impactful innovations in public health don't come from elite laboratories, but from listening closely to what frontline community workers encounter every single day?",
-            "core_insights": "Sustainable healthcare succeeds when local communities take active ownership. By providing frontline health workers with practical tools and culturally grounded strategies, preventive care transforms into an empowering community movement.",
-            "practical_tips": tips_text,
-            "conclusion_cta": "True systemic change starts at the grassroots level. What strategies have proven most effective in your field work? Share your thoughts below or reach out to partner with EASD!",
-            "sections_data": {
-                "hook_intro": "What if the most impactful innovations in public health don't come from elite laboratories, but from listening closely to what frontline community workers encounter every single day?",
-                "core_insights": "Sustainable healthcare succeeds when local communities take active ownership. By providing frontline health workers with practical tools and culturally grounded strategies, preventive care transforms into an empowering community movement.",
-                "practical_tips": tips_text,
-                "conclusion_cta": "True systemic change starts at the grassroots level. What strategies have proven most effective in your field work? Share your thoughts below or reach out to partner with EASD!"
-            },
-            "tables_data": {}
-        }
+    # Sections
+    for sec in tpl.get("sections", []):
+        sid, stype = sec.get("id", ""), sec.get("type", "text")
+        if not sid:
+            continue
+        if sid == "agendas" or stype == "list":
+            val: Any = []
+        elif stype == "bullets":
+            val = find_bullets(keyword_patterns(sec))
+        else:
+            val = find_bullets(keyword_patterns(sec), max_count=3).replace("• ", "")
+        summary[sid] = val
+        sections_data[sid] = val
 
-    # 5. Pure Transcript Summary (Just summarize transcript, nothing else)
-    elif doc_type == "summary":
-        key_topics_text = extract_bullets(
-            [r"topic", r"discuss", r"আলোচনা", r"বিষয়", r"agenda", r"point", r"review"],
-            ["Key progress indicators and active workstream delivery timelines were reviewed.",
-             "Operational priorities and coordination mechanisms across teams were clarified.",
-             "Quality benchmarks and submission deadlines were synchronized."],
-            max_count=5
-        )
-        decisions_text = extract_bullets(
-            [r"decision", r"সিদ্ধান্ত", r"agreed", r"approved", r"গৃহীত", r"conclu"],
-            ["Formally approved operational plans and verified project roadmap.",
-             "Established recurring review cadence for core workstream leaders."],
-            max_count=4
-        )
-        actions_text = extract_bullets(
-            [r"action", r"করণীয়", r"next step", r"task", r"দায়িত্ব", r"follow"],
-            ["Finalize operational documentation and share with stakeholders by end of week.",
-             "Track pending deliverables and verify submission standards before next checkpoint."],
-            max_count=4
-        )
+    # Tables
+    for tbl in tpl.get("tables", []):
+        tid = tbl.get("id", "")
+        if tid == "discussions":
+            rows = [
+                {"sn": "1", "topic": "Followup from previous meeting",
+                 "details": find_bullets([r"follow[\s\-]?up", r"পূর্ববর্তী", r"আগের সভা", r"previous meeting", r"last meeting"])},
+                {"sn": "2", "topic": "Action items",
+                 "details": find_bullets([r"action item", r"করণীয়", r"পদক্ষেপ", r"will (?:do|prepare|send|submit|share)"])},
+                {"sn": "3", "topic": "Task Assignments",
+                 "details": find_bullets([r"assign", r"দায়িত্ব", r"responsible", r"in charge", r"deadline"])},
+                {"sn": "4", "topic": "Meeting Decisions",
+                 "details": find_bullets([r"decision", r"সিদ্ধান্ত", r"approved", r"agreed", r"গৃহীত"])},
+            ]
+        elif tid == "attendance":
+            present = []
+            for mem in DEFAULT_MEMBERS:
+                parts = [p.lower() for p in mem["name"].split() if len(p) >= 4]
+                if parts and any(p in corpus_lower for p in parts):
+                    present.append(mem["name"])
+            rows = match_attendance_list(present, cleaned_input)
+            summary["present_members"] = present
+        elif tbl.get("fixed_rows"):
+            rows = [dict(r) for r in tbl["fixed_rows"]]
+        else:
+            rows = []
+        summary[tid] = rows
+        tables_data[tid] = rows
 
-        overview_first_lines = " ".join([l.strip() for l in lines[:4] if len(l.strip()) > 20])
-        overview_text = overview_first_lines if len(overview_first_lines) > 50 else (
-            "The transcript details proceedings focused on strategic progress, operational alignment, and actionable next steps. "
-            "Participants addressed core milestones, resolved open discussion queries, and confirmed execution directives."
-        )
+    if doc_type == "meeting_minutes":
+        summary.setdefault("agendas", [])
+        summary["decisions"] = summary.get("decisions") or (tables_data.get("discussions", [{}] * 4)[3].get("details", "") if tables_data.get("discussions") else "")
+        sections_data["decisions"] = summary["decisions"]
 
-        summary = {
-            "title": "Executive Summary of Proceedings",
-            "date": "September 2026",
-            "overview": overview_text,
-            "key_topics": key_topics_text,
-            "decisions": decisions_text,
-            "action_items": actions_text,
-            "sections_data": {
-                "overview": overview_text,
-                "key_topics": key_topics_text,
-                "decisions": decisions_text,
-                "action_items": actions_text
-            },
-            "tables_data": {}
-        }
-
-    # 6. Default / Meeting Minutes & Custom
-    else:
-        title = "Weekly Strategic, Programmatic and Presentation Review Meeting"
-        location = "Eminence Conference Room, 3/3-B, Probal Housing, Ring Road, Mohammadpur, Dhaka - 1207"
-        date_val = "29 August, 2026"
-        time_val = "11:00 AM - 01:00 PM"
-
-        followup_text = extract_bullets(
-            [r"follow[\s\-]?up", r"পূর্ববর্তী", r"আগের সভার", r"status of prior", r"review of previous"],
-            ["Reviewed progress against previous milestone action items.",
-             "Ongoing programmatic deliverables confirmed on track with assigned leads."],
-            max_count=4
-        )
-        action_text = extract_bullets(
-            [r"action\s*item", r"করণীয়", r"পদক্ষেপ", r"directiv", r"কার্যবিবরণী"],
-            ["Finalize and disseminate verified strategic deliverables.",
-             "Maintain strict quality benchmarks and submission deadlines across all workstreams."],
-            max_count=4
-        )
-        task_text = extract_bullets(
-            [r"task\s*assign", r"দায়িত্ব", r"বণ্টন", r"workstream", r"allocation"],
-            ["Core team leads assigned operational oversight on active projects.",
-             "Programmatic progress reports scheduled for next institutional review."],
-            max_count=4
-        )
-        decision_text = extract_bullets(
-            [r"decision", r"সিদ্ধান্ত", r"approved", r"resolution", r"গৃহীত"],
-            ["Formally approved active programmatic frameworks and milestone targets.",
-             "Next strategic review session confirmed for upcoming week."],
-            max_count=4
-        )
-
-        agendas = [
-            "Review of previous meeting minutes and action item follow-up",
-            "Strategic programmatic operations and workstream delivery review",
-            "Task allocation and project ownership confirmation",
-            "Executive decisions, milestones, and institutional scheduling"
-        ]
-
-        # Detect present member names
-        present_detected = []
-        text_lower = cleaned_input.lower()
-        for mem in DEFAULT_MEMBERS:
-            parts = [p.lower() for p in mem["name"].split() if len(p) >= 4]
-            if any(p in text_lower for p in parts):
-                present_detected.append(mem["name"])
-
-        attendance_matched = match_attendance_list(present_detected, cleaned_input)
-
-        discussions = [
-            {"sn": "1", "topic": "Followup from previous meeting", "details": followup_text},
-            {"sn": "2", "topic": "Action items", "details": action_text},
-            {"sn": "3", "topic": "Task Assignments", "details": task_text},
-            {"sn": "4", "topic": "Meeting Decisions", "details": decision_text}
-        ]
-
-        summary = {
-            "title": title,
-            "location": location,
-            "date": date_val,
-            "time": time_val,
-            "agendas": agendas,
-            "discussions": discussions,
-            "decisions": decision_text,
-            "attendance": attendance_matched,
-            "present_members": present_detected,
-            "sections_data": {
-                "agendas": agendas,
-                "decisions": decision_text
-            },
-            "tables_data": {
-                "discussions": discussions,
-                "attendance": attendance_matched
-            }
-        }
-
+    summary["sections_data"] = sections_data
+    summary["tables_data"] = tables_data
     return {
         "detected_language": lang,
         "raw_transcript": cleaned_input,
         "transcript": cleaned_input,
-        "bangla_transcript": cleaned_input if lang == "bn" else "সভা পরিচালনা ও আলোচনার বিবরণী।",
-        "english_transcript": cleaned_input if lang == "en" else "Executive meeting discussion proceedings and transcript record.",
+        "bangla_transcript": cleaned_input if lang == "bn" else "",
+        "english_transcript": cleaned_input if lang == "en" else "",
         "summary": summary,
-        "doc_type": doc_type
+        "doc_type": doc_type,
+        "summary_source": "offline_extraction",
     }
 
 def build_template_system_prompt(
@@ -563,7 +400,12 @@ def build_template_system_prompt(
         f"2. Every field, section, and table in the schema MUST be populated with meaningful, high-impact synthesized content.\n"
         f"3. For bulleted points or details, EVERY point MUST begin with exactly one single bullet symbol ('• '). NEVER use double bullets ('• •') or numbers with bullets.\n"
         f"4. If meeting minutes, ensure discussions table has exactly 4 rows (Followup from previous meeting, Action items, Task Assignments, Meeting Decisions).\n"
-        f"5. Maintain bilingual fidelity: provide rich, formal Bengali in 'bangla_transcript' and polished English in 'english_transcript'."
+        f"5. Maintain bilingual fidelity: provide rich, formal Bengali in 'bangla_transcript' and polished English in 'english_transcript'.\n"
+        f"6. GROUNDING: use ONLY facts stated in the transcript. Do NOT invent names, numbers, dates, times, venues or decisions. "
+        f"If a field's value is not in the transcript, return an empty string for it (\"\").\n"
+        f"7. Lines containing 'TRANSCRIPT GAP' mark audio that could not be transcribed. Never guess what was said there; "
+        f"if a gap affects a section, you may note '(part of the recording was not transcribed)'.\n"
+        f"8. Do NOT copy values from the illustrative example above - it only shows the shape of the JSON."
     )
 
     if org_context and org_context.strip():
@@ -598,8 +440,16 @@ def process_extracted_payload(
         if template_schema:
             for fld in template_schema.get("fields", []):
                 f_key = fld.get("key", "")
-                if f_key and f_key not in summary:
-                    summary[f_key] = fld.get("default", "")
+                if not f_key:
+                    continue
+                missing = f_key not in summary or summary.get(f_key) is None or not str(summary.get(f_key)).strip()
+                if missing:
+                    if "date" in f_key or "time" in f_key:
+                        summary[f_key] = ""  # sample dates would be wrong for every other meeting
+                    elif f_key in _STANDING_FIELD_KEYS or (f_key == "title" and doc_type == "meeting_minutes"):
+                        summary[f_key] = fld.get("default", "")  # standing organisational value (e.g. venue)
+                    else:
+                        summary[f_key] = summary.get(f_key) or ""
 
             # Standardize sections defined in the template
             for sec in template_schema.get("sections", []):
@@ -666,15 +516,17 @@ def process_extracted_payload(
         summary["sections_data"] = sections_data
         summary["tables_data"] = tables_data
 
-        raw_tx = parsed.get("raw_transcript") or parsed.get("transcript") or fallback_content
+        # The source transcript is authoritative; never replace it with the LLM's rewrite.
+        raw_tx = fallback_content if (fallback_content or "").strip() else (parsed.get("raw_transcript") or parsed.get("transcript") or "")
         return {
             "detected_language": parsed.get("detected_language", detect_text_language(raw_tx)),
             "raw_transcript": raw_tx,
             "transcript": raw_tx,
-            "bangla_transcript": parsed.get("bangla_transcript", fallback_content),
-            "english_transcript": parsed.get("english_transcript", fallback_content),
+            "bangla_transcript": parsed.get("bangla_transcript") or "",
+            "english_transcript": parsed.get("english_transcript") or "",
             "summary": summary,
-            "doc_type": doc_type
+            "doc_type": doc_type,
+            "summary_source": "llm"
         }
 
     return deep_semantic_synthesis(fallback_content or raw_text, custom_skills, org_context, template_schema)
@@ -829,16 +681,19 @@ def test_transcription_engine(
     prov = (provider or "gemini").lower()
 
     if prov in ["local_whisper", "local", "whisper_local"]:
-        import local_whisper_engine
-        opt_m = local_whisper_engine.select_optimal_model_name()
+        import stt_pipeline
+        st = stt_pipeline.whisper_status()
         lat = round((time.time() - t0) * 1000)
-        return {
-            "success": True,
-            "valid": True,
-            "message": f"Local Whisper Engine active (Optimal model: '{opt_m}').",
-            "latency_ms": lat,
-            "model": opt_m
-        }
+        if not st.get("available"):
+            return {"success": False, "valid": False, "message": st.get("error", "faster-whisper not installed"),
+                    "latency_ms": lat, "model": None}
+        if not st.get("weights_present"):
+            return {"success": False, "valid": False,
+                    "message": (f"Local Whisper model '{st.get('model')}' is not downloaded yet (expected in "
+                                f"{st.get('path')}). It downloads automatically on first use when online."),
+                    "latency_ms": lat, "model": st.get("model")}
+        return {"success": True, "valid": True,
+                "message": f"Local Whisper ready (model '{st.get('model')}').", "latency_ms": lat, "model": st.get("model")}
 
     key = (api_key or get_default_api_key_from_disk().get("api_key") or "").strip()
     if not key:
@@ -853,8 +708,9 @@ def test_transcription_engine(
     try:
         client = genai.Client(api_key=key)
         wav = generate_synthetic_test_wav()
+        stt_m = model_name if (model_name and "transcribe" in model_name) else "gemini-3.5-transcribe"
         resp = client.models.generate_content(
-            model="gemini-3.5-transcribe",
+            model=stt_m,
             contents=[types.Part.from_bytes(data=wav, mime_type="audio/wav")]
         )
         lat = round((time.time() - t0) * 1000)
@@ -950,87 +806,29 @@ def transcribe_audio_gemini(
     api_key: str,
     model_name: str = "gemini-3.5-transcribe",
     mime_type: str = "audio/mp3",
-    language_hint: str = "auto"
+    language_hint: str = "auto",
+    _ctx: str = ""
 ) -> Dict[str, Any]:
     """
-    Transcribes audio using Google Gemini 3.5 Transcribe with native speaker diarization and timestamps.
-    Includes a fail-fast circuit breaker: on auth/permission failure, immediately hands off to Local Whisper.
+    Single-buffer STT: Gemini (retry/backoff + prompt-mode fallback) then Local Whisper.
+    Returns {"text", "raw_transcript", "language", "provider", "error"}; never raises.
+    An empty "text" is always accompanied by a concrete "error".
     """
+    import stt_pipeline
     if not media_bytes or len(media_bytes) < 32:
-        return {"text": "", "language": "auto"}
-
+        return {"text": "", "raw_transcript": "", "language": "auto", "provider": None, "error": "empty audio"}
     clean_key = (api_key or get_default_api_key_from_disk().get("api_key") or "").strip()
-    audio_mime = mime_type or "audio/mp3"
-
-    if clean_key:
-        try:
-            client = genai.Client(api_key=clean_key)
-            cfg = types.GenerateContentConfig(
-                audio_transcription_config=types.AudioTranscriptionConfig(
-                    mode="VERBATIM",
-                    diarization=True,
-                    word_timestamp=True
-                )
-            )
-            resp = client.models.generate_content(
-                model="gemini-3.5-transcribe",
-                contents=[
-                    types.Part.from_bytes(data=media_bytes, mime_type=audio_mime)
-                ],
-                config=cfg
-            )
-
-            lines = []
-            if resp.candidates and len(resp.candidates) > 0 and resp.candidates[0].content:
-                for p in resp.candidates[0].content.parts:
-                    if hasattr(p, "audio_transcription") and p.audio_transcription:
-                        at = p.audio_transcription
-                        txt = (at.text or "").strip()
-                        if not txt:
-                            continue
-                        spk = at.speaker_label or "spk:0"
-                        spk_num = 1
-                        if spk.startswith("spk:"):
-                            try:
-                                spk_num = int(spk.split(":")[1]) + 1
-                            except Exception:
-                                pass
-                        ts_str = "[00:00]"
-                        if at.words and len(at.words) > 0 and hasattr(at.words[0], "start_offset"):
-                            try:
-                                sec_val = float(str(at.words[0].start_offset).rstrip("s"))
-                                ts_str = format_seconds_to_timestamp(sec_val)
-                            except Exception:
-                                pass
-                        lines.append(f"{ts_str} Speaker {spk_num}: {txt}")
-                    elif hasattr(p, "text") and p.text and p.text.strip():
-                        t_txt = p.text.strip()
-                        lines.append(t_txt if t_txt.startswith("[") else f"[00:00] Speaker 1: {t_txt}")
-
-            raw_t = "\n".join(lines).strip()
-            if raw_t:
-                return {"text": raw_t, "raw_transcript": raw_t, "language": detect_text_language(raw_t), "provider": "gemini"}
-        except Exception as e:
-            print(f"[Gemini 3.5 Transcribe Notice] {e}. Engaging Local Whisper fallback...")
-
-    # Seamless Fallback to Local Whisper
-    try:
-        import local_whisper_engine
-        opt_m = local_whisper_engine.select_optimal_model_name()
-        res = local_whisper_engine.transcribe_local_audio(
-            media_input=media_bytes,
-            language=None if language_hint in ["auto", "detect", ""] else language_hint,
-            model_name=opt_m,
-            mime_type=audio_mime,
-            beam_size=1,
-            temperature=0.0
-        )
-        t = res.get("raw_transcript") or res.get("clean_text", "")
-        l = res.get("detected_language") or "auto"
-        return {"text": t, "raw_transcript": t, "language": l, "provider": "local_whisper", "model": opt_m}
-    except Exception as e_loc:
-        print(f"[Local Whisper Fallback Error] {e_loc}")
-        return {"text": "", "language": "auto"}
+    ctx = _ctx or "[stt]"
+    g = stt_pipeline.gemini_transcribe_bytes(media_bytes, clean_key, model_name, mime_type or "audio/mp3", ctx)
+    if g["ok"]:
+        return {"text": g["text"], "raw_transcript": g["text"], "language": detect_text_language(g["text"]),
+                "provider": "gemini", "error": ""}
+    w = stt_pipeline.whisper_transcribe_bytes(media_bytes, language_hint, mime_type or "audio/mp3", ctx)
+    if w["ok"]:
+        return {"text": w["text"], "raw_transcript": w["text"], "language": w.get("language") or detect_text_language(w["text"]),
+                "provider": "local_whisper", "error": "", "gemini_error": g["error"]}
+    return {"text": "", "raw_transcript": "", "language": "auto", "provider": None,
+            "error": f"Gemini: {g['error']} | {w['error']}"}
 
 def live_transcribe_audio_chunk(
     media_bytes: bytes,
@@ -1093,6 +891,41 @@ def live_transcribe_audio_chunk(
     except Exception as e:
         return {"text": "", "language": "auto", "error": str(e)}
 
+def transcribe_audio_chunks_detailed(
+    chunks: List[bytes],
+    provider: str = "gemini",
+    api_key: str = "",
+    model_name: str = "gemini-3.5-transcribe",
+    language: str = "auto",
+    mime_type: str = "audio/mp3",
+    segment_time_sec: float = 600.0,
+    chunk_durations: Optional[List[float]] = None,
+    base_offset_sec: float = 0.0,
+    label: str = "",
+    on_progress: Optional[Any] = None
+) -> Dict[str, Any]:
+    """
+    Multi-chunk STT with per-chunk status, word timestamps and diarization.
+    Delegates to stt_pipeline using Gemini AudioTranscriptionConfig(mode="VERBATIM", diarization=True)
+    or local Whisper fallback. Supports on_progress callback for real-time progress mapping.
+    Contract: {status: success|partial|error, transcript, language, chunks, missing_ranges, errors, message}
+    """
+    import stt_pipeline
+    prov = (provider or "gemini").lower()
+    if prov not in ["gemini", "local_whisper", "local", "whisper_local"]:
+        prov = "gemini"
+    cfg = load_api_settings_from_disk()
+    target_key = (api_key or cfg.get("transcription_api_key") or cfg.get("gemini_api_key")
+                  or get_default_api_key_from_disk().get("api_key") or "").strip()
+    target_model = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
+    return stt_pipeline.transcribe_chunks(
+        chunks=chunks, chunk_durations=chunk_durations, provider=prov, api_key=target_key,
+        model_name=target_model, language=language or "auto", mime_type=mime_type or "audio/mp3",
+        segment_time_sec=segment_time_sec, base_offset_sec=base_offset_sec, label=label,
+        on_progress=on_progress
+    )
+
+
 def transcribe_normalized_audio_chunks(
     chunks: List[bytes],
     provider: str = "gemini",
@@ -1100,140 +933,16 @@ def transcribe_normalized_audio_chunks(
     model_name: str = "gemini-3.5-transcribe",
     language: str = "auto",
     mime_type: str = "audio/mp3",
-    segment_time_sec: float = 600.0
+    segment_time_sec: float = 600.0,
+    chunk_durations: Optional[List[float]] = None
 ) -> Tuple[str, str]:
-    """
-    Unified multi-chunk transcription engine for both recorded takes and uploaded media.
-    
-    1. Transcribes each audio chunk in parallel (up to 4 workers).
-    2. Preserves speaker labels and offsets timestamps across chunk boundaries [MM:SS].
-    3. Handles Gemini cloud STT with seamless automatic fallback to Local Whisper.
-    4. Post-processes text with anti-hallucination sanitization.
-    
-    Returns:
-        (combined_transcript, detected_language)
-    """
-    if not chunks:
-        return "", (language if language and language != "auto" else "bn")
+    """Backwards-compatible (transcript, language) wrapper. Prefer transcribe_audio_chunks_detailed."""
+    res = transcribe_audio_chunks_detailed(chunks, provider, api_key, model_name, language, mime_type,
+                                           segment_time_sec, chunk_durations)
+    return res.get("transcript", ""), res.get("language", "auto")
 
-    prov = (provider or "gemini").lower()
-    if prov not in ["gemini", "local_whisper", "local", "whisper_local"]:
-        prov = "gemini"
+_llm_log = get_logger("llm")
 
-    cfg = load_api_settings_from_disk()
-    target_key = (api_key or cfg.get("transcription_api_key") or cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
-    target_model = model_name or cfg.get("transcription_model") or "gemini-3.5-transcribe"
-    target_lang = language if language and language not in ["auto", "detect", ""] else "auto"
-
-    def _transcribe_one_chunk(chunk_bytes: bytes) -> Tuple[str, str]:
-        if not chunk_bytes or len(chunk_bytes) < 32:
-            return "", target_lang
-
-        if prov in ["local_whisper", "local", "whisper_local"]:
-            import local_whisper_engine
-            opt_m = local_whisper_engine.select_optimal_model_name()
-            res = local_whisper_engine.transcribe_local_audio(
-                media_input=chunk_bytes,
-                language=None if target_lang in ["auto", "detect", ""] else target_lang,
-                model_name=opt_m,
-                mime_type=mime_type,
-                beam_size=1,
-                temperature=0.0
-            )
-            raw = res.get("raw_transcript") or res.get("clean_text", "")
-            return raw, res.get("detected_language", target_lang)
-
-        # Gemini STT with fallback to Local Whisper
-        try:
-            res = transcribe_audio_gemini(
-                media_bytes=chunk_bytes,
-                api_key=target_key,
-                model_name=target_model,
-                mime_type=mime_type,
-                language_hint=target_lang
-            )
-            t = (res.get("text") or res.get("raw_transcript") or "").strip()
-            l = res.get("language", target_lang)
-            if t:
-                return t, l
-        except Exception as e_gem:
-            print(f"[transcribe_normalized_audio_chunks Gemini Notice] {e_gem}")
-
-        # Local Whisper fallback
-        try:
-            import local_whisper_engine
-            opt_m = local_whisper_engine.select_optimal_model_name()
-            res = local_whisper_engine.transcribe_local_audio(
-                media_input=chunk_bytes,
-                language=None if target_lang in ["auto", "detect", ""] else target_lang,
-                model_name=opt_m,
-                mime_type=mime_type,
-                beam_size=1,
-                temperature=0.0
-            )
-            raw = res.get("raw_transcript") or res.get("clean_text", "")
-            l = res.get("detected_language", target_lang)
-            if (not raw or not raw.strip()) and target_lang not in ["auto", "detect", ""]:
-                # Retry with auto language
-                res2 = local_whisper_engine.transcribe_local_audio(
-                    media_input=chunk_bytes,
-                    language=None,
-                    model_name=opt_m,
-                    mime_type=mime_type,
-                    beam_size=1,
-                    temperature=0.0
-                )
-                raw = res2.get("raw_transcript") or res2.get("clean_text", "")
-                l = res2.get("detected_language", "auto")
-            return raw, l
-        except Exception as e_loc:
-            print(f"[transcribe_normalized_audio_chunks Local Whisper Fallback Error] {e_loc}")
-            return "", target_lang
-
-    def _transcribe_chunk_with_offset(item: Tuple[int, bytes]) -> Tuple[int, str, str]:
-        c_idx, c_bytes = item
-        t_txt, c_lang = _transcribe_one_chunk(c_bytes)
-        offset_sec = c_idx * segment_time_sec
-        if offset_sec > 0 and t_txt:
-            try:
-                from media_processor import offset_transcript_timestamps
-                t_txt = offset_transcript_timestamps(t_txt, offset_sec)
-            except Exception:
-                pass
-        return c_idx, t_txt, c_lang
-
-    if len(chunks) == 1:
-        chunk_results = [_transcribe_chunk_with_offset((0, chunks[0]))]
-    else:
-        with ThreadPoolExecutor(max_workers=min(4, len(chunks))) as executor:
-            chunk_results = list(executor.map(_transcribe_chunk_with_offset, enumerate(chunks)))
-
-    chunk_results.sort(key=lambda x: x[0])
-    valid_parts = [r[1].strip() for r in chunk_results if r[1] and r[1].strip()]
-    combined_raw = "\n\n".join(valid_parts)
-
-    detected_langs = [r[2] for r in chunk_results if r[2] and r[2] not in ["auto", "detect", ""]]
-    final_lang = detected_langs[0] if detected_langs else (target_lang if target_lang != "auto" else "bn")
-
-    # Anti-hallucination sanitization pass
-    import local_whisper_engine
-    cleaned_lines = []
-    for line in (combined_raw or "").splitlines():
-        s_line = line.strip()
-        if not s_line:
-            continue
-        if ": " in s_line and s_line.startswith("["):
-            prefix, content_part = s_line.split(": ", 1)
-            sanitized = local_whisper_engine.sanitize_whisper_text(content_part, language=final_lang)
-            if sanitized:
-                cleaned_lines.append(f"{prefix}: {sanitized}")
-        else:
-            sanitized = local_whisper_engine.sanitize_whisper_text(s_line, language=final_lang)
-            if sanitized:
-                cleaned_lines.append(sanitized)
-
-    final_transcript = "\n".join(cleaned_lines)
-    return final_transcript, final_lang
 
 def summarize_text_gemini(
     text_content: str,
@@ -1243,46 +952,74 @@ def summarize_text_gemini(
     custom_skills: str = "",
     template_schema: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Synthesizes structured meeting minutes rapidly using Google Gemini Flash (Gemini Flash 3.8 Low)."""
+    """
+    Fills the selected template's JSON schema from the transcript with Gemini.
+    - JSON response mode, low temperature, generous output budget.
+    - Retries transient errors (429/5xx/timeouts) with backoff.
+    - If the JSON is truncated/unparseable, retries once asking for compact transcripts.
+    - On total failure falls back to offline extraction and says WHY in "warning".
+    """
+    import stt_pipeline
     clean_key = (api_key or get_default_api_key_from_disk().get("api_key") or "").strip()
     system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
-    full_prompt = f"{system_prompt}\n\nAnalyze, translate, and organize this transcript into the exact JSON format:\n\n{text_content or 'Document Content'}"
-
     target_model = model_name or "gemini-3.8-flash"
-    if "2.5" in target_model or "1.5" in target_model or "3.6" in target_model:
+    if any(v in target_model for v in ("1.5", "2.0")):
+        _llm_log.warning("summarization model %s is retired; using gemini-3.8-flash", target_model)
         target_model = "gemini-3.8-flash"
 
-    if clean_key:
-        try:
-            client = genai.Client(api_key=clean_key)
-            cfg = None
-            if "3.8" in target_model or "3.7" in target_model or "3" in target_model:
-                cfg = types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_level="low"),
-                    temperature=0.1
-                )
-            else:
-                cfg = types.GenerateContentConfig(temperature=0.1)
-            resp = client.models.generate_content(
-                model=target_model,
-                contents=full_prompt,
-                config=cfg
-            )
-            raw_text = (getattr(resp, "text", None) or "").strip()
-            if raw_text:
-                return process_extracted_payload(
-                    raw_text,
-                    fallback_content=text_content,
-                    custom_skills=custom_skills,
-                    org_context=org_context,
-                    template_schema=template_schema
-                )
-        except Exception as e:
-            print(f"[Gemini Summarize '{target_model}' Notice] {e}. Engaging Deep Semantic Synthesis Fallback...")
+    failure_reason = "No Gemini API key configured (add it in Settings)"
+    if clean_key and (text_content or "").strip():
+        client = stt_pipeline._gemini_client(clean_key)
+        compact_note = ("\n\nIMPORTANT: keep 'bangla_transcript' and 'english_transcript' to a concise formal record "
+                        "of at most ~600 words each so the whole JSON fits in one response.")
+        for pass_no, extra in enumerate(["", compact_note], start=1):
+            prompt = (f"{system_prompt}{extra}\n\nAnalyze and organize this transcript into the exact JSON format:\n\n"
+                      f"{text_content}")
+            for attempt in range(1, 4):
+                t0 = time.time()
+                try:
+                    kwargs = dict(temperature=0.1, max_output_tokens=65536, response_mime_type="application/json")
+                    if target_model.startswith("gemini-3"):
+                        kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+                    try:
+                        cfg = types.GenerateContentConfig(**kwargs)
+                    except Exception:
+                        kwargs.pop("thinking_config", None)
+                        cfg = types.GenerateContentConfig(**kwargs)
+                    resp = client.models.generate_content(model=target_model, contents=prompt, config=cfg)
+                    raw_text = (getattr(resp, "text", None) or "").strip()
+                    finish = None
+                    try:
+                        finish = str(resp.candidates[0].finish_reason)
+                    except Exception:
+                        pass
+                    parsed = extract_and_repair_json(raw_text) if raw_text else None
+                    _llm_log.info("summarize pass=%d attempt=%d model=%s in %.1fs chars_in=%d chars_out=%d finish=%s parsed=%s",
+                                  pass_no, attempt, target_model, time.time() - t0, len(text_content), len(raw_text), finish, bool(parsed))
+                    if parsed and isinstance(parsed, dict):
+                        out = process_extracted_payload(raw_text, fallback_content=text_content, custom_skills=custom_skills,
+                                                        org_context=org_context, template_schema=template_schema)
+                        out["model"] = target_model
+                        return out
+                    failure_reason = f"model returned unparseable JSON (finish_reason={finish}, {len(raw_text)} chars)"
+                    break  # go to compact pass
+                except Exception as e:
+                    failure_reason = stt_pipeline._friendly(stt_pipeline._short_reason(e))
+                    _llm_log.error("summarize attempt=%d model=%s FAILED after %.1fs: %s", attempt, target_model,
+                                   time.time() - t0, describe_exception(e))
+                    if not stt_pipeline._is_retryable(e) or attempt == 3:
+                        pass_no = 99
+                        break
+                    time.sleep((stt_pipeline._retry_delay_hint(e) or 4 * 2 ** (attempt - 1)) + random.uniform(0, 1))
+            if pass_no == 99:
+                break
+    elif not (text_content or "").strip():
+        failure_reason = "transcript is empty"
 
-    # Instant Fallback: Deep Semantic Synthesis
+    _llm_log.error("summarize FALLBACK to offline extraction: %s", failure_reason)
     res = deep_semantic_synthesis(text_content, custom_skills, org_context, template_schema)
-    res["warning"] = "Fitted to template using built-in semantic synthesis engine. (Update Gemini API key in Settings for cloud AI)."
+    res["warning"] = (f"Cloud AI could not fill the template ({failure_reason}). Fields were filled offline only with "
+                      f"text found in the transcript - please review and complete them before exporting.")
     return res
 
 def transcribe_and_summarize_gemini(
@@ -1363,7 +1100,8 @@ def process_ai_request(
     org_context: str = "",
     custom_skills: str = "",
     audio_chunks: Optional[List[bytes]] = None,
-    template_schema: Optional[Dict[str, Any]] = None
+    template_schema: Optional[Dict[str, Any]] = None,
+    audio_segments: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Unified entrypoint routing strictly between:
@@ -1403,34 +1141,73 @@ def process_ai_request(
         )
 
     # 4. Audio Transcription Stage (STT)
-    raw_transcript = text_content or ""
-    chunks = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
+    raw_transcript = (text_content or "").strip()
+    segments = list(audio_segments or [])
+    if not segments:
+        chunks = audio_chunks if (audio_chunks and len(audio_chunks) > 0) else ([media_bytes] if media_bytes else [])
+        if chunks:
+            segments = [{"name": "", "chunks": chunks, "durations": None}]
 
-    if chunks:
-        audio_text, audio_lang = transcribe_normalized_audio_chunks(
-            chunks=chunks,
-            provider=stt_prov,
-            api_key=stt_key,
-            model_name=stt_model,
-            language="auto",
-            mime_type=mime_type,
-            segment_time_sec=600.0
-        )
-        if audio_text and audio_text.strip():
-            raw_transcript = (f"{raw_transcript}\n\n{audio_text}" if raw_transcript else audio_text).strip()
+    stt_report: Dict[str, Any] = {}
+    if segments:
+        parts, all_errors, all_missing, statuses = [], [], [], []
+        for seg in segments:
+            res = transcribe_audio_chunks_detailed(
+                chunks=seg.get("chunks") or [], provider=stt_prov, api_key=stt_key, model_name=stt_model,
+                language="auto", mime_type=seg.get("mime_type") or mime_type or "audio/mp3",
+                segment_time_sec=600.0, chunk_durations=seg.get("durations"), label=seg.get("name", "")
+            )
+            statuses.append(res["status"])
+            multi = len(segments) > 1 and seg.get("name")
+            prefix = f"{seg['name']}: " if multi else ""
+            all_errors.extend(prefix + e for e in res.get("errors", []))
+            all_missing.extend(dict(m, file=seg.get("name", "")) for m in res.get("missing_ranges", []))
+            if res.get("transcript"):
+                header = f"=== {seg['name']} ===\n" if multi else ""
+                parts.append(header + res["transcript"])
+        audio_text = "\n\n".join(parts)
+        overall = ("success" if all(st == "success" for st in statuses)
+                   else "error" if all(st == "error" for st in statuses) else "partial")
+        stt_report = {"status": overall, "errors": all_errors, "missing_ranges": all_missing}
+        if audio_text:
+            raw_transcript = f"{raw_transcript}\n\n{audio_text}".strip() if raw_transcript else audio_text
 
     if not raw_transcript:
-        raw_transcript = "Weekly Strategic, Programmatic and Presentation Review Meeting discussion and proceedings."
+        reason = "; ".join(stt_report.get("errors", [])[:3]) or "no text or audio was provided"
+        _stt_log.error("process_ai_request: nothing to summarise - %s", reason)
+        return {"status": "error", "error": f"Transcription failed - nothing to fill the template with. {reason}",
+                "stt": stt_report, "raw_transcript": "", "transcript": ""}
 
     # 5. Summarization & Meeting Minutes Stage (LLM)
     if llm_prov in ["local", "local_whisper", "offline"]:
-        return deep_semantic_synthesis(raw_transcript, custom_skills, org_context, template_schema)
-
-    return summarize_text_gemini(
-        text_content=raw_transcript,
-        api_key=llm_key,
-        model_name=llm_model,
-        org_context=org_context,
-        custom_skills=custom_skills,
-        template_schema=template_schema
-    )
+        try:
+            import local_llm_engine
+            result = local_llm_engine.generate_template_fill(
+                transcript=raw_transcript, template_schema=template_schema,
+                org_context=org_context, custom_skills=custom_skills
+            )
+            _llm_log.info("Local LLM (%s) filled the template successfully.", result.get("model"))
+        except Exception as e_local:
+            _llm_log.error("Local LLM unavailable/failed (%s) - falling back to offline regex extraction",
+                            describe_exception(e_local))
+            result = deep_semantic_synthesis(raw_transcript, custom_skills, org_context, template_schema)
+            result["warning"] = (f"Local model could not run ({e_local}). Fields were filled offline only with "
+                                 f"text found in the transcript - please review and complete them before exporting.")
+    else:
+        result = summarize_text_gemini(
+            text_content=raw_transcript,
+            api_key=llm_key,
+            model_name=llm_model,
+            org_context=org_context,
+            custom_skills=custom_skills,
+            template_schema=template_schema
+        )
+    result["raw_transcript"] = raw_transcript
+    result["transcript"] = raw_transcript
+    if stt_report:
+        result["stt"] = stt_report
+        if stt_report["status"] == "partial":
+            gap_msg = f"Part of the audio could not be transcribed: {'; '.join(stt_report['errors'][:3])}"
+            result["warning"] = f"{gap_msg}. {result['warning']}" if result.get("warning") else gap_msg
+    result.setdefault("status", "success")
+    return result

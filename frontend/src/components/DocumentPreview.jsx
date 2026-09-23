@@ -343,7 +343,7 @@ export default function DocumentPreview({
                 {sanitize(meta.location || 'Emenance, Mohakhali, DOHS')}
               </div>
               <div style={{ fontWeight: 'bold', fontSize: '0.98rem', borderBottom: '2px solid #cbd5e1', paddingBottom: '10px', color: '#000000' }}>
-                Date: {sanitize(meta.date || '22 August, 2026')} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Time: {sanitize(meta.time || '11:00 AM - 01:00 PM')}
+                Date: {sanitize(meta.date || '—')} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Time: {sanitize(meta.time || '—')}
               </div>
             </div>
 

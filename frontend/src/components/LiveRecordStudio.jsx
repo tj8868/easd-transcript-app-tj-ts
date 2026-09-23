@@ -79,7 +79,7 @@ const cleanTranscriptText = (text, lang) => {
   return hasSpeech ? cleaned : '';
 };
 
-async function requestTakeTranscription({ blob, name, language, provider, apiKey, modelName }) {
+async function requestTakeTranscription({ blob, name, language, provider, apiKey, modelName, onProgress }) {
   const formData = new FormData();
   let fileExt = 'webm';
   if (blob?.type) {
@@ -95,26 +95,189 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
   formData.append('provider', provider);
   formData.append('api_key', apiKey);
   formData.append('model_name', modelName);
-  const res = await axios.post('/api/transcribe_take', formData, { timeout: 1800000 });
-  const raw = res.data?.transcript?.trim() || '';
-  if (!raw) return '';
 
-  // Clean lines and drop empty/alien segments
-  const cleaned = raw.split('\n').map(line => {
-    const sLine = line.trim();
-    if (!sLine) return '';
-    if (sLine.includes(': ') && sLine.startsWith('[')) {
-      const parts = sLine.split(': ');
-      const prefix = parts[0];
-      const content = parts.slice(1).join(': ');
-      const cleanContent = cleanTranscriptText(content, language);
-      return cleanContent ? `${prefix}: ${cleanContent}` : '';
+  const jobId = 'job_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  formData.append('job_id', jobId);
+
+  let pollInterval = null;
+  let simulatedPct = 25;
+
+  const startPolling = () => {
+    if (pollInterval) return;
+    pollInterval = setInterval(async () => {
+      try {
+        const progRes = await axios.get(`/api/transcribe_progress/${jobId}`, { timeout: 6000 });
+        if (progRes.data && progRes.data.status !== 'not_found') {
+          const pData = progRes.data;
+          // IMPORTANT: Never let polling report 100% until the POST request itself returns!
+          const safeServerPct = Math.min(96, Math.max(25, Number(pData.progress) || 25));
+          simulatedPct = Math.max(simulatedPct, safeServerPct);
+          const title = pData.stage === 'transcribing'
+            ? 'Transcribing Audio...'
+            : pData.stage === 'finalizing'
+            ? 'Finalizing Transcript...'
+            : 'Processing Audio...';
+          const subtitle = pData.message || 'Transcribing speech with AI...';
+          if (onProgress) {
+            onProgress({
+              percent: simulatedPct,
+              title,
+              subtitle,
+              stage: pData.stage || 'processing'
+            });
+          }
+        } else {
+          // If server job not registered yet, gently advance between 25% and 34%
+          if (simulatedPct < 34) {
+            simulatedPct += 1;
+            if (onProgress) {
+              onProgress({
+                percent: simulatedPct,
+                title: 'Processing Audio...',
+                subtitle: 'Converting audio format & preparing chunks with FFmpeg...',
+                stage: 'converting'
+              });
+            }
+          }
+        }
+      } catch (err) {
+        // Asymptotically creep slowly if polling fails, never exceeding 92%
+        if (simulatedPct < 92) {
+          simulatedPct += 1;
+          if (onProgress) {
+            onProgress({
+              percent: simulatedPct,
+              title: 'Transcribing Audio...',
+              subtitle: 'Transcribing speech with AI...',
+              stage: 'transcribing'
+            });
+          }
+        }
+      }
+    }, 800);
+  };
+
+  let fallbackPollTimer = null;
+  try {
+    if (onProgress) {
+      onProgress({
+        percent: 5,
+        title: 'Uploading Audio File...',
+        subtitle: `Starting upload for ${fileName}...`,
+        stage: 'uploading'
+      });
     }
-    return cleanTranscriptText(sLine, language);
-  }).filter(Boolean).join('\n');
 
-  return cleaned || raw;
+    fallbackPollTimer = setTimeout(() => {
+      startPolling();
+    }, 1200);
+
+    const res = await axios.post('/api/transcribe_take', formData, {
+      timeout: 3 * 60 * 60 * 1000,
+      onUploadProgress: (progressEvent) => {
+        if (progressEvent.total && progressEvent.total > 0) {
+          const uploadFraction = Math.min(1, progressEvent.loaded / progressEvent.total);
+          const uploadPct = Math.round(uploadFraction * 100);
+          // Scale upload 0-100% to 0-25% of overall pipeline
+          const overall = Math.min(25, Math.max(1, Math.round(uploadFraction * 25)));
+          const mbLoaded = (progressEvent.loaded / (1024 * 1024)).toFixed(1);
+          const mbTotal = (progressEvent.total / (1024 * 1024)).toFixed(1);
+          if (onProgress) {
+            onProgress({
+              percent: overall,
+              title: uploadPct < 100 ? 'Uploading Audio File...' : 'Processing Audio File...',
+              subtitle: uploadPct < 100
+                ? `Uploading ${fileName} (${mbLoaded} MB / ${mbTotal} MB • ${uploadPct}%)`
+                : 'Upload complete • Converting format & analyzing audio with FFmpeg...',
+              stage: uploadPct < 100 ? 'uploading' : 'converting'
+            });
+          }
+          if (uploadPct >= 100) {
+            startPolling();
+          }
+        } else {
+          startPolling();
+        }
+      }
+    });
+
+    if (fallbackPollTimer) {
+      clearTimeout(fallbackPollTimer);
+      fallbackPollTimer = null;
+    }
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+
+    const data = res.data || {};
+    const raw = data.transcript?.trim() || '';
+    const result = {
+      text: '',
+      status: data.status || (raw ? 'success' : 'error'),
+      message: data.message || '',
+      errors: Array.isArray(data.errors) ? data.errors : [],
+    };
+    if (!raw) {
+      if (!result.message) result.message = 'The server returned no transcript and no reason.';
+      result.status = 'error';
+      return result;
+    }
+
+    // Clean lines and drop empty/alien segments
+    const cleaned = raw.split('\n').map(line => {
+      const sLine = line.trim();
+      if (!sLine) return '';
+      if (sLine.includes('TRANSCRIPT GAP')) return sLine; // keep gap markers verbatim
+      if (sLine.includes(': ') && sLine.startsWith('[')) {
+        const parts = sLine.split(': ');
+        const prefix = parts[0];
+        const content = parts.slice(1).join(': ');
+        const cleanContent = cleanTranscriptText(content, language);
+        return cleanContent ? `${prefix}: ${cleanContent}` : '';
+      }
+      return cleanTranscriptText(sLine, language);
+    }).filter(Boolean).join('\n');
+
+    result.text = cleaned || raw;
+
+    // Report 100% completion ONLY after response is verified and transcript prepared!
+    if (onProgress) {
+      onProgress({
+        percent: 100,
+        title: 'Transcription Complete!',
+        subtitle: '✓ Transcript generated & formatted with timestamps',
+        stage: 'completed'
+      });
+    }
+
+    // Brief delay to allow user to visually observe the 100% completion
+    await new Promise((resolve) => setTimeout(resolve, 450));
+
+    return result;
+  } catch (err) {
+    if (fallbackPollTimer) {
+      clearTimeout(fallbackPollTimer);
+      fallbackPollTimer = null;
+    }
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+    throw err;
+  } finally {
+    if (fallbackPollTimer) {
+      clearTimeout(fallbackPollTimer);
+      fallbackPollTimer = null;
+    }
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
 }
+
+const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1 GB, matches the server limit
 
 export default function LiveRecordStudio({
   aiConfig,
@@ -128,6 +291,7 @@ export default function LiveRecordStudio({
   onRecordingProcessed,
   onLiveTranscriptSync,
   onAppendToTranscript,
+  onNotice,
   onSendToBangla,
   onSendToEnglish,
   onRecordingStateChange,
@@ -142,6 +306,8 @@ export default function LiveRecordStudio({
   isProcessing = false,
   isAutoTranscribing = false,
   setIsAutoTranscribing,
+  transcriptionProgress = null,
+  setTranscriptionProgress = null,
   clearQueueTrigger = 0
 }) {
   // Engine Verification & Direct Text State
@@ -330,45 +496,130 @@ export default function LiveRecordStudio({
   };
 
   const transcribeAudioItems = async (items, lang) => {
-    const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
-    const sttKey = (
-      aiConfig?.transcriptionApiKey ||
-      getSavedKeyForProvider(resolvedSttProv) ||
-      (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : '') ||
-      (aiConfig?.apiKey || '')
-    ).trim();
+    setIsTranscribing(true);
+    if (setIsAutoTranscribing) setIsAutoTranscribing(true);
+    try {
+      const resolvedSttProv = aiConfig?.transcriptionProvider || 'gemini';
+      const sttKey = (
+        aiConfig?.transcriptionApiKey ||
+        getSavedKeyForProvider(resolvedSttProv) ||
+        (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : '') ||
+        (aiConfig?.apiKey || '')
+      ).trim();
 
-    for (const item of items) {
-      const finalizeFallback = () => {
-        if (item.transcript) {
-          applyTranscribedTakeResult(item.id, item.transcript, item.name);
-        } else {
+      const totalItems = items.length;
+      const summary = { ok: 0, partial: 0, failed: 0, issues: [] };
+
+      for (let itemIdx = 0; itemIdx < totalItems; itemIdx++) {
+        const item = items[itemIdx];
+        const basePct = Math.round((itemIdx / totalItems) * 100);
+        const spanPct = 100 / totalItems;
+
+        const handleItemProgress = ({ percent, title, subtitle, stage }) => {
+          const combinedPct = Math.min(100, Math.max(0, Math.round(basePct + (percent * spanPct) / 100)));
+          const displayTitle = totalItems > 1 ? `[File ${itemIdx + 1}/${totalItems}] ${title}` : title;
+          if (setTranscriptionProgress) {
+            setTranscriptionProgress({
+              percent: combinedPct,
+              title: displayTitle,
+              subtitle: subtitle || ''
+            });
+          }
+          setStatusText(`${displayTitle} • ${combinedPct}% • ${subtitle}`);
           setRecordingsQueue((prev) =>
-            prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false } : t))
+            prev.map((t) =>
+              t.id === item.id
+                ? {
+                    ...t,
+                    progress: percent,
+                    progressMessage: subtitle,
+                    isAutoTranscribing: percent < 100
+                  }
+                : t
+            )
           );
-        }
-      };
+        };
 
-      try {
-        const aiTranscript = await requestTakeTranscription({
-          blob: item.blob,
-          name: item.name,
-          language: lang || languageRef.current || 'auto',
-          provider: resolvedSttProv,
-          apiKey: sttKey,
-          modelName: aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : 'auto')
-        });
-        if (aiTranscript) {
-          applyTranscribedTakeResult(item.id, aiTranscript, item.name);
-        } else {
-          console.warn('Empty transcription returned for item:', item.name);
-          setStatusText(`⚠️ No speech detected in ${item.name}`);
-          finalizeFallback();
+        const finalizeFallback = (errorText) => {
+          if (item.transcript) {
+            applyTranscribedTakeResult(item.id, item.transcript, item.name);
+          } else {
+            setRecordingsQueue((prev) =>
+              prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false, transcribeError: errorText || '' } : t))
+            );
+          }
+        };
+
+        if (item.blob && item.blob.size > MAX_UPLOAD_BYTES) {
+          const msg = `${item.name} is ${(item.blob.size / 1073741824).toFixed(2)} GB - the limit is 1 GB.`;
+          summary.failed += 1;
+          summary.issues.push(msg);
+          finalizeFallback(msg);
+          continue;
         }
-      } catch (err) {
-        console.warn('Transcribe error for item:', item.name, err);
-        setStatusText(`⚠️ Transcribe error: ${err.message || 'Check audio file'}`);
-        finalizeFallback();
+
+        try {
+          setStatusText(`Transcribing ${item.name}... long recordings can take several minutes.`);
+          const result = await requestTakeTranscription({
+            blob: item.blob,
+            name: item.name,
+            language: lang || languageRef.current || 'auto',
+            provider: resolvedSttProv,
+            apiKey: sttKey,
+            modelName: aiConfig?.transcriptionModel || (resolvedSttProv === 'gemini' ? 'gemini-3.5-transcribe' : 'auto'),
+            onProgress: handleItemProgress
+          });
+          if (result.text) {
+            applyTranscribedTakeResult(item.id, result.text, item.name);
+            setRecordingsQueue((prev) =>
+              prev.map((t) => (t.id === item.id ? { ...t, isAutoTranscribing: false, progress: 100, transcribeError: result.status === 'partial' ? result.message : '' } : t))
+            );
+            if (result.status === 'partial') {
+              summary.partial += 1;
+              summary.issues.push(`${item.name}: ${result.message}`, ...result.errors);
+            } else {
+              summary.ok += 1;
+            }
+          } else {
+            summary.failed += 1;
+            const reason = result.errors.length ? result.errors : [result.message];
+            summary.issues.push(`${item.name}: ${result.message}`, ...reason.filter((r) => r !== result.message));
+            finalizeFallback(result.message);
+          }
+        } catch (err) {
+          const detail = err?.code === 'ECONNABORTED'
+            ? 'The request timed out. The server may still be working - check app_service.log.'
+            : (err?.response?.data?.detail || err?.message || 'Network error');
+          summary.failed += 1;
+          summary.issues.push(`${item.name}: ${detail}`);
+          finalizeFallback(detail);
+        }
+      }
+
+      if (setTranscriptionProgress) {
+        setTranscriptionProgress({ percent: 100, title: 'Transcription Complete!', subtitle: 'All files finished' });
+      }
+      // Hold 100% checkmark briefly so user perceives completion before overlay hides
+      await new Promise((resolve) => setTimeout(resolve, 600));
+
+      if (onNotice) {
+        if (summary.failed || summary.partial) {
+          const kind = summary.ok || summary.partial ? 'warning' : 'error';
+          const title = summary.failed && !summary.ok && !summary.partial
+            ? 'Transcription failed'
+            : `Transcription finished with problems (${summary.ok} complete, ${summary.partial} with missing parts, ${summary.failed} failed)`;
+          onNotice(kind, title, summary.issues);
+        } else if (summary.ok) {
+          onNotice('success', `Transcribed ${summary.ok} file(s) - text is in the transcript box.`);
+        }
+      }
+      setStatusText(summary.failed || summary.partial ? 'Transcription finished with problems' : 'Transcription complete');
+      return summary;
+    } finally {
+      setIsTranscribing(false);
+      if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+      if (setTranscriptionProgress) {
+        setTranscriptionProgress({ percent: 0, title: '', subtitle: '' });
       }
     }
   };
@@ -997,15 +1248,25 @@ export default function LiveRecordStudio({
     if (mediaFiles.length > 0) {
       setIsTranscribing(true);
       if (setIsAutoTranscribing) setIsAutoTranscribing(true);
+      if (setTranscriptionProgress) {
+        setTranscriptionProgress({
+          percent: 2,
+          title: 'Preparing Upload...',
+          subtitle: `Starting transcription for ${mediaFiles.length} uploaded file(s)...`
+        });
+      }
       setStatusText(`Auto-transcribing ${mediaFiles.length} uploaded media file(s)...`);
       try {
         await transcribeAudioItems(mediaFiles, languageRef.current || 'auto');
-        setStatusText(`✓ Uploaded media auto-transcribed!`);
       } catch (err) {
         console.warn('Upload auto-transcribe error:', err);
+        if (onNotice) onNotice('error', 'Transcription failed', [err?.message || String(err)]);
       } finally {
         setIsTranscribing(false);
         if (setIsAutoTranscribing) setIsAutoTranscribing(false);
+        if (setTranscriptionProgress) {
+          setTranscriptionProgress({ percent: 0, title: '', subtitle: '' });
+        }
       }
     } else {
       setStatusText(`✓ Added ${newItems.length} file(s) to queue`);
@@ -1496,6 +1757,16 @@ export default function LiveRecordStudio({
                       <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                         {item.duration ? `(${formatTime(item.duration)})` : ''} • {item.size} • {item.timestamp}
                       </span>
+                      {item.isAutoTranscribing && (
+                        <span style={{ fontSize: '0.75rem', color: 'var(--accent-color)', fontWeight: 600 }}>
+                          Transcribing… {typeof item.progress === 'number' && item.progress > 0 ? `(${item.progress}%)` : ''}
+                        </span>
+                      )}
+                      {item.transcribeError && (
+                        <span role="status" style={{ fontSize: '0.75rem', color: 'var(--danger-color)', fontWeight: 600, overflowWrap: 'anywhere' }}>
+                          ⚠ {item.transcribeError}
+                        </span>
+                      )}
                     </div>
 
                     {/* Actions: Edit, Download, Delete */}
@@ -1576,6 +1847,7 @@ export default function LiveRecordStudio({
                       style={{
                         display: 'flex',
                         alignItems: 'center',
+                        justifyContent: 'space-between',
                         gap: '8px',
                         fontSize: '0.82rem',
                         color: '#38bdf8',
@@ -1585,7 +1857,10 @@ export default function LiveRecordStudio({
                         border: '1px solid rgba(56, 189, 248, 0.25)'
                       }}
                     >
-                      <span>Transcribing take...</span>
+                      <span>{item.progressMessage || 'Transcribing take...'}</span>
+                      <span style={{ fontWeight: 700, color: '#38bdf8' }}>
+                        {typeof item.progress === 'number' && item.progress > 0 ? `${item.progress}%` : ''}
+                      </span>
                     </div>
                   ) : (
                     item.transcript && (

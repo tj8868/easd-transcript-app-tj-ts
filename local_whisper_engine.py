@@ -30,9 +30,13 @@ _DYNAMIC_THREADS = str(get_optimal_cpu_threads())
 os.environ.setdefault("OMP_NUM_THREADS", _DYNAMIC_THREADS)
 os.environ.setdefault("MKL_NUM_THREADS", _DYNAMIC_THREADS)
 
-logger = logging.getLogger("local_whisper_engine")
+try:
+    from diag_logging import get_logger as _easd_get_logger
+    logger = _easd_get_logger("whisper")  # -> app_service.log (+ console when present)
+except Exception:
+    logger = logging.getLogger("local_whisper_engine")
 logger.setLevel(logging.INFO)
-if not logger.handlers:
+if not logger.handlers and not logger.name.startswith("easd."):
     # Use utf-8 safe handler
     try:
         stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -652,7 +656,17 @@ def transcribe_local_audio(
 
     t_start = time.time()
     effective_model = model_name or select_optimal_model_name()
-    model = get_local_whisper_model(effective_model)
+    _in_desc = (f"file={os.path.basename(media_input)}" if isinstance(media_input, str)
+                else f"bytes={len(media_input.getvalue() if isinstance(media_input, io.BytesIO) else media_input) / 1048576:.2f}MB")
+    logger.info(f"transcribe_local_audio START {_in_desc} mime={mime_type} lang={language!r} model={effective_model} "
+                f"path={get_model_path(effective_model)} weights={_model_has_weights(get_model_path(effective_model))} "
+                f"ram={get_system_ram_specs()} status={_MODEL_STATUS}")
+    try:
+        model = get_local_whisper_model(effective_model)
+    except Exception as _load_err:
+        logger.error(f"transcribe_local_audio MODEL LOAD FAILED after {time.time() - t_start:.1f}s: "
+                     f"{type(_load_err).__name__}: {_load_err}")
+        raise
 
     # Determine input extension hint
     hint = "webm"
@@ -666,7 +680,13 @@ def transcribe_local_audio(
         hint = "ogg"
 
     # Convert audio to clean 16kHz mono WAV file
+    _cv0 = time.time()
     temp_audio_file = convert_to_wav_pcm16k(media_input, input_hint=hint)
+    try:
+        _wav_sz = os.path.getsize(temp_audio_file)
+    except Exception:
+        _wav_sz = -1
+    logger.info(f"  WAV conversion {time.time() - _cv0:.1f}s -> {os.path.basename(str(temp_audio_file))} ({_wav_sz / 1048576:.2f} MB)")
 
     # Check if a specific language was explicitly requested
     explicit_lang = normalize_language_code(language)
@@ -732,6 +752,8 @@ def transcribe_local_audio(
             else:
                 input_to_transcribe = temp_audio_file
 
+            _sl0 = time.time()
+            _seen = _drop_nospeech = _drop_sanitize = _drop_dup = _kept = 0
             try:
                 with _TRANSCRIBE_LOCK:
                     segments, info = model.transcribe(
@@ -753,23 +775,29 @@ def transcribe_local_audio(
                     detected_whisper_prob = getattr(info, "language_probability", 1.0)
 
                 for segment in segments:
+                    _seen += 1
                     raw_text = (segment.text or "").strip()
                     if not raw_text:
+                        _drop_sanitize += 1
                         continue
 
                     # Skip pure silence segments where no_speech_prob is extreme (> 0.95)
                     no_speech = getattr(segment, "no_speech_prob", 0.0)
                     if no_speech > 0.95:
+                        _drop_nospeech += 1
                         continue
 
                     # Sanitize text: collapse repetition loops, strip Tibetan/alien tokens, strip CJK hallucinations
                     text = sanitize_whisper_text(raw_text, language=target_language or detected_whisper_lang)
                     if not text:
+                        _drop_sanitize += 1
                         continue
 
                     # Deduplicate consecutive identical segments
                     if text == last_clean_text:
+                        _drop_dup += 1
                         continue
+                    _kept += 1
 
                     abs_start = chunk_start_sec + segment.start
                     abs_end = chunk_start_sec + segment.end
@@ -792,6 +820,9 @@ def transcribe_local_audio(
                         "timestamp": f"[{timestamp_str}]"
                     })
             finally:
+                logger.info(f"  slice {slice_idx + 1}/{len(chunk_slices)} @{chunk_start_sec:.0f}s+{chunk_dur_sec:.0f}s "
+                            f"lang={target_language} took {time.time() - _sl0:.1f}s: segments={_seen} kept={_kept} "
+                            f"dropped(no_speech>0.95={_drop_nospeech}, sanitized_empty={_drop_sanitize}, dup={_drop_dup})")
                 if chunk_temp_wav and os.path.exists(chunk_temp_wav):
                     try:
                         os.remove(chunk_temp_wav)
@@ -816,6 +847,8 @@ def transcribe_local_audio(
             )
 
         elapsed = round(time.time() - t_start, 2)
+        logger.info(f"transcribe_local_audio END in {elapsed}s: audio={total_duration_sec:.1f}s lines={len(formatted_lines)} "
+                    f"(RTF={elapsed / total_duration_sec if total_duration_sec else 0:.2f})")
         speaker_transcript = "\n".join(formatted_lines)
         clean_text = " ".join(raw_text_parts)
 
@@ -861,7 +894,8 @@ def transcribe_local_audio(
         }
 
     except Exception as e:
-        logger.error(f"Error during local whisper transcription: {e}")
+        logger.error(f"Error during local whisper transcription after {time.time() - t_start:.1f}s: "
+                     f"{type(e).__name__}: {e}", exc_info=True)
         return {
             "status": "error",
             "provider": "local_whisper",

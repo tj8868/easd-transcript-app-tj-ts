@@ -114,6 +114,29 @@ STATIC_LEGACY = os.path.join(BASE_DIR, "static")
 
 MAX_UPLOAD_SIZE = 1024 * 1024 * 1024  # 1024 MB (1 GB) for high-resolution HEVC/H.265 videos
 
+
+def _save_upload_limited(uploaded: "UploadFile", suffix: str) -> str:
+    """Stream an upload to a temp file, aborting as soon as it exceeds MAX_UPLOAD_SIZE (1 GB)."""
+    written = 0
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        while True:
+            block = uploaded.file.read(1024 * 1024)
+            if not block:
+                break
+            written += len(block)
+            if written > MAX_UPLOAD_SIZE:
+                tmp.close()
+                os.remove(tmp.name)
+                raise HTTPException(status_code=413, detail=(
+                    f"File {os.path.basename(uploaded.filename or '')} is larger than the 1 GB limit."))
+            tmp.write(block)
+    finally:
+        if not tmp.closed:
+            tmp.close()
+    return tmp.name
+
+
 app = FastAPI(
     title="EASD Meeting Minutes AI Security Hub",
     description="High-Speed & Secure Cross-Platform Meeting Assistant",
@@ -516,114 +539,95 @@ async def transcribe_and_summarize(
     files: Optional[List[UploadFile]] = File(None),
     text_content: str = Form("")
 ):
+    """Full pipeline: ingest -> 16 kHz mono -> STT -> template JSON. Never returns fabricated content."""
+    from diag_logging import get_logger, new_job_id
+    _log = get_logger("api.transcribe_and_summarize")
+    job = new_job_id()
+    t0 = time.time()
+    temp_files_to_cleanup: List[str] = []
+    template_schema = None
     try:
         media_bytes = None
         mime_type = "audio/mp3"
-        all_audio_chunks = []
-        detected_formats = []
-        
-        # Collect all uploaded files (single file + multi-part files list)
+        audio_segments: List[Dict[str, Any]] = []
+        detected_formats: List[str] = []
+        ingest_errors: List[str] = []
+
         upload_list: List[UploadFile] = []
-        if file:
+        if file and file.filename:
             upload_list.append(file)
-        if files:
-            for f in files:
-                if f and f.filename:
-                    upload_list.append(f)
-                    
-        temp_files_to_cleanup = []
+        for f in (files or []):
+            if f and f.filename:
+                upload_list.append(f)
+
         for uploaded in upload_list:
-                clean_filename = os.path.basename(uploaded.filename or "upload_audio.mp3")
-                _, ext = os.path.splitext(clean_filename.lower())
-                safe_ext = ext if ext else ".mp4"
-                
-                with tempfile.NamedTemporaryFile(delete=False, suffix=safe_ext) as tmp_f:
-                    shutil.copyfileobj(uploaded.file, tmp_f, length=1024 * 1024)
-                    tmp_path = tmp_f.name
-                temp_files_to_cleanup.append(tmp_path)
+            clean_filename = os.path.basename(uploaded.filename or "upload_audio.mp3")
+            _, ext = os.path.splitext(clean_filename.lower())
+            tmp_path = _save_upload_limited(uploaded, ext or ".mp4")
+            temp_files_to_cleanup.append(tmp_path)
+            _log.info("[job %s] ingest %r (%.2f MB)", job, clean_filename, os.path.getsize(tmp_path) / 1048576)
 
-                upload_size = os.path.getsize(tmp_path)
-                if upload_size > MAX_UPLOAD_SIZE:
-                    raise HTTPException(status_code=413, detail=f"File {clean_filename} exceeds 1GB limit ({upload_size / (1024*1024):.1f} MB).")
-                    
-                proc_res = await asyncio.to_thread(
-                    process_uploaded_media,
-                    media_bytes=None,
-                    filename=clean_filename,
-                    content_type=uploaded.content_type or "",
-                    file_path=tmp_path
-                )
-                
-                fmt = proc_res.get("format_detected", "")
-                if fmt and fmt not in detected_formats:
-                    detected_formats.append(fmt)
-                    
-                if proc_res.get("type") == "text":
-                    extracted = proc_res.get("text", "")
+            proc_res = await asyncio.to_thread(
+                process_uploaded_media, media_bytes=None, filename=clean_filename,
+                content_type=uploaded.content_type or "", file_path=tmp_path
+            )
+            fmt = proc_res.get("format_detected", "")
+            if fmt and fmt not in detected_formats:
+                detected_formats.append(fmt)
+            ptype = proc_res.get("type")
+            if ptype == "error":
+                ingest_errors.append(f"{clean_filename}: {proc_res.get('error')}")
+            elif ptype == "text":
+                extracted = proc_res.get("text", "")
+                text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
+            elif ptype in ["image_ocr", "pdf_ocr"]:
+                media_bytes = proc_res.get("media_bytes")
+                mime_type = proc_res.get("mime_type", "image/jpeg")
+                if proc_res.get("text"):
+                    extracted = proc_res.get("text")
                     text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
-                elif proc_res.get("type") in ["image_ocr", "pdf_ocr"]:
-                    media_bytes = proc_res.get("media_bytes")
-                    mime_type = proc_res.get("mime_type", "image/jpeg")
-                    if proc_res.get("text"):
-                        extracted = proc_res.get("text")
-                        text_content = f"{text_content}\n\n{extracted}".strip() if text_content else extracted
-                else:
-                    chunks = proc_res.get("audio_chunks", [])
-                    single_audio = proc_res.get("audio_bytes")
-                    if chunks:
-                        all_audio_chunks.extend(chunks)
-                    elif single_audio:
-                        all_audio_chunks.append(single_audio)
-                    mime_type = proc_res.get("mime_type", "audio/mp3")
+            else:
+                chunks = proc_res.get("audio_chunks") or ([proc_res["audio_bytes"]] if proc_res.get("audio_bytes") else [])
+                if chunks:
+                    audio_segments.append({"name": clean_filename, "chunks": chunks,
+                                           "durations": proc_res.get("chunk_durations"),
+                                           "mime_type": proc_res.get("mime_type", "audio/mp3")})
 
-        detected_format_str = ", ".join(detected_formats) if detected_formats else ""
-        
-        # If single chunk and no multi-chunk list, assign media_bytes (unless already set by vision)
-        if not media_bytes and len(all_audio_chunks) == 1:
-            media_bytes = all_audio_chunks[0]
-            audio_chunks_param = None
-        elif len(all_audio_chunks) > 1:
-            media_bytes = None
-            audio_chunks_param = all_audio_chunks
-        else:
-            audio_chunks_param = None
+        if ingest_errors and not audio_segments and not text_content.strip() and not media_bytes:
+            return JSONResponse(content={"status": "error", "detail": " | ".join(ingest_errors), "errors": ingest_errors})
 
         template_schema = get_template_by_id(template_id) if template_id else None
-
         result = await asyncio.to_thread(
             process_ai_request,
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-            model_name=model_name,
+            provider=provider, api_key=api_key, base_url=base_url, model_name=model_name,
             transcription_provider=transcription_provider or "",
             transcription_api_key=transcription_api_key or "",
             transcription_model=transcription_model or model_name,
             summarization_provider=summarization_provider or "",
             summarization_api_key=summarization_api_key or "",
             summarization_model=summarization_model or model_name,
-            media_bytes=media_bytes,
-            mime_type=mime_type,
-            text_content=text_content,
-            org_context=org_context,
-            custom_skills=custom_skills,
-            audio_chunks=audio_chunks_param,
-            template_schema=template_schema
+            media_bytes=media_bytes if (media_bytes and mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf")) else None,
+            mime_type=mime_type, text_content=text_content, org_context=org_context,
+            custom_skills=custom_skills, template_schema=template_schema,
+            audio_segments=audio_segments or None
         )
-        if detected_format_str and isinstance(result, dict):
-            result["detected_format"] = detected_format_str
-            
+        if isinstance(result, dict):
+            if detected_formats:
+                result["detected_format"] = ", ".join(detected_formats)
+            if ingest_errors:
+                result["warning"] = ("; ".join(ingest_errors) + (". " + result["warning"] if result.get("warning") else ""))
+            if result.get("status") == "error":
+                _log.error("[job %s] FAILED after %.1fs: %s", job, time.time() - t0, result.get("error"))
+                return JSONResponse(content={"status": "error", "detail": result.get("error"), "data": result})
+        _log.info("[job %s] done in %.1fs source=%s stt=%s", job, time.time() - t0,
+                  result.get("summary_source"), (result.get("stt") or {}).get("status"))
         return JSONResponse(content={"status": "success", "data": result})
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[/api/transcribe_and_summarize Exception] {e}. Engaging seamless fallback to deep_semantic_synthesis...")
-        try:
-            from ai_providers import deep_semantic_synthesis
-            fallback = deep_semantic_synthesis(text_content or "Weekly Strategic, Programmatic and Presentation Review Meeting", custom_skills, org_context, template_schema)
-            fallback["warning"] = f"AI Provider Notice: {str(e)}. Structured using built-in semantic synthesis."
-            return JSONResponse(content={"status": "success", "data": fallback})
-        except Exception:
-            raise HTTPException(status_code=400, detail=str(e))
+        _log.exception("[job %s] unhandled error after %.1fs: %s", job, time.time() - t0, e)
+        return JSONResponse(status_code=500, content={"status": "error", "detail": f"Processing failed: {e}"})
     finally:
         for tf in temp_files_to_cleanup:
             if tf and os.path.exists(tf):
@@ -647,6 +651,9 @@ async def summarize_transcript_endpoint(
     template_id: Optional[str] = Form(None)
 ):
     """Summarizes raw or edited transcript into structured template fields using specified model."""
+    template_schema = None
+    if not (transcript or "").strip():
+        return JSONResponse(content={"status": "error", "detail": "The transcript is empty - transcribe or paste text first."})
     try:
         template_schema = get_template_by_id(template_id) if template_id else None
         res = await asyncio.to_thread(
@@ -665,13 +672,15 @@ async def summarize_transcript_endpoint(
         )
         return JSONResponse(content={"status": "success", "data": res})
     except Exception as e:
-        print(f"[/api/summarize_transcript Exception] {e}. Falling back to deep_semantic_synthesis...")
+        from diag_logging import get_logger
+        get_logger("api.summarize_transcript").exception("summarize_transcript failed: %s", e)
         try:
             fallback = deep_semantic_synthesis(transcript, custom_skills, org_context, template_schema)
-            fallback["warning"] = f"AI Provider Notice: {str(e)}. Structured using built-in semantic synthesis."
+            fallback["warning"] = (f"Cloud AI error ({e}). Fields were filled offline only with text found in the "
+                                   f"transcript - please review before exporting.")
             return JSONResponse(content={"status": "success", "data": fallback})
         except Exception:
-            raise HTTPException(status_code=400, detail=str(e))
+            return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 @app.post("/api/ocr_extract_and_optimize")
 async def ocr_extract_and_optimize_endpoint(
@@ -928,133 +937,180 @@ async def detect_language_endpoint(
     except Exception as e:
         return JSONResponse(content={"status": "error", "language": "bn", "confidence": 0.5, "detail": str(e)})
 
+_active_transcribe_jobs: Dict[str, Dict[str, Any]] = {}
+
+@app.get("/api/transcribe_progress/{job_id}")
+async def get_transcribe_progress_endpoint(job_id: str):
+    job = _active_transcribe_jobs.get(job_id)
+    if not job:
+        return JSONResponse(content={"status": "not_found", "progress": 0, "message": ""})
+    return JSONResponse(content=job)
+
 @app.post("/api/transcribe_take")
 async def transcribe_take_endpoint(
     file: UploadFile = File(...),
     provider: str = Form("gemini"),
     api_key: str = Form(""),
     model_name: str = Form("gemini-3.5-transcribe"),
-    language: str = Form("auto")
+    language: str = Form("auto"),
+    job_id: Optional[str] = Form(None)
 ):
     """
-    Instant auto-transcription for a completed recorded take or uploaded media file (up to 1 GB).
-    Routes through universal media conversion (FFmpeg normalize to 16kHz mono MP3 + 10-min chunking)
-    so all formats (WebM, MOV, MP4, MKV, M4A, AMR, HEVC, etc.) and long recordings transcribe seamlessly.
+    Transcribe one recorded take or uploaded media file (up to 1 GB).
+    Pipeline: stream to disk -> FFmpeg 16 kHz mono MP3 -> 10-min chunks -> STT per chunk.
+
+    Response (always JSON):
+      status      "success" | "partial" | "error"
+      transcript  combined text; failed ranges appear as '[MM:SS] ⚠ TRANSCRIPT GAP ...' lines
+      message     one-line human summary
+      errors      ["Chunk 3 of 5 (20:00-30:00) failed: <reason>", ...]
+      missing_ranges, chunks, language, duration_sec
     """
+    from diag_logging import get_logger, new_job_id
+    from ai_providers import transcribe_audio_chunks_detailed, detect_text_language
+    _tlog = get_logger("api.transcribe_take")
+    _job = new_job_id()
+    clean_job_id = (job_id or "").strip() or f"job_{_job}"
+    _t0 = time.time()
     uploaded_tmp_path = None
+
+    _active_transcribe_jobs[clean_job_id] = {
+        "job_id": clean_job_id,
+        "status": "processing",
+        "stage": "converting",
+        "progress": 25,
+        "chunks_total": 0,
+        "chunks_done": 0,
+        "message": "File received. Converting audio & preparing segments with FFmpeg...",
+        "created_at": _t0,
+        "updated_at": _t0
+    }
+
+    def _err(msg: str, **extra):
+        _tlog.error("[job %s] ERROR after %.1fs: %s", _job, time.time() - _t0, msg)
+        _active_transcribe_jobs[clean_job_id] = {
+            "job_id": clean_job_id,
+            "status": "error",
+            "stage": "failed",
+            "progress": 0,
+            "message": msg,
+            "updated_at": time.time()
+        }
+        body = {"status": "error", "transcript": "", "raw_transcript": "", "clean_text": "", "text": "",
+                "language": "auto", "message": msg, "errors": [msg], "missing_ranges": [], "chunks": []}
+        body.update(extra)
+        return JSONResponse(content=body)
+
     try:
         clean_filename = os.path.basename(file.filename or "take_audio.webm")
         _, ext = os.path.splitext(clean_filename.lower())
-        safe_ext = ext if ext else ".mp4"
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=safe_ext) as tmp_f:
-            shutil.copyfileobj(file.file, tmp_f, length=1024 * 1024)
-            uploaded_tmp_path = tmp_f.name
-
+        uploaded_tmp_path = _save_upload_limited(file, ext or ".mp4")
         upload_size = os.path.getsize(uploaded_tmp_path)
-        if upload_size > MAX_UPLOAD_SIZE:
-            raise HTTPException(status_code=413, detail=f"File {clean_filename} exceeds 1GB limit ({upload_size / (1024*1024):.1f} MB).")
+        _tlog.info("[job %s] REQUEST file=%r content_type=%r size=%.2f MB provider=%s model=%s language=%s api_key_from_ui=%s job_id=%s",
+                   _job, clean_filename, file.content_type, upload_size / 1048576, provider, model_name, language, bool(api_key), clean_job_id)
         if upload_size < 32:
-            return JSONResponse(content={"status": "success", "transcript": "", "language": "auto"})
+            return _err(f"{clean_filename} is empty.")
 
-        # Route through universal media processor (FFmpeg normalize + chunking)
         proc_res = await asyncio.to_thread(
-            process_uploaded_media,
-            media_bytes=None,
-            filename=clean_filename,
-            content_type=file.content_type or "",
-            file_path=uploaded_tmp_path
+            process_uploaded_media, media_bytes=None, filename=clean_filename,
+            content_type=file.content_type or "", file_path=uploaded_tmp_path
         )
-
         res_type = proc_res.get("type", "audio_single")
 
-        # 1. Document / Text extraction
+        if res_type == "error":
+            return _err(proc_res.get("error") or "Could not read this file.")
+
         if res_type in ["text", "image_ocr", "pdf_ocr"]:
             extracted_text = proc_res.get("text", "")
-            from ai_providers import detect_text_language
-            detected_l = detect_text_language(extracted_text) if extracted_text else "auto"
-            return JSONResponse(content={
+            if not extracted_text.strip():
+                return _err(f"No text could be extracted from {clean_filename}.")
+            lang_d = detect_text_language(extracted_text)
+            _active_transcribe_jobs[clean_job_id] = {
+                "job_id": clean_job_id,
                 "status": "success",
-                "transcript": extracted_text,
-                "raw_transcript": extracted_text,
-                "clean_text": extracted_text,
-                "text": extracted_text,
-                "language": detected_l
-            })
+                "stage": "completed",
+                "progress": 100,
+                "message": f"Extracted text from {clean_filename}.",
+                "updated_at": time.time()
+            }
+            return JSONResponse(content={"status": "success", "transcript": extracted_text, "raw_transcript": extracted_text,
+                                         "clean_text": extracted_text, "text": extracted_text, "language": lang_d,
+                                         "message": f"Extracted text from {clean_filename}.", "errors": [],
+                                         "missing_ranges": [], "chunks": []})
 
-        # 2. Audio / Video media chunks
-        chunks = proc_res.get("audio_chunks", [])
-        if not chunks and proc_res.get("audio_bytes"):
-            chunks = [proc_res.get("audio_bytes")]
-        mime = proc_res.get("mime_type", "audio/mp3")
-        segment_time_sec = proc_res.get("chunk_duration_sec", 600)
-
-        from ai_providers import transcribe_normalized_audio_chunks
-
-        transcript, lang = await asyncio.to_thread(
-            transcribe_normalized_audio_chunks,
-            chunks=chunks,
-            provider=provider,
-            api_key=api_key,
-            model_name=model_name,
-            language=language,
-            mime_type=mime,
-            segment_time_sec=segment_time_sec
-        )
-
-        return JSONResponse(content={
-            "status": "success",
-            "transcript": transcript,
-            "raw_transcript": transcript,
-            "clean_text": transcript,
-            "text": transcript,
-            "language": lang
+        chunks = proc_res.get("audio_chunks") or ([proc_res["audio_bytes"]] if proc_res.get("audio_bytes") else [])
+        n_chunks = len(chunks)
+        _active_transcribe_jobs[clean_job_id].update({
+            "stage": "transcribing",
+            "progress": 35,
+            "chunks_total": n_chunks,
+            "chunks_done": 0,
+            "duration_sec": proc_res.get("total_duration_sec"),
+            "message": f"Transcribing audio ({n_chunks} chunk{'s' if n_chunks > 1 else ''})...",
+            "updated_at": time.time()
         })
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"[transcribe_take Top-Level Exception] {e}. Engaging emergency local Whisper fallback...")
-        try:
-            import local_whisper_engine
-            opt_m = local_whisper_engine.select_optimal_model_name()
-            target_input = uploaded_tmp_path if (uploaded_tmp_path and os.path.exists(uploaded_tmp_path)) else None
-            if not target_input:
-                return JSONResponse(content={"status": "success", "transcript": "", "language": "auto"})
+        def _on_chunk_progress(info: Dict[str, Any]):
+            done = info.get("chunks_done", 0)
+            total = info.get("chunks_total", n_chunks or 1)
+            chunk_range = info.get("last_chunk_range", "")
+            chunk_pct = 35 + int((done / max(1, total)) * 57)
+            pct = min(92, max(35, chunk_pct))
+            msg = f"Transcribing chunk {done} of {total} ({chunk_range})..." if chunk_range else f"Transcribing chunk {done} of {total}..."
+            if clean_job_id in _active_transcribe_jobs:
+                _active_transcribe_jobs[clean_job_id].update({
+                    "stage": "transcribing",
+                    "progress": pct,
+                    "chunks_total": total,
+                    "chunks_done": done,
+                    "message": msg,
+                    "updated_at": time.time()
+                })
 
-            r_loc = local_whisper_engine.transcribe_local_audio(target_input, language=None, model_name=opt_m)
-            raw_t = r_loc.get("raw_transcript") or r_loc.get("clean_text", "")
-            emerg_lang = r_loc.get("detected_language", "auto")
-            cleaned_emergency = []
-            for line in raw_t.splitlines():
-                s_line = line.strip()
-                if not s_line:
-                    continue
-                if ": " in s_line and s_line.startswith("["):
-                    prefix, content_part = s_line.split(": ", 1)
-                    sanitized_part = local_whisper_engine.sanitize_whisper_text(content_part, language=emerg_lang)
-                    if sanitized_part:
-                        cleaned_emergency.append(f"{prefix}: {sanitized_part}")
-                else:
-                    sanitized_part = local_whisper_engine.sanitize_whisper_text(s_line, language=emerg_lang)
-                    if sanitized_part:
-                        cleaned_emergency.append(sanitized_part)
-            return JSONResponse(content={
-                "status": "success",
-                "transcript": "\n".join(cleaned_emergency),
-                "raw_transcript": "\n".join(cleaned_emergency),
-                "clean_text": "\n".join(cleaned_emergency),
-                "text": "\n".join(cleaned_emergency),
-                "language": emerg_lang
-            })
-        except Exception as e_emerg:
-            print(f"[transcribe_take Emergency Fallback Error] {e_emerg}")
-            return JSONResponse(content={
-                "status": "success",
-                "transcript": "",
-                "language": "auto"
-            })
+        res = await asyncio.to_thread(
+            transcribe_audio_chunks_detailed,
+            chunks=chunks, provider=provider, api_key=api_key, model_name=model_name, language=language,
+            mime_type=proc_res.get("mime_type", "audio/mp3"),
+            segment_time_sec=proc_res.get("chunk_duration_sec", 600),
+            chunk_durations=proc_res.get("chunk_durations"), label=f"job {_job}",
+            on_progress=_on_chunk_progress
+        )
+        transcript = res.get("transcript", "")
+        _tlog.log(20 if res["status"] == "success" else 40,
+                  "[job %s] RESPONSE after %.1fs: status=%s chunks=%d transcript_chars=%d errors=%s",
+                  _job, time.time() - _t0, res["status"], len(chunks), len(transcript), res.get("errors"))
+
+        _active_transcribe_jobs[clean_job_id].update({
+            "status": res["status"],
+            "stage": "completed",
+            "progress": 100,
+            "message": "Transcription complete!",
+            "updated_at": time.time()
+        })
+
+        return JSONResponse(content={
+            "status": res["status"],
+            "transcript": transcript, "raw_transcript": transcript, "clean_text": transcript, "text": transcript,
+            "language": res.get("language", "auto"),
+            "message": res.get("message", ""),
+            "errors": res.get("errors", []),
+            "missing_ranges": res.get("missing_ranges", []),
+            "chunks": res.get("chunks", []),
+            "providers_used": res.get("providers_used", []),
+            "duration_sec": proc_res.get("total_duration_sec"),
+            "job_id": clean_job_id
+        })
+
+    except HTTPException as he:
+        return _err(str(he.detail))
+    except Exception as e:
+        _tlog.exception("[job %s] unhandled exception: %s", _job, e)
+        return _err(f"Unexpected server error while transcribing: {type(e).__name__}: {e}")
     finally:
+        now = time.time()
+        expired = [k for k, v in _active_transcribe_jobs.items() if now - v.get("updated_at", now) > 600]
+        for k in expired:
+            _active_transcribe_jobs.pop(k, None)
         if uploaded_tmp_path and os.path.exists(uploaded_tmp_path):
             try:
                 os.remove(uploaded_tmp_path)

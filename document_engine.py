@@ -118,8 +118,8 @@ def generate_meeting_minutes_docx_bytes(data: dict, template_path: str) -> bytes
         replace_paragraph_text_preserving_runs(doc.paragraphs[4], data["location"])
         
     if len(doc.paragraphs) > 7:
-        d_val = data.get("date") or "29 August, 2026"
-        t_val = data.get("time") or "11:00 AM - 01:00 PM"
+        d_val = data.get("date") or ""
+        t_val = data.get("time") or ""
         date_time_str = f"Date: {d_val} \t\t\t\t\t\t           Time: {t_val}"
         replace_paragraph_text_preserving_runs(doc.paragraphs[7], date_time_str)
 

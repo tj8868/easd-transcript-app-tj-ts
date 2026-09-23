@@ -7,6 +7,9 @@ import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import List, Tuple, Dict, Any, Optional
+import time
+from diag_logging import get_logger, probe_duration_sec, fmt_ts
+_log = get_logger("media")
 from ocr_engine import (
     extract_pdf_content,
     preprocess_image_for_ocr,
@@ -44,6 +47,10 @@ PDF_EXTENSIONS = {".pdf"}
 MAX_CHUNK_BYTES = 20 * 1024 * 1024
 # Split audio into 10-minute chunks if normalized MP3 is larger than 4 MB (~11 mins of 48kbps audio)
 CHUNK_SPLIT_THRESHOLD_BYTES = 4 * 1024 * 1024
+# Length of each STT chunk. 10 min of 16 kHz mono 48 kbps MP3 = ~3.4 MB (well under Gemini's inline limit).
+SEGMENT_SECONDS = 600
+import threading as _threading
+_ffmpeg_state = _threading.local()
 
 def offset_transcript_timestamps(text: str, offset_seconds: float) -> str:
     """Offsets timestamps like [02:15] or [01:12:30] in a transcript by offset_seconds."""
@@ -218,7 +225,9 @@ def convert_media_to_speech_audio(
         ffmpeg_bin,
         "-y",
         "-nostdin",
+        "-hide_banner", "-loglevel", "error",
         "-i", input_file_path,
+        "-map", "0:a:0",         # first audio track only (videos / multi-track files)
         "-vn",                   # Drop video stream
         "-ac", "1",              # Convert to mono
         "-ar", "16000",          # 16kHz sample rate (Whisper & Gemini optimal)
@@ -227,15 +236,28 @@ def convert_media_to_speech_audio(
         output_audio_path
     ]
     try:
+        t0 = time.time()
         res = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         )
-        return res.returncode == 0 and os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 0
+        ok = res.returncode == 0 and os.path.exists(output_audio_path) and os.path.getsize(output_audio_path) > 0
+        out_size = os.path.getsize(output_audio_path) if os.path.exists(output_audio_path) else 0
+        if ok:
+            _log.info("FFmpeg normalize OK in %.1fs -> %s (%.2f MB, duration=%.1fs)",
+                      time.time() - t0, os.path.basename(output_audio_path), out_size / 1048576,
+                      probe_duration_sec(output_audio_path))
+        else:
+            tail = (res.stderr or b"")[-1500:].decode("utf-8", "replace")
+            _ffmpeg_state.last_error = (tail.strip().splitlines() or ["rc=%s" % res.returncode])[-1][:300]
+            _log.error("FFmpeg normalize FAILED rc=%s out_size=%s stderr_tail=%r",
+                       res.returncode, out_size, tail)
+        return ok
     except Exception as e:
-        print(f"[FFmpeg conversion error] {e}")
+        _ffmpeg_state.last_error = str(e)
+        _log.exception("FFmpeg conversion exception: %s", e)
         return False
 
 def split_audio_into_chunks(
@@ -259,11 +281,13 @@ def split_audio_into_chunks(
         "-i", audio_path,
         "-f", "segment",
         "-segment_time", str(segment_time_seconds),
+        "-reset_timestamps", "1",
         "-c", "copy",
         output_pattern
     ]
     try:
-        subprocess.run(
+        t0 = time.time()
+        res = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -274,9 +298,20 @@ def split_audio_into_chunks(
         pattern = os.path.join(temp_dir, f"{base_name}_chunk_*{audio_ext}")
         found = sorted(glob.glob(pattern))
         valid_chunks = [c for c in found if os.path.isfile(c) and os.path.getsize(c) > 0]
+        _log.info("FFmpeg segment rc=%s in %.1fs: %d file(s) matched, %d non-empty (segment_time=%ss, ext=%s)",
+                  res.returncode, time.time() - t0, len(found), len(valid_chunks), segment_time_seconds, audio_ext)
+        if res.returncode != 0:
+            _log.error("FFmpeg segment stderr_tail=%r", (res.stderr or b"")[-1500:].decode("utf-8", "replace"))
+        offset = 0.0
+        for i, c in enumerate(valid_chunks):
+            d = probe_duration_sec(c)
+            _log.info("  chunk %d: %s size=%.2f MB duration=%.1fs range=%s-%s",
+                      i + 1, os.path.basename(c), os.path.getsize(c) / 1048576, d,
+                      fmt_ts(offset), fmt_ts(offset + max(d, 0)))
+            offset += max(d, 0)
         return valid_chunks if valid_chunks else [audio_path]
     except Exception as e:
-        print(f"[FFmpeg audio chunking error] {e}")
+        _log.exception("FFmpeg audio chunking exception: %s", e)
         return [audio_path]
 
 def normalize_audio_chunk_for_stt(chunk_bytes: bytes, mime_type: str = "audio/webm") -> Tuple[Optional[bytes], str]:
@@ -314,7 +349,7 @@ def normalize_audio_chunk_for_stt(chunk_bytes: bytes, mime_type: str = "audio/we
                 
     return chunk_bytes, mime_type
 
-def process_uploaded_media(
+def _process_uploaded_media_impl(
     media_bytes: Optional[bytes] = None,
     filename: str = "",
     content_type: str = "",
@@ -470,97 +505,89 @@ def process_uploaded_media(
     elif ext in [".flac", ".wav", ".mp3", ".ogg", ".opus", ".wma"]:
         detected_format = f"{ext.upper().lstrip('.')} Audio"
 
-    if ffmpeg_bin:
-        safe_ext = ext if ext else (".mp4" if "video" in content_type else ".mp3")
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_output = os.path.join(temp_dir, "speech_normalized.mp3")
+    if not ffmpeg_bin:
+        msg = ("FFmpeg was not found, so audio/video cannot be converted to 16 kHz mono. "
+               "Install FFmpeg (e.g. 'winget install Gyan.FFmpeg') and restart the app.")
+        _log.error(msg)
+        return {"type": "error", "error": msg, "text": "", "format_detected": detected_format,
+                "audio_bytes": None, "mime_type": "", "audio_chunks": [], "chunk_durations": [],
+                "chunk_duration_sec": SEGMENT_SECONDS}
 
-            if file_path and os.path.isfile(file_path):
-                temp_input = file_path
-            else:
-                temp_input = os.path.join(temp_dir, f"input_media{safe_ext}")
-                b = _get_bytes_if_needed()
-                with open(temp_input, "wb") as f:
-                    f.write(b)
+    safe_ext = ext if ext else (".mp4" if "video" in content_type else ".mp3")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        if file_path and os.path.isfile(file_path):
+            temp_input = file_path
+        else:
+            temp_input = os.path.join(temp_dir, f"input_media{safe_ext}")
+            with open(temp_input, "wb") as f:
+                f.write(_get_bytes_if_needed())
 
-            # Check if input is already 16kHz mono speech audio (no video stream)
-            if is_already_speech_normalized(temp_input):
-                input_size = os.path.getsize(temp_input)
-                resolved_mime = "audio/wav" if ext == ".wav" else ("audio/mp3" if ext == ".mp3" else (content_type or "audio/webm"))
-                if input_size > CHUNK_SPLIT_THRESHOLD_BYTES:
-                    chunk_paths = split_audio_into_chunks(temp_input, ffmpeg_bin, segment_time_seconds=600)
-                    if len(chunk_paths) > 1:
-                        chunks_bytes = []
-                        for cp in chunk_paths:
-                            with open(cp, "rb") as cf:
-                                chunks_bytes.append(cf.read())
-                        return {
-                            "type": "audio_chunks",
-                            "text": "",
-                            "format_detected": detected_format + " (Pre-normalized 16kHz mono)",
-                            "audio_bytes": None,
-                            "mime_type": resolved_mime,
-                            "audio_chunks": chunks_bytes,
-                            "chunk_duration_sec": 600
-                        }
+        temp_output = os.path.join(temp_dir, "speech_normalized.mp3")
+        if not convert_media_to_speech_audio(temp_input, temp_output, ffmpeg_bin):
+            reason = getattr(_ffmpeg_state, "last_error", "") or "unknown FFmpeg error"
+            msg = f"Could not decode the audio track of this file ({detected_format}). FFmpeg said: {reason}"
+            return {"type": "error", "error": msg, "text": "", "format_detected": detected_format,
+                    "audio_bytes": None, "mime_type": "", "audio_chunks": [], "chunk_durations": [],
+                    "chunk_duration_sec": SEGMENT_SECONDS}
 
-                with open(temp_input, "rb") as in_f:
-                    audio_data = in_f.read()
-                return {
-                    "type": "audio_single",
-                    "text": "",
-                    "format_detected": detected_format + " (Pre-normalized 16kHz mono)",
-                    "audio_bytes": audio_data,
-                    "mime_type": resolved_mime,
-                    "audio_chunks": [audio_data],
-                    "chunk_duration_sec": 600
-                }
+        total_dur = probe_duration_sec(temp_output)
+        if 0 <= total_dur < 0.5:
+            msg = f"The file contains no audible audio (decoded duration {total_dur:.2f}s)."
+            _log.error(msg)
+            return {"type": "error", "error": msg, "text": "", "format_detected": detected_format,
+                    "audio_bytes": None, "mime_type": "", "audio_chunks": [], "chunk_durations": [],
+                    "chunk_duration_sec": SEGMENT_SECONDS}
 
-            # Otherwise, convert media to speech-optimized 16kHz mono MP3
-            success = convert_media_to_speech_audio(temp_input, temp_output, ffmpeg_bin)
-            if success and os.path.exists(temp_output):
-                output_size = os.path.getsize(temp_output)
-                
-                # Split into 10-minute chunks if larger than CHUNK_SPLIT_THRESHOLD_BYTES (~11 mins of 48kbps MP3)
-                if output_size > CHUNK_SPLIT_THRESHOLD_BYTES:
-                    chunk_paths = split_audio_into_chunks(temp_output, ffmpeg_bin, segment_time_seconds=600)
-                    if len(chunk_paths) > 1:
-                        chunks_bytes = []
-                        for cp in chunk_paths:
-                            with open(cp, "rb") as cf:
-                                chunks_bytes.append(cf.read())
-                        return {
-                            "type": "audio_chunks",
-                            "text": "",
-                            "format_detected": detected_format,
-                            "audio_bytes": None,
-                            "mime_type": "audio/mp3",
-                            "audio_chunks": chunks_bytes,
-                            "chunk_duration_sec": 600
-                        }
+        chunk_paths = [temp_output]
+        if total_dur > SEGMENT_SECONDS + 60 or (total_dur < 0 and os.path.getsize(temp_output) > CHUNK_SPLIT_THRESHOLD_BYTES):
+            chunk_paths = split_audio_into_chunks(temp_output, ffmpeg_bin, segment_time_seconds=SEGMENT_SECONDS)
 
-                # Single chunk
-                with open(temp_output, "rb") as out_f:
-                    audio_data = out_f.read()
-                return {
-                    "type": "audio_single",
-                    "text": "",
-                    "format_detected": detected_format,
-                    "audio_bytes": audio_data,
-                    "mime_type": "audio/mp3",
-                    "audio_chunks": [audio_data],
-                    "chunk_duration_sec": 600
-                }
+        chunks_bytes, durations = [], []
+        for cp in chunk_paths:
+            d = probe_duration_sec(cp)
+            if 0 <= d < 1.0 and len(chunk_paths) > 1:
+                _log.info("dropping %.2fs trailing sliver %s (no speech possible)", d, os.path.basename(cp))
+                continue
+            with open(cp, "rb") as cf:
+                chunks_bytes.append(cf.read())
+            durations.append(d if d > 0 else float(SEGMENT_SECONDS))
 
-    # 5. Fallback if FFmpeg is not available
-    b = _get_bytes_if_needed()
-    return {
-        "type": "audio_single",
-        "text": "",
-        "format_detected": detected_format,
-        "audio_bytes": b,
-        "mime_type": content_type or "audio/webm",
-        "audio_chunks": [b],
-        "chunk_duration_sec": 600
-    }
+        return {
+            "type": "audio_chunks" if len(chunks_bytes) > 1 else "audio_single",
+            "text": "",
+            "format_detected": detected_format,
+            "audio_bytes": chunks_bytes[0] if len(chunks_bytes) == 1 else None,
+            "mime_type": "audio/mp3",
+            "audio_chunks": chunks_bytes,
+            "chunk_durations": durations,
+            "total_duration_sec": total_dur,
+            "chunk_duration_sec": SEGMENT_SECONDS
+        }
+
+def process_uploaded_media(
+    media_bytes: Optional[bytes] = None,
+    filename: str = "",
+    content_type: str = "",
+    file_path: Optional[str] = None
+) -> Dict[str, Any]:
+    """Instrumented wrapper around _process_uploaded_media_impl (same contract)."""
+    t0 = time.time()
+    in_size = (os.path.getsize(file_path) if file_path and os.path.isfile(file_path)
+               else len(media_bytes or b""))
+    in_dur = probe_duration_sec(file_path) if file_path and os.path.isfile(file_path) else -1.0
+    _log.info("process_uploaded_media START name=%r content_type=%r size=%.2f MB duration=%.1fs (%s) ffmpeg=%s",
+              filename, content_type, in_size / 1048576, in_dur, fmt_ts(in_dur) if in_dur > 0 else "?",
+              find_ffmpeg_binary())
+    try:
+        res = _process_uploaded_media_impl(media_bytes=media_bytes, filename=filename,
+                                           content_type=content_type, file_path=file_path)
+    except Exception:
+        _log.exception("process_uploaded_media CRASHED after %.1fs", time.time() - t0)
+        raise
+    chunks = res.get("audio_chunks") or []
+    _log.info("process_uploaded_media DONE in %.1fs type=%s format=%r mime=%s chunks=%d sizes_MB=%s",
+              time.time() - t0, res.get("type"), res.get("format_detected"), res.get("mime_type"),
+              len(chunks), [round(len(c) / 1048576, 2) for c in chunks])
+    if res.get("type") in ("audio_single", "audio_chunks") and not find_ffmpeg_binary():
+        _log.warning("FFmpeg NOT found - raw upload passed through unnormalised (mime=%s)", res.get("mime_type"))
+    return res

@@ -51,3 +51,9 @@ desktop.ini
 models/
 *.bin
 
+
+# v8.3 runtime artefacts
+app_service.log
+diag_run_*.log
+raw_transcript.txt
+models/

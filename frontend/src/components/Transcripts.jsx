@@ -9,6 +9,7 @@ export default function Transcripts({
   onGenerate,
   isSummarizing = false,
   isAutoTranscribing = false,
+  transcriptionProgress = null,
   onClearAll,
   // Backward-compatibility props if needed
   banglaTranscript,
@@ -21,6 +22,7 @@ export default function Transcripts({
 }) {
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
+  const [genMode, setGenMode] = useState('gemini'); // 'gemini' (cloud) | 'local' (on-device model)
   const textareaRef = useRef(null);
 
   // Derive current active transcript value
@@ -406,7 +408,9 @@ export default function Transcripts({
       <div className="form-group" style={{ marginBottom: 0, position: 'relative' }}>
         {isAutoTranscribing && (
           <CircularProgressSpinner
-            title="Transcribing Audio..."
+            progress={transcriptionProgress?.percent}
+            title={transcriptionProgress?.title || "Transcribing Audio..."}
+            subtitle={transcriptionProgress?.subtitle || ""}
             color="#0284c7"
             glowColor="rgba(2, 132, 199, 0.45)"
           />
@@ -453,13 +457,48 @@ export default function Transcripts({
       {/* Frozen / Sticky Bottom Command Bar directly below timestamped dialogue */}
       <div className="transcript-frozen-footer">
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Cloud / Local model toggle for the Generate button */}
+          <div
+            role="group"
+            aria-label="Model for Generate"
+            style={{
+              display: 'flex', border: '1px solid var(--border-color, #333)', borderRadius: '8px',
+              overflow: 'hidden', fontSize: '0.78rem', fontWeight: 700
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => setGenMode('gemini')}
+              title="Fill the template using the cloud Gemini model"
+              style={{
+                padding: '8px 12px', border: 'none', cursor: 'pointer',
+                background: genMode === 'gemini' ? 'var(--accent-color, #6366f1)' : 'transparent',
+                color: genMode === 'gemini' ? '#fff' : 'var(--text-secondary)'
+              }}
+            >
+              ☁ Cloud
+            </button>
+            <button
+              type="button"
+              onClick={() => setGenMode('local')}
+              title="Fill the template on-device with a local model (no internet, no API key) - slower, works offline"
+              style={{
+                padding: '8px 12px', border: 'none', cursor: 'pointer',
+                background: genMode === 'local' ? 'var(--accent-color, #6366f1)' : 'transparent',
+                color: genMode === 'local' ? '#fff' : 'var(--text-secondary)'
+              }}
+            >
+              📱 Local
+            </button>
+          </div>
+
           {/* Big Generate Button (The 1 Primary Unified Generate in the Application) */}
           <button
             type="button"
             className="btn btn-primary transcript-btn-generate"
-            onClick={() => (onGenerate || onSummarize) && (onGenerate || onSummarize)(currentText)}
+            onClick={() => (onGenerate || onSummarize) && (onGenerate || onSummarize)(currentText, genMode)}
             disabled={!currentText.trim() || isSummarizing}
-            title="Generate document by fitting transcript to active template"
+            title={`Generate document by fitting transcript to active template (${genMode === 'local' ? 'local on-device model' : 'cloud Gemini'})`}
             style={{
               fontSize: '0.96rem',
               fontWeight: 800,

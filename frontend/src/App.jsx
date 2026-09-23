@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import {
   Upload,
@@ -106,17 +106,33 @@ export default function App() {
   const [directText, setDirectText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSummarizing, setIsSummarizing] = useState(false);
+  // Visible pipeline notices (errors / warnings / success). Errors and warnings stay until dismissed.
+  const [notice, setNotice] = useState(null);
+  const showNotice = useCallback((kind, title, details = []) => {
+    const uniq = Array.from(new Set((details || []).filter(Boolean)));
+    setNotice({ kind, title, details: uniq, id: Date.now() });
+  }, []);
+  useEffect(() => {
+    if (!notice || (notice.kind !== 'success' && notice.kind !== 'info')) return undefined;
+    const t = setTimeout(() => setNotice((n) => (n && n.id === notice.id ? null : n)), 8000);
+    return () => clearTimeout(t);
+  }, [notice]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isAutoTranscribing, setIsAutoTranscribing] = useState(false);
+  const [transcriptionProgress, setTranscriptionProgress] = useState({
+    percent: 0,
+    title: 'Transcribing Audio...',
+    subtitle: ''
+  });
   const [clearQueueTrigger, setClearQueueTrigger] = useState(0);
 
-  // Safety watchdog: ensure isAutoTranscribing never stays stuck true indefinitely
+  // Safety watchdog: ensure isAutoTranscribing never stays stuck indefinitely (allow up to 30 min window for long files)
   useEffect(() => {
     if (!isAutoTranscribing) return;
     const timer = setTimeout(() => {
-      console.warn('[Safety Watchdog] Auto-resetting isAutoTranscribing flag after 65s safety window');
+      console.warn('[Safety Watchdog] Auto-resetting isAutoTranscribing flag after 30 min maximum window');
       setIsAutoTranscribing(false);
-    }, 65000);
+    }, 30 * 60 * 1000);
     return () => clearTimeout(timer);
   }, [isAutoTranscribing]);
 
@@ -181,8 +197,9 @@ export default function App() {
   const [meta, setMeta] = useState({
     title: 'Weekly Strategic, Programmatic and Presentation Review Meeting',
     location: 'Eminence Conference Room, Mohakhali DOHS, Dhaka',
-    date: '29 August, 2026',
-    time: '11:00 AM - 01:00 PM',
+    // Default to today's date (was a hardcoded sample date that leaked into exported minutes)
+    date: (() => { const d = new Date(); return `${d.getDate()} ${d.toLocaleString('en-GB', { month: 'long' })}, ${d.getFullYear()}`; })(),
+    time: '',
     ministry: 'স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়',
     department: 'স্বাস্থ্য সেবা বিভাগ / DGHS',
     memo_no: '৪৫.০০.০০০০.০০১.২৪.০০১.২৬-',
@@ -389,6 +406,8 @@ export default function App() {
     if (!s) return;
     setMeta((prev) => ({
       ...prev,
+      ...s,
+      // Empty values from the model must not wipe what the user already has
       title: s.title || prev.title,
       location: s.location || prev.location,
       date: s.date || prev.date,
@@ -402,8 +421,7 @@ export default function App() {
       decisions: s.decisions || prev.decisions,
       recommendations: s.recommendations || prev.recommendations,
       signatory: s.signatory || prev.signatory,
-      action_matrix: s.action_matrix || prev.action_matrix,
-      ...s
+      action_matrix: s.action_matrix || prev.action_matrix
     }));
 
     if (s.agendas && s.agendas.length > 0) setAgendas(s.agendas);
@@ -473,7 +491,13 @@ export default function App() {
       return;
     }
 
+    if (selectedFile && selectedFile.size > 1024 * 1024 * 1024) {
+      showNotice('error', 'File too large', [`${selectedFile.name} is ${(selectedFile.size / 1073741824).toFixed(2)} GB - the limit is 1 GB.`]);
+      return;
+    }
+
     setIsProcessing(true);
+    setNotice(null);
     const gemKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
 
     const formData = new FormData();
@@ -497,7 +521,7 @@ export default function App() {
     if (directText.trim()) formData.append('text_content', directText.trim());
 
     try {
-      const res = await axios.post('/api/transcribe_and_summarize', formData, { timeout: 1800000 });
+      const res = await axios.post('/api/transcribe_and_summarize', formData, { timeout: 3 * 60 * 60 * 1000 });
       setIsProcessing(false);
 
       if (res.data && res.data.status === 'success') {
@@ -511,19 +535,35 @@ export default function App() {
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
         }
+        const sttErrors = payload.stt?.errors || [];
+        if (payload.warning || sttErrors.length) {
+          showNotice('warning', payload.warning || 'Some audio could not be transcribed.', sttErrors);
+        } else {
+          showNotice('success', 'Transcript and document fields are ready - review before exporting.');
+        }
         scrollToSection('section-export');
       } else {
-        console.warn('Processing notice:', res.data?.detail);
+        const d = res.data || {};
+        showNotice('error', d.detail || 'Processing failed.', d.data?.stt?.errors || d.errors || []);
       }
     } catch (err) {
       setIsProcessing(false);
       console.error('AI Server Error:', err);
+      const detail = err?.code === 'ECONNABORTED'
+        ? 'The request timed out. The server may still be working - check app_service.log.'
+        : (err?.response?.data?.detail || err?.message || 'Network error');
+      showNotice('error', 'Processing failed', [detail]);
     }
   };
 
   // Summarize Transcript with selected model
   const handleSummarizeTranscript = async (transcriptText, selectedModel = 'default') => {
+    if (!transcriptText || !transcriptText.trim()) {
+      showNotice('warning', 'The transcript is empty - transcribe a recording or paste text first.');
+      return;
+    }
     setIsSummarizing(true);
+    setNotice(null);
     let chosenProvider = aiConfig.provider || 'gemini';
     let chosenModelName = aiConfig.summarizationModel || 'gemini-3.8-flash';
 
@@ -532,7 +572,7 @@ export default function App() {
       chosenModelName = 'gemini-3.8-flash';
     } else if (selectedModel === 'local_whisper' || selectedModel === 'local') {
       chosenProvider = 'local_whisper';
-      chosenModelName = 'local_synthesis';
+      chosenModelName = 'local_qwen2.5';
     }
 
     const gemKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
@@ -563,13 +603,19 @@ export default function App() {
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
         }
+        if (payload.warning) {
+          showNotice('warning', payload.warning);
+        } else {
+          showNotice('success', 'Template filled from the transcript - review before exporting.');
+        }
         scrollToSection('section-export');
       } else {
-        console.warn('Fit to Template notice:', res.data?.detail);
+        showNotice('error', res.data?.detail || 'Could not fill the template.');
       }
     } catch (err) {
       setIsSummarizing(false);
       console.error('Fit to Template Error:', err);
+      showNotice('error', 'Could not fill the template', [err?.response?.data?.detail || err?.message || 'Network error']);
     }
   };
 
@@ -713,10 +759,28 @@ export default function App() {
         documentType={documentType}
       />
 
+      {notice && (
+        <div className={`app-notice app-notice-${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>
+          <div className="app-notice-body">
+            <strong className="app-notice-title">
+              {notice.kind === 'error' ? '⚠ ' : notice.kind === 'warning' ? '⚠ ' : '✓ '}{notice.title}
+            </strong>
+            {notice.details && notice.details.length > 0 && (
+              <ul className="app-notice-list">
+                {notice.details.slice(0, 12).map((d, i) => <li key={i}>{d}</li>)}
+                {notice.details.length > 12 && <li>…and {notice.details.length - 12} more (see app_service.log)</li>}
+              </ul>
+            )}
+          </div>
+          <button type="button" className="app-notice-close" aria-label="Dismiss" onClick={() => setNotice(null)}>×</button>
+        </div>
+      )}
+
       {/* SINGLE-PAGE SCROLLING LAYOUT */}
       <main style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
         {/* 1. Live Record & AI Engine Hero Command Studio */}
         <LiveRecordStudio
+          onNotice={showNotice}
           aiConfig={aiConfig}
           setAiConfig={setAiConfig}
           orgContext={orgContext}
@@ -742,6 +806,8 @@ export default function App() {
           isProcessing={isProcessing}
           isAutoTranscribing={isAutoTranscribing}
           setIsAutoTranscribing={setIsAutoTranscribing}
+          transcriptionProgress={transcriptionProgress}
+          setTranscriptionProgress={setTranscriptionProgress}
           clearQueueTrigger={clearQueueTrigger}
         />
 
@@ -754,6 +820,7 @@ export default function App() {
           isSummarizing={isSummarizing}
           isGenerating={isGenerating}
           isAutoTranscribing={isAutoTranscribing}
+          transcriptionProgress={transcriptionProgress}
           isRecording={isRecording}
           interimText={liveInterimText}
           onClearAll={handleClearAll}
