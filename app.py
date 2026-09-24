@@ -540,9 +540,9 @@ async def transcribe_and_summarize(
     text_content: str = Form("")
 ):
     """Full pipeline: ingest -> 16 kHz mono -> STT -> template JSON. Never returns fabricated content."""
-    from diag_logging import get_logger, new_job_id
+    from diag_logging import get_logger, bind_job_id
     _log = get_logger("api.transcribe_and_summarize")
-    job = new_job_id()
+    job = bind_job_id()  # correlation id: every log line of this request carries [job=<id>]
     t0 = time.time()
     temp_files_to_cleanup: List[str] = []
     template_schema = None
@@ -618,16 +618,21 @@ async def transcribe_and_summarize(
                 result["warning"] = ("; ".join(ingest_errors) + (". " + result["warning"] if result.get("warning") else ""))
             if result.get("status") == "error":
                 _log.error("[job %s] FAILED after %.1fs: %s", job, time.time() - t0, result.get("error"))
-                return JSONResponse(content={"status": "error", "detail": result.get("error"), "data": result})
+                result["log_id"] = job
+                return JSONResponse(content={"status": "error", "detail": result.get("error"), "data": result,
+                                             "log_id": job})
         _log.info("[job %s] done in %.1fs source=%s stt=%s", job, time.time() - t0,
                   result.get("summary_source"), (result.get("stt") or {}).get("status"))
-        return JSONResponse(content={"status": "success", "data": result})
+        result["log_id"] = job
+        return JSONResponse(content={"status": "success", "data": result, "log_id": job})
 
     except HTTPException:
         raise
     except Exception as e:
         _log.exception("[job %s] unhandled error after %.1fs: %s", job, time.time() - t0, e)
-        return JSONResponse(status_code=500, content={"status": "error", "detail": f"Processing failed: {e}"})
+        return JSONResponse(status_code=500, content={
+            "status": "error", "log_id": job,
+            "detail": f"Processing failed because of an unexpected server error (reference {job})."})
     finally:
         for tf in temp_files_to_cleanup:
             if tf and os.path.exists(tf):
@@ -784,6 +789,30 @@ async def system_audit_endpoint():
         "template_status": "Loaded and verified" if os.path.exists(TEMPLATE_PATH) else "Missing",
         "security_context": "W3C Secure Context compliant (Localhost / HTTPS ready)"
     }
+    # Developer diagnostics (not shown in the UI): which Whisper model would run and on what device
+    try:
+        import local_whisper_engine
+        requested = cfg.get("local_whisper_model") or "auto"
+        chosen, source = local_whisper_engine.resolve_whisper_model_choice(requested)
+        engine = local_whisper_engine.get_engine_status()
+        report["local_whisper"] = {
+            "requested_model": requested,
+            "resolved_model": chosen,
+            "resolution": source,
+            "resolved_path": local_whisper_engine.get_model_path(chosen),
+            "weights_present": local_whisper_engine._model_has_weights(local_whisper_engine.get_model_path(chosen)),
+            "status": engine.get("status"),
+            "loaded": engine.get("is_loaded"),
+            "device": engine.get("device"),
+            "cuda_devices": engine.get("cuda_devices"),
+            "threads": engine.get("threads"),
+            "load_error": engine.get("error"),
+            "vad_parameters": local_whisper_engine.WHISPER_VAD_PARAMETERS,
+            "ram": local_whisper_engine.get_system_ram_specs(),
+        }
+    except Exception as e:
+        report["local_whisper"] = {"status": "unavailable", "error": f"{type(e).__name__}: {e}"}
+    report["log_file"] = __import__("diag_logging").LOG_FILE_PATH
     return JSONResponse(content={"status": "success", "report": report})
 
 @app.websocket("/ws/live_transcribe")
@@ -870,6 +899,8 @@ async def live_transcribe_chunk_endpoint(
     HTTP streaming endpoint for live audio slices during recording.
     Transcribes the audio slice in real-time and returns text with language.
     """
+    from diag_logging import get_logger, bind_job_id
+    log_id = bind_job_id()
     try:
         uploaded = chunk or file
         if not uploaded:
@@ -900,9 +931,13 @@ async def live_transcribe_chunk_endpoint(
         )
         import local_whisper_engine
         cleaned_chunk = local_whisper_engine.sanitize_whisper_text(res.get("text", ""))
-        return JSONResponse(content={"status": "success", "text": cleaned_chunk, "language": res.get("language", "auto")})
+        return JSONResponse(content={"status": "success", "text": cleaned_chunk, "language": res.get("language", "auto"),
+                                     "log_id": log_id})
     except Exception as e:
-        return JSONResponse(content={"status": "error", "text": "", "detail": str(e)}, status_code=200)
+        get_logger("api.live_transcribe_chunk").error("live chunk failed: %s", e, exc_info=True)
+        return JSONResponse(content={"status": "error", "text": "", "log_id": log_id,
+                                     "detail": f"Live transcription of this slice failed (reference {log_id})."},
+                            status_code=200)
 
 @app.post("/api/detect_language")
 async def detect_language_endpoint(
@@ -922,7 +957,8 @@ async def detect_language_endpoint(
             return JSONResponse(content={"status": "success", "language": "bn", "confidence": 0.5})
 
         import local_whisper_engine
-        opt_m = local_whisper_engine.select_optimal_model_name()
+        opt_m, _src = local_whisper_engine.resolve_whisper_model_choice(
+            load_api_settings_from_disk().get("local_whisper_model"))
         model = local_whisper_engine.get_local_whisper_model(opt_m)
         temp_wav = local_whisper_engine.convert_to_wav_pcm16k(content, input_hint="webm")
         try:
@@ -935,7 +971,11 @@ async def detect_language_endpoint(
                 except Exception:
                     pass
     except Exception as e:
-        return JSONResponse(content={"status": "error", "language": "bn", "confidence": 0.5, "detail": str(e)})
+        from diag_logging import get_logger, current_job_id
+        get_logger("api.detect_language").error("detect_language failed: %s", e, exc_info=True)
+        return JSONResponse(content={"status": "error", "language": "auto", "confidence": 0.0,
+                                     "detail": "Language detection is unavailable right now.",
+                                     "job_id": current_job_id()})
 
 _active_transcribe_jobs: Dict[str, Dict[str, Any]] = {}
 
@@ -966,10 +1006,10 @@ async def transcribe_take_endpoint(
       errors      ["Chunk 3 of 5 (20:00-30:00) failed: <reason>", ...]
       missing_ranges, chunks, language, duration_sec
     """
-    from diag_logging import get_logger, new_job_id
+    from diag_logging import get_logger, bind_job_id
     from ai_providers import transcribe_audio_chunks_detailed, detect_text_language
     _tlog = get_logger("api.transcribe_take")
-    _job = new_job_id()
+    _job = bind_job_id()  # correlation id for app_service.log; returned to the client as "log_id"
     clean_job_id = (job_id or "").strip() or f"job_{_job}"
     _t0 = time.time()
     uploaded_tmp_path = None
@@ -997,7 +1037,8 @@ async def transcribe_take_endpoint(
             "updated_at": time.time()
         }
         body = {"status": "error", "transcript": "", "raw_transcript": "", "clean_text": "", "text": "",
-                "language": "auto", "message": msg, "errors": [msg], "missing_ranges": [], "chunks": []}
+                "language": "auto", "message": msg, "errors": [msg], "missing_ranges": [], "chunks": [],
+                "log_id": _job}
         body.update(extra)
         return JSONResponse(content=body)
 
@@ -1098,14 +1139,15 @@ async def transcribe_take_endpoint(
             "chunks": res.get("chunks", []),
             "providers_used": res.get("providers_used", []),
             "duration_sec": proc_res.get("total_duration_sec"),
-            "job_id": clean_job_id
+            "job_id": clean_job_id,
+            "log_id": _job
         })
 
     except HTTPException as he:
         return _err(str(he.detail))
     except Exception as e:
         _tlog.exception("[job %s] unhandled exception: %s", _job, e)
-        return _err(f"Unexpected server error while transcribing: {type(e).__name__}: {e}")
+        return _err(f"Unexpected server error while transcribing (reference {_job}).")
     finally:
         now = time.time()
         expired = [k for k, v in _active_transcribe_jobs.items() if now - v.get("updated_at", now) > 600]

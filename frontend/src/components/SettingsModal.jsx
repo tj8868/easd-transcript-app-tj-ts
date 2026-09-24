@@ -690,7 +690,7 @@ export default function SettingsModal({
 
               {/* Hardware Sizing Architecture Banner */}
               <div style={{ background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '8px', padding: '10px 14px', marginBottom: '14px', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-                <strong style={{ color: '#10b981' }}>Dynamic RAM Sizing:</strong> ≤4GB: <code>whisper-tiny</code> • 4–8GB: <code>whisper-base</code> • 8–16GB: <code>whisper-small</code> • ≥16GB: <code>whisper-medium</code>. Runs with multi-threaded INT8 quantization on your CPU.
+                <strong style={{ color: '#10b981' }}>Model sizing:</strong> <code>auto</code> picks the largest downloaded model your free RAM can run (<code>whisper-medium</code> needs ~8GB total and 2.5GB free). A model you choose here is always used as-is. Runs INT8 on the CPU, or on an NVIDIA GPU automatically when one is available.
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginBottom: '12px' }}>
@@ -708,8 +708,8 @@ export default function SettingsModal({
                     <option value="auto">auto (Hardware Adaptive: Auto-size to system RAM)</option>
                     <option value="whisper-tiny">whisper-tiny (Ultra-Fast / Low RAM: &lt;= 4GB)</option>
                     <option value="whisper-base">whisper-base (Fast Lightweight: 4-8GB)</option>
-                    <option value="whisper-small">whisper-small (Standard Balance: 8-16GB)</option>
-                    <option value="whisper-medium">whisper-medium (High Precision: 16+ GB)</option>
+                    <option value="whisper-small">whisper-small (Standard Balance: 6GB+)</option>
+                    <option value="whisper-medium">whisper-medium (High Precision: 8GB+ with 2.5GB free)</option>
                   </select>
                 </div>
 

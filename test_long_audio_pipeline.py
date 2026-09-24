@@ -84,10 +84,10 @@ def install(behaviour, whisper_ok=False):
     client = FakeClient(behaviour)
     stt_pipeline._gemini_client = lambda key: client
     if whisper_ok:
-        stt_pipeline.whisper_transcribe_bytes = lambda audio, language="auto", mime_type="", ctx="": {
+        stt_pipeline.whisper_transcribe_bytes = lambda audio, language="auto", mime_type="", ctx="", **kw: {
             "ok": True, "text": "[00:05] Speaker 1: whisper fallback text", "provider": "local_whisper", "error": ""}
     else:
-        stt_pipeline.whisper_transcribe_bytes = lambda audio, language="auto", mime_type="", ctx="": {
+        stt_pipeline.whisper_transcribe_bytes = lambda audio, language="auto", mime_type="", ctx="", **kw: {
             "ok": False, "text": "", "provider": "local_whisper",
             "error": "Local Whisper model not installed (download failed: 403 Forbidden)"}
     return client

@@ -47,19 +47,34 @@ def test_anti_hallucination():
     assert local_whisper_engine.sanitize_whisper_text(normal_en) == normal_en
     print("✓ Passed Case 4: Authentic Bengali and English speech preserved verbatim!\n")
 
+    # Case 5 (v8.4): Indic-script hallucinations (Devanagari, Telugu, Kannada, ...) from
+    # whisper_hallucination_fixtures.py - stripped on English/Bangla, kept when that is the target language.
+    import whisper_hallucination_fixtures as fx
+    for case in fx.ALL_SANITIZER_CASES:
+        ok, out = fx.check_sanitizer_case(local_whisper_engine.sanitize_whisper_text, case)
+        assert ok, f"fixture {case['name']} (lang={case['language']}) failed -> {out!r}"
+    print(f"✓ Passed Case 5: {len(fx.ALL_SANITIZER_CASES)} Indic-script hallucination fixtures!\n")
+
     print("=== 2. Testing RAM Specs & Model Selection Logic ===")
     specs = local_whisper_engine.get_system_ram_specs()
     print(f"Host System RAM: {specs}")
     opt_model = local_whisper_engine.select_optimal_model_name()
     print(f"Selected Optimal Model: '{opt_model}'")
     # On an 8GB machine, it should select 'small'
-    assert opt_model in ["small", "base", "tiny"], f"Invalid model: {opt_model}"
+    # v8.4: 'medium' is now selected on an 8GB machine when its weights are present and >=2.5GB is free
+    assert opt_model in ["medium", "small", "base", "tiny"], f"Invalid model: {opt_model}"
     print("✓ Passed RAM Specs test!\n")
 
     print("=== 3. Testing Local Whisper Engine Transcription on test_slice2.mp3 ===")
     audio_path = os.path.join(os.path.dirname(__file__), "test_slice2.mp3")
     if not os.path.exists(audio_path):
         audio_path = os.path.join(os.path.dirname(__file__), "test_slice2.wav")
+    st = local_whisper_engine.get_engine_status()
+    if not os.path.exists(audio_path) or not st.get("weights_present"):
+        print(f"SKIPPED sections 3-4: needs test_slice2.mp3 and downloaded Whisper weights "
+              f"(audio present={os.path.exists(audio_path)}, weights present={st.get('weights_present')}).")
+        print("=== SANITIZER & MODEL-SELECTION TESTS PASSED (model-dependent sections skipped) ===")
+        return
     res = local_whisper_engine.transcribe_local_audio(
         media_input=audio_path,
         language="bn",

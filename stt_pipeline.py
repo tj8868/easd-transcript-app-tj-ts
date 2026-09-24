@@ -26,6 +26,7 @@ Public API
 
 from __future__ import annotations
 
+import contextvars
 import os
 import random
 import re
@@ -34,7 +35,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from diag_logging import describe_exception, fmt_ts, get_logger
+from diag_logging import describe_exception, fmt_ts, get_logger, redact_key
 
 log = get_logger("stt")
 
@@ -104,20 +105,33 @@ def _short_reason(e: BaseException) -> str:
 
 
 def _friendly(reason: str) -> str:
-    """Translate common raw errors into advice a user can act on."""
+    """
+    Translate a raw error into a short message a user can act on.
+    Only the HTTP status is kept for recognised categories; exception class names,
+    file paths and response bodies stay in app_service.log (logged by the caller).
+    """
     r = reason.lower()
+    head = reason.split(":", 1)[0].strip() if reason.startswith("HTTP ") else ""
+    tag = f" ({head})" if head else ""
     if any(w in r for w in ("proxyerror", "connecterror", "connecttimeout", "name resolution", "getaddrinfo",
                             "ssl", "network is unreachable", "connection refused", "remoteprotocolerror")):
-        return f"Cannot reach the Gemini service - check the internet connection, proxy or firewall ({reason})"
+        return "Cannot reach the Gemini service - check the internet connection, proxy or firewall"
     if "429" in r or "resource_exhausted" in r or "quota" in r:
-        return f"Gemini rate limit / quota exceeded ({reason})"
+        return f"Gemini rate limit / quota exceeded{tag}"
     if "401" in r or "403" in r or "api key" in r or "permission" in r:
-        return f"Gemini API key rejected - check the key in Settings ({reason})"
+        return f"Gemini API key rejected - check the key in Settings{tag}"
     if "404" in r or "not found" in r:
-        return f"Gemini model not available for this key ({reason})"
+        return f"Gemini model not available for this key{tag}"
     if "payload" in r and "size" in r:
-        return f"Audio chunk too large for Gemini ({reason})"
-    return reason
+        return f"Audio chunk too large for Gemini{tag}"
+    if "timeout" in r or "timed out" in r:
+        return "Gemini did not answer in time"
+    if r.startswith("empty response"):
+        fr = re.search(r"finish_reason=([A-Za-z_.]+)", reason)
+        return f"Gemini returned no transcript (finish_reason={fr.group(1) if fr else 'unknown'})"
+    if reason.startswith("HTTP "):
+        return reason if len(reason) <= 160 else reason[:157] + "..."
+    return "Gemini request failed unexpectedly (details in app_service.log)"
 
 
 def _parse_offset_seconds(v: Any) -> Optional[float]:
@@ -322,32 +336,38 @@ def gemini_transcribe_bytes(audio: bytes, api_key: str, model_name: str = "", mi
 # ---------------------------------------------------------------------------
 # Local Whisper
 # ---------------------------------------------------------------------------
-def whisper_status() -> Dict[str, Any]:
+def whisper_status(model_name: str = "") -> Dict[str, Any]:
+    """Local Whisper readiness for the requested model ('' / 'auto' = automatic selection)."""
     try:
         import local_whisper_engine as lwe
-        name = lwe.select_optimal_model_name()
+        name, source = lwe.resolve_whisper_model_choice(model_name)
         path = lwe.get_model_path(name)
         has = any(lwe._model_has_weights(p) for p in (path, lwe._SMALL_MODEL_DIR, lwe._BASE_MODEL_DIR,
                                                       lwe._TINY_MODEL_DIR, lwe._MEDIUM_MODEL_DIR))
-        return {"available": True, "weights_present": has, "model": name, "path": path,
+        return {"available": True, "weights_present": has, "model": name, "model_source": source, "path": path,
                 "load_error": lwe._MODEL_LOAD_ERROR}
     except Exception as e:
-        return {"available": False, "weights_present": False, "error": f"faster-whisper not installed: {e}"}
+        log.error("Local Whisper engine unavailable: %s", describe_exception(e))
+        return {"available": False, "weights_present": False,
+                "error": "Local Whisper engine (faster-whisper) is not installed"}
 
 
 _whisper_download_failed: Dict[str, str] = {}
 
 
 def whisper_transcribe_bytes(audio: bytes, language: str = "auto", mime_type: str = "audio/mp3",
-                             ctx: str = "[whisper]") -> Dict[str, Any]:
-    """Returns {ok, text, provider, model, error, language}. Never raises."""
-    st = whisper_status()
+                             ctx: str = "[whisper]", model_name: str = "") -> Dict[str, Any]:
+    """
+    Returns {ok, text, provider, model, error, language}. Never raises.
+    model_name: explicit Whisper size ('small', 'medium', ...) or ''/'auto' for automatic selection.
+    """
+    st = whisper_status(model_name)
     if not st.get("available"):
         return {"ok": False, "text": "", "provider": "local_whisper", "error": st.get("error")}
     if not st.get("weights_present") and _whisper_download_failed.get("reason"):
         # don't hammer the network once per chunk after a failed download
         return {"ok": False, "text": "", "provider": "local_whisper",
-                "error": f"Local Whisper model not installed ({_whisper_download_failed['reason']})"}
+                "error": "Local Whisper model is not installed and could not be downloaded"}
     t0 = time.time()
     try:
         import local_whisper_engine as lwe
@@ -356,12 +376,16 @@ def whisper_transcribe_bytes(audio: bytes, language: str = "auto", mime_type: st
                                          mime_type=mime_type, beam_size=1, temperature=0.0)
         text = (res.get("raw_transcript") or "").strip()
         if res.get("status") == "error":
-            return {"ok": False, "text": "", "provider": "local_whisper", "error": res.get("detail") or "Local Whisper error"}
+            log.error("%s Local Whisper returned error status: %s", ctx, res.get("detail"))
+            return {"ok": False, "text": "", "provider": "local_whisper",
+                    "error": "Local Whisper failed while transcribing this audio"}
         if not text:
             return {"ok": False, "text": "", "provider": "local_whisper",
                     "error": f"Local Whisper found no speech ({res.get('segments_count', 0)} segments kept)"}
-        log.info("%s Local Whisper OK in %.1fs (%d chars)", ctx, time.time() - t0, len(text))
-        return {"ok": True, "text": text, "provider": "local_whisper", "model": st.get("model"), "error": "",
+        log.info("%s Local Whisper OK in %.1fs (%d chars) model=%s (%s) lang=%s slices=%s", ctx, time.time() - t0,
+                 len(text), res.get("model"), st.get("model_source"), res.get("detected_language"),
+                 res.get("slice_languages"))
+        return {"ok": True, "text": text, "provider": "local_whisper", "model": res.get("model") or st.get("model"), "error": "",
                 "language": res.get("detected_language")}
     except Exception as e:
         reason = _short_reason(e)
@@ -369,8 +393,9 @@ def whisper_transcribe_bytes(audio: bytes, language: str = "auto", mime_type: st
         if "download failed" in str(e).lower() or "missing" in str(e).lower():
             _whisper_download_failed["reason"] = reason
             return {"ok": False, "text": "", "provider": "local_whisper",
-                    "error": f"Local Whisper model not installed ({reason})"}
-        return {"ok": False, "text": "", "provider": "local_whisper", "error": f"Local Whisper: {reason}"}
+                    "error": "Local Whisper model is not installed and could not be downloaded"}
+        return {"ok": False, "text": "", "provider": "local_whisper",
+                "error": "Local Whisper failed unexpectedly (details in app_service.log)"}
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +444,7 @@ def transcribe_chunks(
     base_offset_sec: float = 0.0,
     label: str = "",
     on_progress: Optional[Any] = None,
+    whisper_model: str = "",
 ) -> Dict[str, Any]:
     t_all = time.time()
     prov = (provider or "gemini").lower()
@@ -435,9 +461,9 @@ def transcribe_chunks(
     for d in durs[:-1]:
         starts.append(starts[-1] + d)
 
-    log.info("transcribe_chunks START %s chunks=%d provider=%s model=%s lang=%s mime=%s key=%s durations=%s",
-             label, n, prov, model_name or GEMINI_TRANSCRIBE_MODEL, language, mime_type, bool(api_key),
-             [round(d, 1) for d in durs])
+    log.info("transcribe_chunks START %s chunks=%d provider=%s model=%s whisper_model=%s lang=%s mime=%s key=%s durations=%s",
+             label, n, prov, model_name or GEMINI_TRANSCRIBE_MODEL, whisper_model or "auto", language, mime_type,
+             redact_key(api_key), [round(d, 1) for d in durs])
 
     results: List[Dict[str, Any]] = [None] * n  # type: ignore
 
@@ -474,7 +500,7 @@ def transcribe_chunks(
                 else:
                     info["errors"].append(f"Gemini: {g['error']}")
             if info["status"] != "ok":
-                w = whisper_transcribe_bytes(audio, language, mime_type, ctx)
+                w = whisper_transcribe_bytes(audio, language, mime_type, ctx, model_name=whisper_model)
                 if w["ok"]:
                     info.update(status="ok", provider="local_whisper", text=w["text"], model=w.get("model"))
                 else:
@@ -495,7 +521,8 @@ def transcribe_chunks(
         with ThreadPoolExecutor(max_workers=min(GEMINI_MAX_PARALLEL, n), thread_name_prefix="stt") as ex:
             futs = {}
             for i in range(n):
-                futs[ex.submit(run, i)] = i
+                # copy_context keeps the request's correlation id (job=...) on worker-thread log lines
+                futs[ex.submit(contextvars.copy_context().run, run, i)] = i
                 if i < n - 1:
                     time.sleep(GEMINI_STAGGER_SEC)
             for f in as_completed(futs):

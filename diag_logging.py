@@ -14,8 +14,18 @@ Where logs go
   being written twice.
 
 Set ``EASD_LOG_LEVEL=DEBUG`` for extra detail.
+
+Correlation ids
+---------------
+``bind_job_id(job_id)`` stores a short request id in a ``contextvars`` slot.
+Every log line then carries ``[job=<id>]`` (or ``[job=-]`` outside a request),
+so one failed request can be pulled out of ``app_service.log`` with
+``grep "job=<id>" app_service.log`` even when several users are active.
+``asyncio.to_thread`` copies the context automatically; worker pools must
+submit through ``contextvars.copy_context().run`` (see ``stt_pipeline``).
 """
 
+import contextvars
 import logging
 import os
 import sys
@@ -28,7 +38,18 @@ LOG_FILE_PATH = os.environ.get("EASD_LOG_FILE") or os.path.join(_BASE_DIR, "app_
 _setup_lock = threading.Lock()
 _is_setup = False
 
-_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-7s [%(name)s] [%(threadName)s] %(message)s"
+_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-7s [%(name)s] [%(threadName)s] [job=%(job_id)s] %(message)s"
+
+_current_job_id: "contextvars.ContextVar[str]" = contextvars.ContextVar("easd_job_id", default="-")
+
+
+class _JobIdFilter(logging.Filter):
+    """Stamps every record with the request correlation id bound in this context."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "job_id"):
+            record.job_id = _current_job_id.get()
+        return True
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -59,6 +80,7 @@ def setup_logging() -> logging.Logger:
         try:
             fh = logging.FileHandler(LOG_FILE_PATH, mode="a", encoding="utf-8", delay=False)
             fh.setFormatter(fmt)
+            fh.addFilter(_JobIdFilter())
             root.addHandler(fh)
         except Exception as e:  # never let logging setup crash the app
             try:
@@ -69,6 +91,7 @@ def setup_logging() -> logging.Logger:
             try:
                 sh = logging.StreamHandler(sys.stderr)
                 sh.setFormatter(fmt)
+                sh.addFilter(_JobIdFilter())
                 root.addHandler(sh)
             except Exception:
                 pass
@@ -85,6 +108,26 @@ def get_logger(area: str) -> logging.Logger:
 
 def new_job_id() -> str:
     return uuid.uuid4().hex[:8]
+
+
+def bind_job_id(job_id: str = "") -> str:
+    """Bind ``job_id`` (or a fresh one) to the current context so every log line carries it. Returns the id."""
+    jid = (job_id or "").strip() or new_job_id()
+    _current_job_id.set(jid)
+    return jid
+
+
+def current_job_id() -> str:
+    """The correlation id bound to this context, or '-' when none is bound."""
+    return _current_job_id.get()
+
+
+def redact_key(key: str) -> str:
+    """Log-safe description of a secret: '***abcd' (last 4 chars) or 'none'. Never logs the full key."""
+    k = (key or "").strip()
+    if not k:
+        return "none"
+    return f"***{k[-4:]}" if len(k) > 8 else "***"
 
 
 def fmt_ts(seconds: float) -> str:

@@ -16,7 +16,7 @@ from google import genai
 from google.genai import types
 from document_engine import DEFAULT_MEMBERS
 from ocr_engine import optimize_ocr_text, preprocess_image_for_ocr
-from diag_logging import get_logger, describe_exception, fmt_ts
+from diag_logging import get_logger, describe_exception, fmt_ts, redact_key
 _stt_log = get_logger("stt")
 try:
     import google.genai as _genai_pkg
@@ -597,6 +597,18 @@ def save_api_settings_to_disk(settings: Dict[str, Any]) -> Dict[str, Any]:
 
     return current
 
+def _requested_whisper_model(provider: str, model_name: str = "") -> str:
+    """
+    The Whisper size the user actually chose. For the local provider the request's own
+    model_name wins (e.g. 'medium'); otherwise the saved 'local_whisper_model' setting.
+    '' / 'auto' means automatic selection (local_whisper_engine.resolve_whisper_model_choice).
+    """
+    if (provider or "").lower() in ("local_whisper", "local", "whisper_local") and model_name \
+            and not model_name.lower().startswith("gemini"):
+        return model_name
+    return str(load_api_settings_from_disk().get("local_whisper_model") or "auto")
+
+
 def is_fatal_auth_error(err: Exception) -> bool:
     """Returns True if the error indicates a fatal permission/key denial or unavailable model (no retrying needed)."""
     s = str(err).lower()
@@ -682,7 +694,7 @@ def test_transcription_engine(
 
     if prov in ["local_whisper", "local", "whisper_local"]:
         import stt_pipeline
-        st = stt_pipeline.whisper_status()
+        st = stt_pipeline.whisper_status(_requested_whisper_model(prov, model_name))
         lat = round((time.time() - t0) * 1000)
         if not st.get("available"):
             return {"success": False, "valid": False, "message": st.get("error", "faster-whisper not installed"),
@@ -823,7 +835,8 @@ def transcribe_audio_gemini(
     if g["ok"]:
         return {"text": g["text"], "raw_transcript": g["text"], "language": detect_text_language(g["text"]),
                 "provider": "gemini", "error": ""}
-    w = stt_pipeline.whisper_transcribe_bytes(media_bytes, language_hint, mime_type or "audio/mp3", ctx)
+    w = stt_pipeline.whisper_transcribe_bytes(media_bytes, language_hint, mime_type or "audio/mp3", ctx,
+                                              model_name=_requested_whisper_model("gemini"))
     if w["ok"]:
         return {"text": w["text"], "raw_transcript": w["text"], "language": w.get("language") or detect_text_language(w["text"]),
                 "provider": "local_whisper", "error": "", "gemini_error": g["error"]}
@@ -877,7 +890,8 @@ def live_transcribe_audio_chunk(
     # Instant Fallback: Local Whisper (beam_size=1 for lowest latency)
     try:
         import local_whisper_engine
-        opt_m = local_whisper_engine.select_optimal_model_name()
+        # Respect an explicit model choice; only auto-select when none was requested
+        opt_m, _src = local_whisper_engine.resolve_whisper_model_choice(_requested_whisper_model(prov, model_name))
         res = local_whisper_engine.transcribe_local_audio(
             media_input=media_bytes,
             language=None if language in ["auto", ""] else language,
@@ -922,7 +936,7 @@ def transcribe_audio_chunks_detailed(
         chunks=chunks, chunk_durations=chunk_durations, provider=prov, api_key=target_key,
         model_name=target_model, language=language or "auto", mime_type=mime_type or "audio/mp3",
         segment_time_sec=segment_time_sec, base_offset_sec=base_offset_sec, label=label,
-        on_progress=on_progress
+        on_progress=on_progress, whisper_model=_requested_whisper_model(prov, model_name)
     )
 
 
@@ -1117,6 +1131,8 @@ def process_ai_request(
 
     stt_key = (transcription_api_key or api_key or disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
     stt_model = transcription_model or disk_cfg.get("transcription_model") or "gemini-3.5-transcribe"
+    _stt_log.info("process_ai_request resolved STT provider=%s model=%s whisper_model=%s key=%s",
+                  stt_prov, stt_model, _requested_whisper_model(stt_prov, stt_model), redact_key(stt_key))
 
     # 2. Resolve LLM Provider & Model
     llm_prov = (summarization_provider or provider or disk_cfg.get("summarization_provider") or "gemini").lower()

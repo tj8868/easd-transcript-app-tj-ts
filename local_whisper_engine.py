@@ -72,16 +72,53 @@ DEFAULT_BILINGUAL_PROMPT = (
 )
 
 
-def detect_audio_language(
+# Languages Whisper's detector routinely confuses with Bengali on South-Asian speech.
+# Bengali is only preferred over one of these when the two are genuinely close.
+_BN_CONFUSABLE_LANGS = ("hi", "ne", "ur", "as")
+# Bengali must reach at least this share of the top candidate's probability to win.
+_BN_AMBIGUITY_RATIO = 0.6
+# A chunk is treated as code-switched (let Whisper decide per 30s window) when the
+# runner-up language has at least this share of the top candidate's probability.
+_CODE_SWITCH_RATIO = 0.5
+# Silero VAD settings used for both language detection and transcription.
+# Validated in test_whisper_language_and_vad.py against real recordings with long silences.
+WHISPER_VAD_PARAMETERS = {
+    "threshold": 0.5,
+    "min_speech_duration_ms": 250,
+    "min_silence_duration_ms": 1000,
+    "speech_pad_ms": 400,
+}
+
+
+def _get_vad_options():
+    try:
+        from faster_whisper.vad import VadOptions
+        return VadOptions(**WHISPER_VAD_PARAMETERS)
+    except Exception:
+        return WHISPER_VAD_PARAMETERS
+
+
+def detect_audio_language_detail(
     model: Any,
-    audio_input: Union[str, Any]
-) -> Tuple[str, float]:
+    audio_input: Union[str, Any],
+    _ctx: str = ""
+) -> Dict[str, Any]:
     """
-    Accurately detects any spoken language across all supported Whisper languages.
-    Preserves Bengali / Indic acoustic bias when detected, but reliably supports English,
-    Hindi, Arabic, Spanish, French, Urdu, Chinese, and all 99+ languages.
-    Returns: (resolved_language, confidence)
+    Detects the spoken language of an audio file/array and explains the decision.
+
+    Only the speech portions are scored (Silero VAD strips silence/noise first), and the
+    top-ranked language wins unless a confusable language (hi/ne/ur/as) narrowly beats
+    Bengali. Every call logs the full probability distribution to app_service.log.
+
+    Returns:
+        {"language": str | None, "confidence": float, "ambiguous": bool,
+         "reason": str, "ranked": [(lang, prob), ...]}
+        language is None when detection failed (caller should let Whisper auto-detect).
     """
+    ctx = _ctx or "[lang]"
+    t0 = time.time()
+    result: Dict[str, Any] = {"language": None, "confidence": 0.0, "ambiguous": False,
+                              "reason": "", "ranked": [], "candidates": []}
     try:
         import faster_whisper
         if isinstance(audio_input, str) and os.path.isfile(audio_input):
@@ -90,46 +127,114 @@ def detect_audio_language(
             audio = audio_input
 
         if audio is None or len(audio) == 0:
-            return "bn", 0.5
+            result["reason"] = "empty audio"
+            logger.warning(f"{ctx} language detection skipped: empty audio")
+            return result
 
-        # Take strictly the first 30 seconds (30s * 16000 = 480,000 samples)
-        # Slicing avoids allocating hundreds of megabytes in STFT complex128 for long files
-        if len(audio) > 30 * 16000:
-            audio = audio[:30 * 16000]
-
-        _, _, all_probs = model.detect_language(audio)
-        probs = dict(all_probs)
-
+        try:
+            _, _, all_probs = model.detect_language(
+                audio, vad_filter=True, vad_parameters=_get_vad_options()
+            )
+        except (TypeError, AttributeError):
+            # Older faster-whisper without VAD support in detect_language: score the first 30s.
+            _, _, all_probs = model.detect_language(audio[:30 * 16000])
+        probs = dict(all_probs or [])
         if not probs:
-            return "bn", 0.5
+            result["reason"] = "detector returned no probabilities"
+            logger.warning(f"{ctx} language detection returned no probabilities")
+            return result
 
-        prob_bn = probs.get("bn", 0.0) + probs.get("as", 0.0)
-        prob_en = probs.get("en", 0.0)
-        top_lang = max(probs, key=probs.get)
-        top_prob = probs.get(top_lang, 0.0)
+        ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
+        top_lang, top_prob = ranked[0]
+        second_lang, second_prob = ranked[1] if len(ranked) > 1 else ("", 0.0)
+        language, confidence, reason = top_lang, top_prob, "top-ranked language"
 
-        # 1. Prominent Bengali / Assamese or Indic acoustic match
-        # Whisper frequently confuses Bengali with Hindi (hi), Nepali (ne), or Urdu (ur).
-        # If Bengali probability is >= 0.10, or top_lang is an Indic language while bn has non-trivial prob, resolve to bn!
-        if prob_bn >= 0.10 or top_lang in ["bn", "as"] or (top_lang in ["hi", "ne", "ur"] and prob_bn >= 0.05):
-            return "bn", min(1.0, max(0.5, prob_bn))
+        # Bengali / Hindi / Nepali / Urdu / Assamese confusion: only switch to Bengali
+        # when Bengali is genuinely close to the winner, never off a fixed low floor.
+        prob_bn = probs.get("bn", 0.0)
+        if top_lang in _BN_CONFUSABLE_LANGS and prob_bn >= _BN_AMBIGUITY_RATIO * top_prob:
+            language, confidence = "bn", prob_bn
+            reason = f"bn within {_BN_AMBIGUITY_RATIO:.0%} of confusable top '{top_lang}'"
 
-        # 2. Prominent English
-        if prob_en >= 0.25 or top_lang == "en":
-            return "en", min(1.0, max(0.5, prob_en))
+        # Runner-up = best language other than the chosen one, ignoring Bengali's confusables
+        # when Bengali was chosen (a bn/hi split is misdetection, not code-switching).
+        bn_family = ("bn",) + _BN_CONFUSABLE_LANGS
+        runner_up, runner_up_prob = "", 0.0
+        for k, v in ranked:
+            if k == language or (language == "bn" and k in bn_family):
+                continue
+            runner_up, runner_up_prob = k, v
+            break
+        ambiguous = bool(runner_up and runner_up_prob >= 0.15 and runner_up_prob >= _CODE_SWITCH_RATIO * confidence)
+        result.update(language=language, confidence=float(confidence), ambiguous=ambiguous,
+                      reason=reason, ranked=[(k, round(float(v), 4)) for k, v in ranked],
+                      candidates=[language, runner_up] if ambiguous else [language])
 
-        # 3. High confidence for any other language (Spanish, Arabic, French, Hindi, Chinese, etc.)
-        if top_prob >= 0.35:
-            return top_lang, top_prob
-
-        # 4. Fallback for diffuse probabilities
-        return (top_lang if top_prob >= 0.20 else "bn"), top_prob
+        dist = ", ".join(f"{k}={v:.3f}" for k, v in ranked if v >= 0.001)
+        logger.info(f"{ctx} language -> {language} (p={confidence:.3f}, ambiguous={ambiguous}, reason={reason}) "
+                    f"in {time.time() - t0:.1f}s | distribution: {dist}")
+        return result
     except Exception as e:
-        logger.warning(f"Audio language detection notice: {e}")
-        return "bn", 0.5
+        result["reason"] = f"detection error: {type(e).__name__}"
+        logger.error(f"{ctx} language detection FAILED after {time.time() - t0:.1f}s: "
+                     f"{type(e).__name__}: {e}", exc_info=True)
+        return result
+
+
+def detect_audio_language(
+    model: Any,
+    audio_input: Union[str, Any]
+) -> Tuple[str, float]:
+    """
+    Backwards-compatible wrapper around detect_audio_language_detail().
+    Returns: (resolved_language, confidence); ("auto", 0.0) when detection failed,
+    so callers let Whisper auto-detect instead of forcing a guessed language.
+    """
+    d = detect_audio_language_detail(model, audio_input)
+    return (d["language"] or "auto"), float(d["confidence"])
+
+def _resolve_window_language(model: Any, audio_window: Any, candidates: List[str], ctx: str = "") -> str:
+    """
+    Picks which of the chunk's candidate languages dominates one ~30s window.
+    Restricting the choice to the chunk's own top candidates stops a noisy window
+    from being decoded as an unrelated script (Telugu, Kannada, ...).
+    """
+    try:
+        _, _, all_probs = model.detect_language(audio_window, vad_filter=True,
+                                                vad_parameters=_get_vad_options())
+    except (TypeError, AttributeError):
+        _, _, all_probs = model.detect_language(audio_window)
+    except Exception as e:
+        logger.warning(f"{ctx} window language detection failed ({type(e).__name__}: {e}); using {candidates[0]}")
+        return candidates[0]
+    probs = dict(all_probs or [])
+    # Bengali absorbs its confusables so a Bangla window is never decoded as Hindi.
+    scores = {}
+    for cand in candidates:
+        scores[cand] = probs.get(cand, 0.0) + (sum(probs.get(c, 0.0) for c in _BN_CONFUSABLE_LANGS)
+                                               if cand == "bn" else 0.0)
+    chosen = max(scores, key=scores.get)
+    logger.info(f"{ctx} window language -> {chosen} scores={ {k: round(v, 3) for k, v in scores.items()} }")
+    return chosen
+
 
 # Alias for backwards compatibility
 detect_bilingual_audio_language = detect_audio_language
+
+
+# (unicode range, languages that legitimately use it) for scripts Whisper hallucinates
+# on Bangla/English audio. Extend this table when a new hallucinated script shows up,
+# and add a sample to whisper_hallucination_fixtures.py.
+_HALLUCINATION_SCRIPTS: List[Tuple[str, Tuple[str, ...]]] = [
+    ("\u0900-\u0963\u0966-\u097F", ("hi", "mr", "ne", "sa", "mai", "hindi", "marathi", "nepali")),  # Devanagari
+    ("\u0A00-\u0A7F", ("pa", "punjabi")),                        # Gurmukhi
+    ("\u0A80-\u0AFF", ("gu", "gujarati")),                       # Gujarati
+    ("\u0B00-\u0B7F", ("or", "odia", "oriya")),                  # Odia
+    ("\u0B80-\u0BFF", ("ta", "tamil")),                          # Tamil
+    ("\u0C00-\u0C7F", ("te", "telugu")),                         # Telugu
+    ("\u0C80-\u0CFF", ("kn", "kannada")),                        # Kannada
+    ("\u0D00-\u0D7F", ("ml", "malayalam")),                      # Malayalam
+]
 
 
 def sanitize_whisper_text(text: Optional[str], language: Optional[str] = None) -> str:
@@ -139,6 +244,9 @@ def sanitize_whisper_text(text: Optional[str], language: Optional[str] = None) -
     2. Strips hallucinated Tibetan / delimiter Unicode blocks (\u0F00-\u0FFF, e.g. ༼, ༽).
     3. Strips hallucinated CJK / East Asian characters (\u4E00-\u9FFF, \u3400-\u4DBF, \u3000-\u303F, \u3040-\u30FF, \uAC00-\uD7AF)
        unless the explicit/detected language is Chinese, Japanese, or Korean.
+    3b. Strips hallucinated Indic scripts (Devanagari, Gurmukhi, Gujarati, Odia, Tamil, Telugu,
+       Kannada, Malayalam) unless the language uses that script; drops the whole segment when
+       most of its letters were foreign-script garbage.
     4. Collapses repetitive character/syllable/phrase loops (e.g. 'বিবিবিবিবিবি...' -> 'বি').
     5. Eliminates phantom punctuation repetitions (e.g. '..........', '।।।।।।').
     6. Discards segments lacking authentic alphanumeric speech tokens in ANY language (Unicode letters/digits).
@@ -158,6 +266,19 @@ def sanitize_whisper_text(text: Optional[str], language: Optional[str] = None) -
     norm_lang = (language or "").lower().strip()
     if norm_lang not in ["zh", "ja", "ko", "chinese", "japanese", "korean", "yue"]:
         cleaned = re.sub(r"[\u4E00-\u9FFF\u3400-\u4DBF\u2E80-\u2EFF\u3000-\u303F\u3040-\u30FF\uAC00-\uD7AF]+", " ", cleaned)
+
+    # Strip hallucinated Indic scripts (Devanagari, Telugu, Kannada, ...) unless the target
+    # language is written in that script. Bengali (\u0980-\u09FF) is never stripped, and the
+    # danda marks (\u0964-\u0965) are kept because Bengali shares them with Devanagari.
+    letters_before = sum(1 for ch in cleaned if ch.isalpha())
+    for script_range, script_langs in _HALLUCINATION_SCRIPTS:
+        if norm_lang not in script_langs:
+            cleaned = re.sub(f"[{script_range}]+", " ", cleaned)
+    letters_after = sum(1 for ch in cleaned if ch.isalpha())
+    # A segment that was mostly foreign-script garbage is a hallucination as a whole;
+    # the few Latin/Bengali letters left over are not trustworthy speech either.
+    if letters_before and letters_after < 0.5 * letters_before:
+        return ""
 
     # Collapse repetitive character / syllable / phrase loops (e.g. 'বি' repeated 4+ times)
     # Run multiple passes to catch nested loops
@@ -234,40 +355,77 @@ def is_low_ram_system() -> bool:
     return bool(specs.get("is_low_ram", False))
 
 
+_LAST_AUTO_CHOICE: Dict[str, str] = {}
+
+
 def select_optimal_model_name() -> str:
     """
-    Dynamically select between whisper-small, whisper-base, and whisper-tiny
-    based on host system specifications and available model weights.
-    When available, whisper-small provides superior bilingual Bangla/English accuracy.
+    Dynamically select between whisper-medium, whisper-small, whisper-base and whisper-tiny
+    based on host RAM and which model weights are present on disk.
+    whisper-medium int8 needs ~1.5-2GB of RAM, so an 8GB machine with >=2.5GB free
+    can run it; the decision and its reason are logged every time.
     """
     specs = get_system_ram_specs()
     total_gb = specs.get("total_ram_gb", 8.0)
     avail_gb = specs.get("available_ram_gb", 2.0)
 
-    # High-spec machines (>= 16GB RAM) select medium if downloaded
-    if (total_gb >= 16.0 or avail_gb >= 5.0) and os.path.isdir(_MEDIUM_MODEL_DIR):
-        if os.path.isfile(os.path.join(_MEDIUM_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_MEDIUM_MODEL_DIR, "model.safetensors")):
-            return "medium"
+    def _pick(name: str, why: str) -> str:
+        msg = (f"select_optimal_model_name -> '{name}' ({why}; total_ram={total_gb}GB "
+               f"available_ram={avail_gb}GB)")
+        # INFO when the decision changes, DEBUG on repeats (this runs several times per request)
+        if _LAST_AUTO_CHOICE.get("name") != name:
+            logger.info(msg)
+            _LAST_AUTO_CHOICE["name"] = name
+        else:
+            logger.debug(msg)
+        return name
+
+    # Medium: needs weights on disk, >= ~8GB total (7.5 allows for OS-reported rounding) and 2.5GB free
+    if _model_has_weights(_MEDIUM_MODEL_DIR):
+        if total_gb >= 7.5 and avail_gb >= 2.5:
+            return _pick("medium", "weights present and enough RAM")
+        logger.warning(f"select_optimal_model_name: whisper-medium weights present but skipped - "
+                       f"needs total>=7.5GB and available>=2.5GB (have total={total_gb}GB, available={avail_gb}GB)")
 
     # Severely constrained RAM (< 3.0GB total or < 0.4GB available)
     if total_gb < 3.0 or avail_gb < 0.4:
-        if os.path.isdir(_TINY_MODEL_DIR) and (os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_TINY_MODEL_DIR, "model.safetensors"))):
-            return "tiny"
-        if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
-            return "base"
+        if _model_has_weights(_TINY_MODEL_DIR):
+            return _pick("tiny", "severely constrained RAM")
+        if _model_has_weights(_BASE_MODEL_DIR):
+            return _pick("base", "severely constrained RAM")
 
     # Standard systems (>= 6GB RAM) prefer whisper-small if present for accurate bilingual speech
-    if total_gb >= 6.0 and os.path.isdir(_SMALL_MODEL_DIR) and (os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")) or os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.safetensors"))):
-        return "small"
+    if total_gb >= 6.0 and _model_has_weights(_SMALL_MODEL_DIR):
+        return _pick("small", "standard RAM, small weights present")
 
     # Base model is the fast lightweight fallback (145MB)
-    if os.path.isdir(_BASE_MODEL_DIR) and os.path.isfile(os.path.join(_BASE_MODEL_DIR, "model.bin")):
-        return "base"
-    if os.path.isdir(_SMALL_MODEL_DIR) and os.path.isfile(os.path.join(_SMALL_MODEL_DIR, "model.bin")):
-        return "small"
-    if os.path.isdir(_TINY_MODEL_DIR):
-        return "tiny"
-    return "base"
+    if _model_has_weights(_BASE_MODEL_DIR):
+        return _pick("base", "fallback to base weights")
+    if _model_has_weights(_SMALL_MODEL_DIR):
+        return _pick("small", "fallback to small weights")
+    if _model_has_weights(_TINY_MODEL_DIR):
+        return _pick("tiny", "fallback to tiny weights")
+    return _pick("base", "no weights on disk - base will be downloaded on first use")
+
+
+_KNOWN_MODEL_SIZES = ("tiny", "base", "small", "medium")
+
+
+def resolve_whisper_model_choice(requested: Optional[str] = None) -> Tuple[str, str]:
+    """
+    Resolves which Whisper model a request should use.
+    An explicit size ('tiny'/'base'/'small'/'medium') is always respected; only
+    None/''/'auto' (or an unknown value) falls through to select_optimal_model_name().
+    Returns: (model_name, source) where source is 'explicit' or 'auto'.
+    """
+    req = (requested or "").strip().lower()
+    for size in _KNOWN_MODEL_SIZES:
+        if req == size or req == f"whisper-{size}" or req.endswith(f"/{size}"):
+            logger.info(f"resolve_whisper_model_choice: using explicitly requested model '{size}' (requested={requested!r})")
+            return size, "explicit"
+    if req and req not in ("auto", "default", "local", "local_whisper"):
+        logger.warning(f"resolve_whisper_model_choice: unknown model {requested!r} - using automatic selection")
+    return select_optimal_model_name(), "auto"
 
 
 def _model_has_weights(directory: str) -> bool:
@@ -335,6 +493,40 @@ def get_model_path(preferred_name: Optional[str] = None) -> str:
     return _SMALL_MODEL_DIR
 
 
+def _select_compute_device() -> Tuple[str, List[str]]:
+    """
+    Picks the inference device: CUDA when CTranslate2 sees a GPU, otherwise CPU.
+    GPU use is optional and auto-detected; CPU-only machines are unaffected.
+    Override with EASD_WHISPER_DEVICE=cpu|cuda|auto.
+    Returns: (device, compute_types_to_try_in_order)
+    """
+    forced = (os.environ.get("EASD_WHISPER_DEVICE") or "auto").strip().lower()
+    cpu_types = ["int8", "int8_float32", "float32"]
+    if forced == "cpu":
+        return "cpu", cpu_types
+    try:
+        import ctranslate2
+        n_gpu = ctranslate2.get_cuda_device_count()
+    except Exception as e:
+        logger.info(f"CUDA probe unavailable ({type(e).__name__}: {e}) - using CPU")
+        n_gpu = 0
+    if n_gpu > 0 or forced == "cuda":
+        logger.info(f"CUDA devices detected: {n_gpu} (EASD_WHISPER_DEVICE={forced}) - trying GPU first")
+        return "cuda", ["float16", "int8_float16", "int8"]
+    return "cpu", cpu_types
+
+
+_MODEL_DEVICE: Dict[str, str] = {}
+
+
+def get_loaded_model_name(model: Any) -> str:
+    """Name of the model directory actually loaded for this model object (e.g. 'whisper-small')."""
+    for path, m in _LOCAL_MODELS.items():
+        if m is model:
+            return os.path.basename(path)
+    return "unknown"
+
+
 def get_local_whisper_model(model_name_or_path: Optional[str] = None):
     """
     Get or initialize the singleton WhisperModel instance for the target model.
@@ -365,7 +557,8 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
                     break
 
             if not fallback_found:
-                target_size = "small" if "small" in resolved_path else ("base" if "base" in resolved_path else "tiny")
+                base_name = os.path.basename(resolved_path)
+                target_size = next((sz for sz in _KNOWN_MODEL_SIZES if sz in base_name), "base")
                 logger.info(f"Downloading local Whisper model '{target_size}' to '{resolved_path}'...")
                 try:
                     from faster_whisper import download_model
@@ -380,12 +573,12 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
         _MODEL_STATUS = "loading"
         t0 = time.time()
         n_threads = get_optimal_cpu_threads()
-        logger.info(f"Loading local Whisper model from '{resolved_path}' (INT8 CPU, {n_threads} threads)...")
+        device, device_compute_types = _select_compute_device()
+        logger.info(f"Loading local Whisper model from '{resolved_path}' (device={device}, {n_threads} CPU threads)...")
 
         try:
             from faster_whisper import WhisperModel
             # INT8 is the most compact (39MB-75MB) and fastest format for CPU inference without memory allocation errors.
-            compute_types = ["int8", "int8_float32", "float32"]
             model = None
             last_err = None
 
@@ -394,22 +587,28 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
                 if cand_dir != resolved_path and _model_has_weights(cand_dir):
                     paths_to_try.append(cand_dir)
 
+            attempts = [(device, c) for c in device_compute_types]
+            if device != "cpu":
+                attempts += [("cpu", c) for c in ["int8", "int8_float32", "float32"]]
+            loaded_device = "cpu"
             for target_path in paths_to_try:
-                for c_type in compute_types:
+                for dev_name, c_type in attempts:
                     try:
-                        logger.info(f"Loading WhisperModel from '{os.path.basename(target_path)}' (compute_type={c_type}, threads={n_threads})...")
+                        logger.info(f"Loading WhisperModel from '{os.path.basename(target_path)}' "
+                                    f"(device={dev_name}, compute_type={c_type}, threads={n_threads})...")
                         model = WhisperModel(
                             target_path,
-                            device="cpu",
+                            device=dev_name,
                             compute_type=c_type,
                             cpu_threads=n_threads,
                             local_files_only=True
                         )
                         resolved_path = target_path
+                        loaded_device = dev_name
                         break
                     except Exception as try_err:
                         last_err = try_err
-                        logger.warning(f"WhisperModel init notice ({os.path.basename(target_path)}, {c_type}): {try_err}")
+                        logger.warning(f"WhisperModel init notice ({os.path.basename(target_path)}, {dev_name}, {c_type}): {try_err}")
                         import gc
                         gc.collect()
                         continue
@@ -419,12 +618,17 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             if model is None:
                 raise last_err or RuntimeError("Failed to load local Whisper model with any compute type")
 
+            if os.path.normcase(resolved_path) != os.path.normcase(get_model_path(model_name_or_path)):
+                logger.warning(f"Requested Whisper model {model_name_or_path!r} not loadable - "
+                               f"actually loaded '{os.path.basename(resolved_path)}'")
             _LOCAL_MODELS[resolved_path] = model
+            _MODEL_DEVICE[resolved_path] = loaded_device
             _LOCAL_MODEL = model
             _MODEL_LOAD_TIME = round(time.time() - t0, 2)
             _MODEL_STATUS = "ready"
             _MODEL_LOAD_ERROR = None
-            logger.info(f"Local Whisper model loaded successfully from '{os.path.basename(resolved_path)}' in {_MODEL_LOAD_TIME}s")
+            logger.info(f"Local Whisper model loaded successfully from '{os.path.basename(resolved_path)}' "
+                        f"on {loaded_device} in {_MODEL_LOAD_TIME}s")
             return _LOCAL_MODEL
         except Exception as e:
             _MODEL_STATUS = "error"
@@ -455,6 +659,15 @@ def warm_up_local_whisper_in_background():
     logger.info("Initiated background pre-warming of local Whisper model.")
 
 
+def _cuda_device_count() -> int:
+    """Number of CUDA devices CTranslate2 can see (0 when none or when the probe fails)."""
+    try:
+        import ctranslate2
+        return int(ctranslate2.get_cuda_device_count())
+    except Exception:
+        return 0
+
+
 def get_engine_status() -> Dict[str, Any]:
     """Return status and diagnostics for the local whisper engine."""
     model_dir = get_model_path()
@@ -472,8 +685,9 @@ def get_engine_status() -> Dict[str, Any]:
         "weights_size_mb": weight_size_mb,
         "load_time_sec": _MODEL_LOAD_TIME,
         "error": _MODEL_LOAD_ERROR,
-        "device": "cpu",
-        "compute_type": "int8",
+        "device": _MODEL_DEVICE.get(model_dir, "not loaded"),
+        "cuda_devices": _cuda_device_count(),
+        "compute_type": "int8" if _MODEL_DEVICE.get(model_dir, "cpu") == "cpu" else "float16",
         "threads": get_optimal_cpu_threads()
     }
 
@@ -609,6 +823,94 @@ def slice_wav_pcm16k(source_wav: str, start_sec: float, duration_sec: float, tar
         return False
 
 
+# Segments whose average token log-probability is below this are almost always
+# hallucinations (off-script gibberish) rather than real speech.
+_MIN_SEGMENT_AVG_LOGPROB = -1.5
+# Window size used to split a code-switched slice into per-language runs.
+_CODE_SWITCH_WINDOW_SEC = 30.0
+
+
+def _plan_code_switched_runs(
+    model: Any,
+    slice_wav_path: str,
+    slice_duration_sec: float,
+    candidates: List[str],
+    ctx: str = ""
+) -> List[Tuple[float, float, Optional[str]]]:
+    """
+    Splits a code-switched slice into consecutive ~30s windows, resolves each window to one
+    of the slice's candidate languages, and merges neighbouring windows with the same language.
+    Returns: [(offset_sec, duration_sec, language), ...] relative to the slice start.
+    """
+    try:
+        import faster_whisper
+        audio = faster_whisper.decode_audio(slice_wav_path)
+    except Exception as e:
+        logger.warning(f"{ctx} could not decode slice for window detection ({type(e).__name__}: {e}); "
+                       f"using '{candidates[0]}' for the whole slice")
+        return [(0.0, slice_duration_sec, candidates[0])]
+
+    sr = 16000
+    win = int(_CODE_SWITCH_WINDOW_SEC * sr)
+    runs: List[Tuple[float, float, Optional[str]]] = []
+    for w_start in range(0, len(audio), win):
+        window = audio[w_start:w_start + win]
+        if len(window) < sr:  # under 1s: attach to the previous run
+            break
+        lang = _resolve_window_language(model, window, candidates, f"{ctx}[{w_start / sr:.0f}s]")
+        off, dur = w_start / sr, len(window) / sr
+        if runs and runs[-1][2] == lang:
+            p_off, p_dur, _ = runs[-1]
+            runs[-1] = (p_off, p_dur + dur, lang)
+        else:
+            runs.append((off, dur, lang))
+    if runs:
+        last_off, _, last_lang = runs[-1]
+        runs[-1] = (last_off, max(0.0, slice_duration_sec - last_off), last_lang)
+    else:
+        runs = [(0.0, slice_duration_sec, candidates[0])]
+    logger.info(f"{ctx} code-switched slice split into {len(runs)} run(s): "
+                + ", ".join(f"{o:.0f}s+{d:.0f}s={l}" for o, d, l in runs))
+    return runs
+
+
+# If 30s-block VAD finds this many more seconds (or >5%) of speech than whole-slice VAD, the
+# Silero LSTM state was saturated by a long noise/silence stretch and would silently
+# drop real speech after it - transcribe that slice without VAD instead.
+_VAD_MISS_TOLERANCE_SEC = 3.0
+
+
+def _vad_is_reliable_for(audio_path: str, ctx: str = "") -> bool:
+    """
+    Cross-checks Silero VAD on one slice: whole-slice pass vs. independent 30s blocks.
+    Validated on a real recording with 150s of silence + noise before speech, where the
+    whole-slice pass returned 0s of the following speech (see test_whisper_language_and_vad.py).
+    Returns False (-> disable VAD for this slice) when the whole-slice pass misses speech.
+    """
+    try:
+        import faster_whisper
+        from faster_whisper.vad import get_speech_timestamps, VadOptions
+        audio = faster_whisper.decode_audio(audio_path)
+        opts = VadOptions(**WHISPER_VAD_PARAMETERS)
+        sr = 16000
+        whole = sum((t["end"] - t["start"]) / sr for t in get_speech_timestamps(audio, opts))
+        blocks = 0.0
+        step = 30 * sr
+        for b in range(0, len(audio), step):
+            block = audio[b:b + step]
+            if len(block) >= sr // 2:
+                blocks += sum((t["end"] - t["start"]) / sr for t in get_speech_timestamps(block, opts))
+        # block edges add a little padding, so allow 3s or 5% of the detected speech, whichever is larger
+        reliable = (blocks - whole) <= max(_VAD_MISS_TOLERANCE_SEC, 0.05 * whole)
+        (logger.info if reliable else logger.warning)(
+            f"{ctx} VAD cross-check: whole-slice speech={whole:.1f}s, 30s-block speech={blocks:.1f}s -> "
+            f"{'VAD on' if reliable else 'VAD OFF for this slice (whole-slice pass would drop speech)'}")
+        return reliable
+    except Exception as e:
+        logger.warning(f"{ctx} VAD cross-check failed ({type(e).__name__}: {e}) - VAD off for this slice")
+        return False
+
+
 def transcribe_local_audio(
     media_input: Union[bytes, bytearray, io.BytesIO, str],
     language: Optional[str] = None,
@@ -655,10 +957,10 @@ def transcribe_local_audio(
         }
 
     t_start = time.time()
-    effective_model = model_name or select_optimal_model_name()
+    effective_model, _model_source = resolve_whisper_model_choice(model_name)
     _in_desc = (f"file={os.path.basename(media_input)}" if isinstance(media_input, str)
                 else f"bytes={len(media_input.getvalue() if isinstance(media_input, io.BytesIO) else media_input) / 1048576:.2f}MB")
-    logger.info(f"transcribe_local_audio START {_in_desc} mime={mime_type} lang={language!r} model={effective_model} "
+    logger.info(f"transcribe_local_audio START {_in_desc} mime={mime_type} lang={language!r} model={effective_model} ({_model_source}) "
                 f"path={get_model_path(effective_model)} weights={_model_has_weights(get_model_path(effective_model))} "
                 f"ram={get_system_ram_specs()} status={_MODEL_STATUS}")
     try:
@@ -690,16 +992,21 @@ def transcribe_local_audio(
 
     # Check if a specific language was explicitly requested
     explicit_lang = normalize_language_code(language)
-    
-    # Intelligently resolve spoken language from audio when auto or None is selected:
+
+    # Whole-file detection is only a PRIOR (it picks the initial_prompt). Each slice below
+    # gets its own detection so one early guess can't force the whole file into one language.
+    prior: Dict[str, Any] = {}
     if explicit_lang is None:
-        target_language, detected_conf = detect_audio_language(model, temp_audio_file)
-        logger.info(f"Auto-resolved audio language: '{target_language}' (confidence: {detected_conf:.2f})")
+        prior = detect_audio_language_detail(model, temp_audio_file, _ctx="[whisper file-prior]")
+        target_language = prior.get("language")
     else:
         target_language = explicit_lang
+        logger.info(f"Language forced by caller: '{explicit_lang}' (per-slice detection disabled)")
 
     if prompt:
         init_prompt = prompt
+    elif prior.get("ambiguous") and set(prior.get("candidates", [])) >= {"bn", "en"}:
+        init_prompt = DEFAULT_BILINGUAL_PROMPT
     elif target_language == "bn":
         init_prompt = "Ajker meeting er alochna ebong karjobiboroni. Agenda, budget, review, decisions."
     elif target_language == "en":
@@ -731,6 +1038,10 @@ def transcribe_local_audio(
     else:
         chunk_slices = [(0.0, total_duration_sec)]
 
+    loaded_model_name = get_loaded_model_name(model)
+    logger.info(f"transcribe_local_audio using model={loaded_model_name} (requested={effective_model!r}) "
+                f"vad=on(cross-checked per slice) params={WHISPER_VAD_PARAMETERS} beam={beam_size or 1}")
+
     try:
         formatted_lines = []
         raw_text_parts = []
@@ -740,6 +1051,7 @@ def transcribe_local_audio(
         last_clean_text = ""
         detected_whisper_lang = target_language
         detected_whisper_prob = 1.0
+        slice_languages: List[str] = []
 
         for slice_idx, (chunk_start_sec, chunk_dur_sec) in enumerate(chunk_slices):
             chunk_temp_wav = None
@@ -752,82 +1064,128 @@ def transcribe_local_audio(
             else:
                 input_to_transcribe = temp_audio_file
 
+            slice_ctx = f"[whisper slice {slice_idx + 1}/{len(chunk_slices)} @{chunk_start_sec:.0f}s]"
             _sl0 = time.time()
-            _seen = _drop_nospeech = _drop_sanitize = _drop_dup = _kept = 0
+            _seen = _drop_nospeech = _drop_lowconf = _drop_loop = _drop_sanitize = _drop_dup = _kept = 0
+            run_temp_files: List[str] = []
             try:
-                with _TRANSCRIBE_LOCK:
-                    segments, info = model.transcribe(
-                        input_to_transcribe,
-                        task="transcribe",
-                        beam_size=beam_size or 1,
-                        best_of=1,
-                        temperature=0.0,
-                        initial_prompt=init_prompt,
-                        language=target_language,
-                        condition_on_previous_text=False,
-                        vad_filter=False,
-                        no_speech_threshold=0.6,
-                        compression_ratio_threshold=2.4
-                    )
+                # 1. Decide the language(s) for this slice
+                if explicit_lang is not None:
+                    runs = [(0.0, chunk_dur_sec, explicit_lang)]
+                else:
+                    det = prior if len(chunk_slices) == 1 else detect_audio_language_detail(
+                        model, input_to_transcribe, _ctx=slice_ctx)
+                    if not det.get("language"):
+                        runs = [(0.0, chunk_dur_sec, None)]  # let Whisper auto-detect
+                    elif det.get("ambiguous"):
+                        runs = _plan_code_switched_runs(model, input_to_transcribe, chunk_dur_sec,
+                                                        det["candidates"], slice_ctx)
+                    else:
+                        runs = [(0.0, chunk_dur_sec, det["language"])]
+                slice_languages.append("+".join(sorted({r[2] or "auto" for r in runs})))
+                use_vad = _vad_is_reliable_for(input_to_transcribe, slice_ctx)
 
-                if detected_whisper_lang is None and hasattr(info, "language"):
-                    detected_whisper_lang = info.language
-                    detected_whisper_prob = getattr(info, "language_probability", 1.0)
+                # 2. Transcribe each language run of this slice
+                for run_off, run_dur, run_lang in runs:
+                    if len(runs) == 1:
+                        run_input = input_to_transcribe
+                    else:
+                        run_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+                        run_tmp.close()
+                        run_temp_files.append(run_tmp.name)
+                        run_input = run_tmp.name if slice_wav_pcm16k(input_to_transcribe, run_off, run_dur, run_tmp.name) \
+                            else input_to_transcribe
+                    with _TRANSCRIBE_LOCK:
+                        segments, info = model.transcribe(
+                            run_input,
+                            task="transcribe",
+                            beam_size=beam_size or 1,
+                            best_of=1,
+                            temperature=0.0,
+                            initial_prompt=init_prompt,
+                            language=run_lang,
+                            condition_on_previous_text=False,
+                            vad_filter=use_vad,
+                            vad_parameters=WHISPER_VAD_PARAMETERS if use_vad else None,
+                            no_speech_threshold=0.6,
+                            compression_ratio_threshold=2.4
+                        )
 
-                for segment in segments:
-                    _seen += 1
-                    raw_text = (segment.text or "").strip()
-                    if not raw_text:
-                        _drop_sanitize += 1
-                        continue
+                    if detected_whisper_lang is None and hasattr(info, "language"):
+                        detected_whisper_lang = info.language
+                        detected_whisper_prob = getattr(info, "language_probability", 1.0)
+                    seg_lang = run_lang or getattr(info, "language", None) or target_language
 
-                    # Skip pure silence segments where no_speech_prob is extreme (> 0.95)
-                    no_speech = getattr(segment, "no_speech_prob", 0.0)
-                    if no_speech > 0.95:
-                        _drop_nospeech += 1
-                        continue
+                    for segment in segments:
+                        _seen += 1
+                        raw_text = (segment.text or "").strip()
+                        if not raw_text:
+                            _drop_sanitize += 1
+                            continue
 
-                    # Sanitize text: collapse repetition loops, strip Tibetan/alien tokens, strip CJK hallucinations
-                    text = sanitize_whisper_text(raw_text, language=target_language or detected_whisper_lang)
-                    if not text:
-                        _drop_sanitize += 1
-                        continue
+                        # Confidence gating BEFORE the regex sanitizer (Whisper's own signals)
+                        no_speech = getattr(segment, "no_speech_prob", 0.0) or 0.0
+                        avg_logprob = getattr(segment, "avg_logprob", 0.0) or 0.0
+                        comp_ratio = getattr(segment, "compression_ratio", 0.0) or 0.0
+                        if no_speech > 0.95 or (no_speech > 0.6 and avg_logprob < -1.0):
+                            _drop_nospeech += 1
+                            logger.debug(f"{slice_ctx} drop no_speech={no_speech:.2f} logprob={avg_logprob:.2f}: {raw_text[:60]!r}")
+                            continue
+                        if avg_logprob < _MIN_SEGMENT_AVG_LOGPROB:
+                            _drop_lowconf += 1
+                            logger.debug(f"{slice_ctx} drop low-confidence logprob={avg_logprob:.2f}: {raw_text[:60]!r}")
+                            continue
+                        if comp_ratio > 2.4:
+                            _drop_loop += 1
+                            logger.debug(f"{slice_ctx} drop repetition loop compression={comp_ratio:.2f}: {raw_text[:60]!r}")
+                            continue
 
-                    # Deduplicate consecutive identical segments
-                    if text == last_clean_text:
-                        _drop_dup += 1
-                        continue
-                    _kept += 1
+                        # Sanitize text: collapse repetition loops, strip foreign-script hallucinations
+                        text = sanitize_whisper_text(raw_text, language=seg_lang)
+                        if not text:
+                            _drop_sanitize += 1
+                            logger.debug(f"{slice_ctx} drop sanitized-empty lang={seg_lang}: {raw_text[:60]!r}")
+                            continue
 
-                    abs_start = chunk_start_sec + segment.start
-                    abs_end = chunk_start_sec + segment.end
+                        # Deduplicate consecutive identical segments
+                        if text == last_clean_text:
+                            _drop_dup += 1
+                            continue
+                        _kept += 1
 
-                    # Detect conversational turn shifts when speech pause > 1.6s
-                    if last_end > 0 and (abs_start - last_end) > 1.6:
-                        current_spk = 2 if current_spk == 1 else 1
+                        abs_start = chunk_start_sec + run_off + segment.start
+                        abs_end = chunk_start_sec + run_off + segment.end
 
-                    timestamp_str = format_seconds_to_min_sec(abs_start)
-                    line = f"[{timestamp_str}] Speaker {current_spk}: {text}"
-                    formatted_lines.append(line)
-                    raw_text_parts.append(text)
-                    last_end = abs_end
-                    last_clean_text = text
-                    segments_data.append({
-                        "start": round(abs_start, 2),
-                        "end": round(abs_end, 2),
-                        "text": text,
-                        "speaker": f"Speaker {current_spk}",
-                        "timestamp": f"[{timestamp_str}]"
-                    })
+                        # Detect conversational turn shifts when speech pause > 1.6s
+                        if last_end > 0 and (abs_start - last_end) > 1.6:
+                            current_spk = 2 if current_spk == 1 else 1
+
+                        timestamp_str = format_seconds_to_min_sec(abs_start)
+                        line = f"[{timestamp_str}] Speaker {current_spk}: {text}"
+                        formatted_lines.append(line)
+                        raw_text_parts.append(text)
+                        last_end = abs_end
+                        last_clean_text = text
+                        segments_data.append({
+                            "start": round(abs_start, 2),
+                            "end": round(abs_end, 2),
+                            "text": text,
+                            "speaker": f"Speaker {current_spk}",
+                            "timestamp": f"[{timestamp_str}]",
+                            "language": seg_lang
+                        })
             finally:
                 logger.info(f"  slice {slice_idx + 1}/{len(chunk_slices)} @{chunk_start_sec:.0f}s+{chunk_dur_sec:.0f}s "
-                            f"lang={target_language} took {time.time() - _sl0:.1f}s: segments={_seen} kept={_kept} "
-                            f"dropped(no_speech>0.95={_drop_nospeech}, sanitized_empty={_drop_sanitize}, dup={_drop_dup})")
-                if chunk_temp_wav and os.path.exists(chunk_temp_wav):
-                    try:
-                        os.remove(chunk_temp_wav)
-                    except Exception:
-                        pass
+                            f"lang={slice_languages[-1] if slice_languages else '?'} took {time.time() - _sl0:.1f}s: "
+                            f"segments={_seen} kept={_kept} dropped(no_speech={_drop_nospeech}, "
+                            f"low_logprob={_drop_lowconf}, loop={_drop_loop}, sanitized_empty={_drop_sanitize}, "
+                            f"dup={_drop_dup})")
+                for tmp_path in run_temp_files + ([chunk_temp_wav] if chunk_temp_wav else []):
+                    if tmp_path and os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except Exception:
+                            pass
                 gc.collect()
 
         # Dual-pass resilience: If a specific language was requested (e.g. 'bn') but produced
@@ -878,7 +1236,8 @@ def transcribe_local_audio(
         return {
             "status": "success",
             "provider": "local_whisper",
-            "model": os.path.basename(get_model_path(model_name)),
+            "model": loaded_model_name,
+            "slice_languages": slice_languages,
             "text": raw_transcript_final,
             "raw_transcript": raw_transcript_final,
             "transcript": raw_transcript_final,
