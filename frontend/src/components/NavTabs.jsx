@@ -15,7 +15,7 @@ import {
   Landmark
 } from 'lucide-react';
 
-export default function NavTabs({ activeSection, scrollToSection, documentType = 'meeting_minutes' }) {
+export default function NavTabs({ activeSection, scrollToSection, documentType = 'meeting_minutes', hasGeneratedOutput = false }) {
   const getSectionsForDocType = () => {
     // 1. Record & Upload (Hero), 2. Transcript, 3. Template (with embedded Skills)
     const baseSections = [
@@ -24,27 +24,31 @@ export default function NavTabs({ activeSection, scrollToSection, documentType =
       { id: 'section-templates', label: 'Templates & Skills', icon: Layers },
     ];
 
+    let sections = [];
     if (documentType === 'meeting_minutes') {
-      return [
+      sections = [
         ...baseSections,
         { id: 'section-meta', label: 'Agendas', icon: Calendar },
         { id: 'section-discussions', label: 'Discussions', icon: MessageSquare },
-        { id: 'section-attendance', label: 'Attendance', icon: Users },
-        { id: 'section-export', label: 'Preview', icon: FileText }
+        { id: 'section-attendance', label: 'Attendance', icon: Users }
       ];
     } else if (documentType === 'bangladesh_govt_report') {
-      return [
+      sections = [
         ...baseSections,
-        { id: 'section-govt-form', label: 'Report', icon: Landmark },
-        { id: 'section-export', label: 'Preview', icon: FileText }
+        { id: 'section-govt-form', label: 'Report', icon: Landmark }
       ];
     } else {
-      return [
+      sections = [
         ...baseSections,
-        { id: 'section-article-form', label: 'Document', icon: FileText },
-        { id: 'section-export', label: 'Preview', icon: FileText }
+        { id: 'section-article-form', label: 'Document', icon: FileText }
       ];
     }
+
+    if (hasGeneratedOutput) {
+      sections.push({ id: 'section-export', label: 'Preview', icon: FileText });
+    }
+
+    return sections;
   };
 
   const currentSections = getSectionsForDocType();

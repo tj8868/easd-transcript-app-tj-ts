@@ -208,76 +208,89 @@ export default function DocumentPreview({
               <div style={{ fontSize: '1.45rem', fontWeight: 'bold', color: '#047857', letterSpacing: '0.5px', marginBottom: '4px' }}>
                 গণপ্রজাতন্ত্রী বাংলাদেশ সরকার
               </div>
-              <div style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '2px' }}>
-                {sanitize(meta.ministry || 'স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়')}
-              </div>
-              <div style={{ fontSize: '1rem', color: '#334155' }}>
-                {sanitize(meta.department || 'স্বাস্থ্য সেবা বিভাগ')}
-              </div>
-              <div style={{ fontSize: '0.82rem', color: '#64748b', marginTop: '2px' }}>
-                www.dghs.gov.bd
-              </div>
+              {meta.ministry && (
+                <div style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '2px' }}>
+                  {sanitize(meta.ministry)}
+                </div>
+              )}
+              {meta.department && (
+                <div style={{ fontSize: '1rem', color: '#334155' }}>
+                  {sanitize(meta.department)}
+                </div>
+              )}
             </div>
 
             {/* Split Memo No & Date Line */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', fontSize: '0.98rem', fontWeight: 600, color: '#1e293b' }}>
-              <div>স্মারক নম্বর: {sanitize(meta.memo_no || '৪৫.০০.০০০০.০০১.২৪.০০১.২৬-')}</div>
-              <div>তারিখ: {sanitize(meta.date || '০২ সেপ্টেম্বর, ২০২৬')}</div>
-            </div>
+            {(meta.memo_no || meta.date) && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', fontSize: '0.98rem', fontWeight: 600, color: '#1e293b' }}>
+                <div>{meta.memo_no ? `স্মারক নম্বর: ${sanitize(meta.memo_no)}` : ''}</div>
+                <div>{meta.date ? `তারিখ: ${sanitize(meta.date)}` : ''}</div>
+              </div>
+            )}
 
             {/* Subject Line */}
-            <div style={{ marginBottom: '22px', fontSize: '1.08rem', fontWeight: 'bold', borderBottom: '1.5px solid #cbd5e1', paddingBottom: '10px' }}>
-              বিষয়: <span style={{ textDecoration: 'underline' }}>{sanitize(meta.subject || meta.title || 'নথি প্রতিবেদন প্রসঙ্গে।')}</span>
-            </div>
+            {(meta.subject || meta.title) && (
+              <div style={{ marginBottom: '22px', fontSize: '1.08rem', fontWeight: 'bold', borderBottom: '1.5px solid #cbd5e1', paddingBottom: '10px' }}>
+                বিষয়: <span style={{ textDecoration: 'underline' }}>{sanitize(meta.subject || meta.title)}</span>
+              </div>
+            )}
 
             {/* Section 1: Background */}
-            <div style={{ marginBottom: '20px' }}>
-              <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                ১. পটভূমি ও ভূমিকা:
-              </h4>
-              <div style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155', textAlign: 'justify' }}>
-                {sanitize(meta.background || meta.overview || 'প্রশাসনিক পর্যালোচনা সভার পটভূমি, উদ্দেশ্য এবং সার্বিক কর্মপরিধি।')}
+            {(meta.background || meta.overview) && (
+              <div style={{ marginBottom: '20px' }}>
+                <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
+                  ১. পটভূমি ও ভূমিকা:
+                </h4>
+                <div style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155', textAlign: 'justify' }}>
+                  {sanitize(meta.background || meta.overview)}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Section 2: Observations */}
-            <div style={{ marginBottom: '20px' }}>
-              <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                ২. বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত:
-              </h4>
-              <div
-                style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
-                dangerouslySetInnerHTML={{
-                  __html: cleanDetailsHtml(meta.observations || '• মাঠ পর্যায়ের প্রাথমিক উপাত্ত সংগ্রহ সম্পন্ন হয়েছে।\n• বিভিন্ন জেলায় স্বাস্থ্যসেবা কার্যক্রমের অগ্রগতি ইতিবাচক।')
-                }}
-              />
-            </div>
+            {meta.observations && (
+              <div style={{ marginBottom: '20px' }}>
+                <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
+                  ২. বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত:
+                </h4>
+                <div
+                  style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
+                  dangerouslySetInnerHTML={{
+                    __html: cleanDetailsHtml(meta.observations)
+                  }}
+                />
+              </div>
+            )}
 
             {/* Section 3: Decisions */}
-            <div style={{ marginBottom: '20px' }}>
-              <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                ৩. সভায় গৃহীত সিদ্ধান্তসমূহ:
-              </h4>
-              <div
-                style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
-                dangerouslySetInnerHTML={{
-                  __html: cleanDetailsHtml(meta.decisions || '• স্বাস্থ্য পরীক্ষার ডাটাবেজ নিয়মিত হালনাগাদ করার সিদ্ধান্ত গৃহীত হয়।\n• আগামী ত্রৈমাসিকে জেলা সমন্বয় সভা আহ্বান করা হবে।')
-                }}
-              />
-            </div>
+            {meta.decisions && (
+              <div style={{ marginBottom: '20px' }}>
+                <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
+                  ৩. সভায় গৃহীত সিদ্ধান্তসমূহ:
+                </h4>
+                <div
+                  style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
+                  dangerouslySetInnerHTML={{
+                    __html: cleanDetailsHtml(meta.decisions)
+                  }}
+                />
+              </div>
+            )}
 
             {/* Section 4: Recommendations */}
-            <div style={{ marginBottom: '22px' }}>
-              <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                ৪. কৌশলগত সুপারিশমালা:
-              </h4>
-              <div
-                style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
-                dangerouslySetInnerHTML={{
-                  __html: cleanDetailsHtml(meta.recommendations || '• আধুনিক ডিজিটাল মনিটরিং ব্যবস্থা সম্প্রসারণ করা প্রয়োজন।\n• জনবল সংকট নিরসনে দ্রুত পদক্ষেপ গ্রহণ সমীচীন।')
-                }}
-              />
-            </div>
+            {meta.recommendations && (
+              <div style={{ marginBottom: '22px' }}>
+                <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
+                  ৪. কৌশলগত সুপারিশমালা:
+                </h4>
+                <div
+                  style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
+                  dangerouslySetInnerHTML={{
+                    __html: cleanDetailsHtml(meta.recommendations)
+                  }}
+                />
+              </div>
+            )}
 
             {/* Section 5: Action Matrix Table */}
             {meta.action_matrix && meta.action_matrix.length > 0 && (
@@ -311,15 +324,15 @@ export default function DocumentPreview({
             )}
 
             {/* Section 6: Official Signatory & Distribution Block */}
-            <div style={{ marginTop: '36px', display: 'flex', justifyContent: 'flex-end' }}>
-              <div style={{ textAlign: 'center', width: '280px', fontSize: '0.95rem', color: '#1e293b' }}>
-                <div style={{ fontStyle: 'italic', color: '#64748b', marginBottom: '4px' }}>(স্বাক্ষরিত)</div>
-                <div style={{ fontWeight: 'bold' }}>{sanitize(meta.signatory || 'দায়িত্বপ্রাপ্ত কর্মকর্তা')}</div>
-                <div style={{ fontSize: '0.88rem', color: '#475569' }}>যুগ্মসচিব / উপপরিচালক</div>
-                <div style={{ fontSize: '0.88rem', color: '#475569' }}>{sanitize(meta.department || 'স্বাস্থ্য সেবা বিভাগ')}</div>
-                <div style={{ fontSize: '0.88rem', color: '#475569' }}>ফোন: ০২-xxxxxxx</div>
+            {meta.signatory && (
+              <div style={{ marginTop: '36px', display: 'flex', justifyContent: 'flex-end' }}>
+                <div style={{ textAlign: 'center', width: '280px', fontSize: '0.95rem', color: '#1e293b' }}>
+                  <div style={{ fontStyle: 'italic', color: '#64748b', marginBottom: '4px' }}>(স্বাক্ষরিত)</div>
+                  <div style={{ fontWeight: 'bold' }}>{sanitize(meta.signatory)}</div>
+                  {meta.department && <div style={{ fontSize: '0.88rem', color: '#475569' }}>{sanitize(meta.department)}</div>}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
 
@@ -336,55 +349,63 @@ export default function DocumentPreview({
 
             {/* Document Title & Meta */}
             <div style={{ marginBottom: '22px' }}>
-              <div style={{ fontSize: '1.35rem', fontWeight: 'bold', marginBottom: '4px', color: '#000000' }}>
-                {sanitize(meta.title || 'Weekly Strategic, Programmatic and Presentation Review Meeting')}
-              </div>
-              <div style={{ fontSize: '1rem', color: '#333333', marginBottom: '10px' }}>
-                {sanitize(meta.location || 'Emenance, Mohakhali, DOHS')}
-              </div>
+              {meta.title && (
+                <div style={{ fontSize: '1.35rem', fontWeight: 'bold', marginBottom: '4px', color: '#000000' }}>
+                  {sanitize(meta.title)}
+                </div>
+              )}
+              {meta.location && (
+                <div style={{ fontSize: '1rem', color: '#333333', marginBottom: '10px' }}>
+                  {sanitize(meta.location)}
+                </div>
+              )}
               <div style={{ fontWeight: 'bold', fontSize: '0.98rem', borderBottom: '2px solid #cbd5e1', paddingBottom: '10px', color: '#000000' }}>
                 Date: {sanitize(meta.date || '—')} &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Time: {sanitize(meta.time || '—')}
               </div>
             </div>
 
             {/* Meeting Agenda */}
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
-                Meeting Agenda:
-              </h3>
-              <ol style={{ paddingLeft: '22px', margin: 0, fontSize: '0.98rem', color: '#111827', lineHeight: '1.65' }}>
-                {(agendas || []).map((ag, i) => (
-                  <li key={i}>{cleanAgenda(ag)}</li>
-                ))}
-              </ol>
-            </div>
+            {agendas && agendas.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
+                  Meeting Agenda:
+                </h3>
+                <ol style={{ paddingLeft: '22px', margin: 0, fontSize: '0.98rem', color: '#111827', lineHeight: '1.65' }}>
+                  {agendas.map((ag, i) => (
+                    <li key={i}>{cleanAgenda(ag)}</li>
+                  ))}
+                </ol>
+              </div>
+            )}
 
             {/* 4-Topic Discussions Table with Exact Template Color #E36C0A */}
-            <div style={{ marginBottom: '24px' }}>
-              <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
-                Agenda-Wise Meeting Discussions
-              </h3>
-              <div className="table-responsive">
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.94rem', border: '1px solid #000000' }}>
-                  <thead>
-                    <tr style={{ background: '#E36C0A', color: '#FFFFFF', borderBottom: '1.5px solid #000000' }}>
-                      <th style={{ width: '45px', padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>SN</th>
-                      <th style={{ width: '220px', padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Discussion Points</th>
-                      <th style={{ padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Major Discussions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(discussions || []).map((row, i) => (
-                      <tr key={i} style={{ background: i % 2 === 1 ? '#fafafa' : '#ffffff' }}>
-                        <td style={{ padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold' }}>{row.sn}</td>
-                        <td style={{ padding: '10px 8px', border: '1px solid #000000', fontWeight: 'bold' }}>{row.topic}</td>
-                        <td style={{ padding: '10px 8px', border: '1px solid #000000', lineHeight: '1.6' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(row.details) }} />
+            {discussions && discussions.length > 0 && (
+              <div style={{ marginBottom: '24px' }}>
+                <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
+                  Agenda-Wise Meeting Discussions
+                </h3>
+                <div className="table-responsive">
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.94rem', border: '1px solid #000000' }}>
+                    <thead>
+                      <tr style={{ background: '#E36C0A', color: '#FFFFFF', borderBottom: '1.5px solid #000000' }}>
+                        <th style={{ width: '45px', padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', color: '#FFFFFF', fontWeight: 'bold' }}>SN</th>
+                        <th style={{ width: '220px', padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Discussion Points</th>
+                        <th style={{ padding: '10px 8px', border: '1px solid #000000', color: '#FFFFFF', fontWeight: 'bold' }}>Major Discussions</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {discussions.map((row, i) => (
+                        <tr key={i} style={{ background: i % 2 === 1 ? '#fafafa' : '#ffffff' }}>
+                          <td style={{ padding: '10px 8px', border: '1px solid #000000', textAlign: 'center', fontWeight: 'bold' }}>{row.sn}</td>
+                          <td style={{ padding: '10px 8px', border: '1px solid #000000', fontWeight: 'bold' }}>{row.topic}</td>
+                          <td style={{ padding: '10px 8px', border: '1px solid #000000', lineHeight: '1.6' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(row.details) }} />
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Major Strategic Decisions */}
             {decisions && (
@@ -452,28 +473,36 @@ export default function DocumentPreview({
           <div>
             <div style={{ textAlign: 'center', marginBottom: '24px', borderBottom: '2px solid #003366', paddingBottom: '16px' }}>
               <h1 style={{ fontSize: '1.5rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '8px', lineHeight: '1.3' }}>
-                {sanitize(meta.title || 'Epidemiological Trends and Public Health Interventions in Urban Communities')}
+                {sanitize(meta.title || activeTemplate.name)}
               </h1>
-              <div style={{ fontSize: '1.02rem', fontStyle: 'italic', color: '#334155', marginBottom: '4px' }}>
-                {sanitize(meta.authors || 'EASD Research & Evaluation Wing')}
-              </div>
-              <div style={{ fontSize: '0.88rem', color: '#64748b' }}>
-                Eminence Associates for Social Development • Published: {sanitize(meta.date || 'September 2026')}
-              </div>
+              {meta.authors && (
+                <div style={{ fontSize: '1.02rem', fontStyle: 'italic', color: '#334155', marginBottom: '4px' }}>
+                  {sanitize(meta.authors)}
+                </div>
+              )}
+              {meta.date && (
+                <div style={{ fontSize: '0.88rem', color: '#64748b' }}>
+                  Published: {sanitize(meta.date)}
+                </div>
+              )}
             </div>
 
             {/* Abstract Box */}
-            <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderLeft: '4px solid #003366', padding: '16px 20px', borderRadius: '6px', marginBottom: '24px' }}>
-              <h4 style={{ fontWeight: 'bold', fontSize: '1.02rem', color: '#003366', marginBottom: '6px' }}>
-                Abstract
-              </h4>
-              <p style={{ fontSize: '0.94rem', lineHeight: '1.65', color: '#334155', textAlign: 'justify', margin: 0 }}>
-                {sanitize(meta.abstract || 'Background: This study evaluates community-based health interventions across urban and semi-urban clusters. Methods: Mixed-method evaluation with structured observational indicators. Results: Marked improvement in awareness and operational service delivery benchmarks. Conclusion: Strategic policy integration is essential for sustainable outcomes.')}
-              </p>
-              <div style={{ marginTop: '10px', fontSize: '0.88rem', color: '#475569' }}>
-                <strong>Keywords:</strong> {sanitize(meta.keywords || 'Public Health, Health Systems, Community Interventions, NCDs')}
+            {meta.abstract && (
+              <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderLeft: '4px solid #003366', padding: '16px 20px', borderRadius: '6px', marginBottom: '24px' }}>
+                <h4 style={{ fontWeight: 'bold', fontSize: '1.02rem', color: '#003366', marginBottom: '6px' }}>
+                  Abstract
+                </h4>
+                <p style={{ fontSize: '0.94rem', lineHeight: '1.65', color: '#334155', textAlign: 'justify', margin: 0 }}>
+                  {sanitize(meta.abstract)}
+                </p>
+                {meta.keywords && (
+                  <div style={{ marginTop: '10px', fontSize: '0.88rem', color: '#475569' }}>
+                    <strong>Keywords:</strong> {sanitize(meta.keywords)}
+                  </div>
+                )}
               </div>
-            </div>
+            )}
 
             {/* Journal Sections */}
             {(activeTemplate.sections || []).map((sec, idx) => {
@@ -488,7 +517,7 @@ export default function DocumentPreview({
                     <div style={{ fontSize: '0.96rem', lineHeight: '1.65', color: '#334155', textAlign: 'justify' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(content) }} />
                   ) : (
                     <p style={{ fontStyle: 'italic', color: '#94a3b8', fontSize: '0.9rem' }}>
-                      Detailed empirical findings and discussion synthesized from research transcript...
+                      Section populated upon generation...
                     </p>
                   )}
                 </div>
@@ -506,18 +535,22 @@ export default function DocumentPreview({
               <span style={{ fontSize: '0.9rem', fontWeight: 'bold', color: '#dc2626', letterSpacing: '1px', textTransform: 'uppercase' }}>
                 FOR IMMEDIATE RELEASE
               </span>
-              <span style={{ fontSize: '0.88rem', color: '#64748b' }}>
-                {sanitize(meta.date || 'September 2, 2026')}
-              </span>
+              {meta.date && (
+                <span style={{ fontSize: '0.88rem', color: '#64748b' }}>
+                  {sanitize(meta.date)}
+                </span>
+              )}
             </div>
 
             <h1 style={{ fontSize: '1.6rem', fontWeight: 'bold', color: '#0f172a', marginBottom: '10px', lineHeight: '1.3' }}>
-              {sanitize(meta.title || 'EASD Unveils Landmark Community Health Initiative')}
+              {sanitize(meta.title || activeTemplate.name)}
             </h1>
 
-            <div style={{ fontSize: '0.98rem', fontWeight: 'bold', color: '#0284c7', marginBottom: '18px' }}>
-              {sanitize(meta.dateline || 'DHAKA, Bangladesh')} —
-            </div>
+            {meta.dateline && (
+              <div style={{ fontSize: '0.98rem', fontWeight: 'bold', color: '#0284c7', marginBottom: '18px' }}>
+                {sanitize(meta.dateline)} —
+              </div>
+            )}
 
             {/* Lead & Story Body */}
             <TemplateSectionsList
@@ -526,7 +559,7 @@ export default function DocumentPreview({
               customSectionsData={customSectionsData}
               titleColor="#0f172a"
               titleSize="1.08rem"
-              placeholder="Story details populated from press conference / event recording..."
+              placeholder="Section populated upon generation..."
               marginBottom="18px"
               cleanHtml={cleanDetailsHtml}
             />
@@ -536,9 +569,11 @@ export default function DocumentPreview({
             </div>
 
             {/* Boilerplate */}
-            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '14px 18px', borderRadius: '6px', fontSize: '0.88rem', color: '#475569' }}>
-              <strong>Media Contact:</strong> {sanitize(meta.media_contact || 'Communications Directorate, Eminence (media@eminence-bd.org)')}
-            </div>
+            {meta.media_contact && (
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', padding: '14px 18px', borderRadius: '6px', fontSize: '0.88rem', color: '#475569' }}>
+                <strong>Media Contact:</strong> {sanitize(meta.media_contact)}
+              </div>
+            )}
           </div>
         )}
 
@@ -552,11 +587,15 @@ export default function DocumentPreview({
                 THOUGHT LEADERSHIP BLOG
               </span>
               <h1 style={{ fontSize: '1.65rem', fontWeight: 'bold', color: '#0f172a', margin: '8px 0 10px 0', lineHeight: '1.3' }}>
-                {sanitize(meta.title || 'Transforming Public Health from the Grassroots: 5 Key Lessons')}
+                {sanitize(meta.title || activeTemplate.name)}
               </h1>
-              <div style={{ fontSize: '0.92rem', color: '#64748b' }}>
-                By <strong>{sanitize(meta.author || 'EASD Thought Leadership Team')}</strong> • {sanitize(meta.date || 'September 2026')} • 5 min read
-              </div>
+              {(meta.author || meta.date) && (
+                <div style={{ fontSize: '0.92rem', color: '#64748b' }}>
+                  {meta.author && <span>By <strong>{sanitize(meta.author)}</strong></span>}
+                  {meta.author && meta.date && ' • '}
+                  {meta.date && <span>{sanitize(meta.date)}</span>}
+                </div>
+              )}
             </div>
 
             {/* Blog Sections */}
@@ -566,7 +605,7 @@ export default function DocumentPreview({
               customSectionsData={customSectionsData}
               titleColor="#6d28d9"
               titleSize="1.15rem"
-              placeholder="Insights and core takeaways synthesized from podcast / notes..."
+              placeholder="Section populated upon generation..."
               marginBottom="20px"
               cleanHtml={cleanDetailsHtml}
             />
@@ -584,11 +623,13 @@ export default function DocumentPreview({
                 DIRECT TRANSCRIPT SYNTHESIS
               </span>
               <h1 style={{ fontSize: '1.65rem', fontWeight: 'bold', color: '#0f172a', margin: '8px 0 10px 0', lineHeight: '1.3' }}>
-                {sanitize(meta.title || 'Executive Summary of Proceedings')}
+                {sanitize(meta.title || activeTemplate.name || 'Executive Summary of Proceedings')}
               </h1>
-              <div style={{ fontSize: '0.92rem', color: '#64748b' }}>
-                {sanitize(meta.date || 'September 2026')} • Prepared from verbatim audio recording
-              </div>
+              {meta.date && (
+                <div style={{ fontSize: '0.92rem', color: '#64748b' }}>
+                  {sanitize(meta.date)} • Prepared from verbatim audio recording
+                </div>
+              )}
             </div>
 
             {/* Summary Sections: Overview, Key Topics, Decisions, Action Items */}

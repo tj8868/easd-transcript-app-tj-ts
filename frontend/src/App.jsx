@@ -38,19 +38,8 @@ import SettingsModal, { ACCENT_PALETTES } from './components/SettingsModal';
 import ResponsiveDeviceViewer from './components/ResponsiveDeviceViewer';
 import { getSavedKeyForProvider, getSavedBaseUrlForProvider, saveKeyForProvider, activateProvider, getActiveApiDisplayName, PROVIDERS } from './utils/apiKeyStorage';
 
-const DEFAULT_AGENDAS = [
-  'Review of previous meeting minutes & action items',
-  'Field survey dataset analysis & programmatic milestones',
-  'Task assignments and operational deadlines',
-  'Key strategic & administrative decisions'
-];
-
-const DEFAULT_DISCUSSIONS = [
-  { sn: '1', topic: 'Followup from previous meeting', details: '• Reviewed progress of ongoing items from the last session with responsible leads.\n• Outstanding deliverables tracked; bottlenecks identified and escalated.' },
-  { sn: '2', topic: 'Action items', details: '• Concrete action directives issued with named responsible owners.\n• Quality benchmarks and compliance requirements confirmed per action item.' },
-  { sn: '3', topic: 'Task Assignments', details: '• Specific tasks allocated to named team leads with agreed delivery timelines.\n• Workstream ownership confirmed by the meeting chair.' },
-  { sn: '4', topic: 'Meeting Decisions', details: '• All formally approved strategic and institutional decisions adopted in this session.\n• Locked submission deadlines and next strategic review date confirmed.' }
-];
+const DEFAULT_AGENDAS = [];
+const DEFAULT_DISCUSSIONS = [];
 
 export default function App() {
   const isFrameView = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('view') === 'frame';
@@ -58,6 +47,7 @@ export default function App() {
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'dark');
   const [activeSection, setActiveSection] = useState('section-live');
   const [templateSubTab, setTemplateSubTab] = useState('templates');
+  const [hasGeneratedOutput, setHasGeneratedOutput] = useState(false);
 
   // Collapsed state for sections below Transcripts (all collapsed by default)
   const [collapsedSections, setCollapsedSections] = useState({
@@ -195,29 +185,25 @@ export default function App() {
 
   // Comprehensive Metadata state for all document types
   const [meta, setMeta] = useState({
-    title: 'Weekly Strategic, Programmatic and Presentation Review Meeting',
-    location: 'Eminence Conference Room, Mohakhali DOHS, Dhaka',
-    // Default to today's date (was a hardcoded sample date that leaked into exported minutes)
+    title: '',
+    location: '',
     date: (() => { const d = new Date(); return `${d.getDate()} ${d.toLocaleString('en-GB', { month: 'long' })}, ${d.getFullYear()}`; })(),
     time: '',
-    ministry: 'স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়',
-    department: 'স্বাস্থ্য সেবা বিভাগ / DGHS',
-    memo_no: '৪৫.০০.০০০০.০০১.২৪.০০১.২৬-',
-    subject: 'জাতীয় স্বাস্থ্য নীতি ও প্রোগ্রাম বাস্তবায়ন পর্যালোচনা প্রতিবেদন প্রসঙ্গে।',
+    ministry: '',
+    department: '',
+    memo_no: '',
+    subject: '',
     background: '',
     observations: '',
     decisions: '',
     recommendations: '',
     signatory: '',
-    action_matrix: [
-      { sn: '১', action: 'স্বাস্থ্য পরীক্ষা ও প্রাথমিক তথ্যভাণ্ডার হালনাগাদকরণ', authority: 'সিভিল সার্জন কার্যালয় ও স্বাস্থ্য কমপ্লেক্স', deadline: '৩০ সেপ্টেম্বর, ২০২৬' },
-      { sn: '২', action: 'প্রশিক্ষণ ও সচেতনতা বৃদ্ধি কার্যক্রম জোরদারকরণ', authority: 'প্রশিক্ষণ উইং, ডিজিএইচএস', deadline: '১৫ অক্টোবর, ২০২৬' }
-    ]
+    action_matrix: []
   });
 
   const [agendas, setAgendas] = useState(DEFAULT_AGENDAS);
   const [discussions, setDiscussions] = useState(DEFAULT_DISCUSSIONS);
-  const [decisions, setDecisions] = useState('• All agenda points reviewed and approved by the meeting chair.\n• Next review meeting scheduled for next week.');
+  const [decisions, setDecisions] = useState('');
   const [attendance, setAttendance] = useState([]);
 
   const [isGDriveOpen, setIsGDriveOpen] = useState(false);
@@ -548,6 +534,7 @@ export default function App() {
         if (payload.doc_type) setDocumentType(payload.doc_type);
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
+          setHasGeneratedOutput(true);
         }
         const sttErrors = payload.stt?.errors || [];
         if (payload.warning || sttErrors.length) {
@@ -624,6 +611,7 @@ export default function App() {
         if (payload.doc_type) setDocumentType(payload.doc_type);
         if (payload.summary) {
           applyExtractedSummary(payload.summary);
+          setHasGeneratedOutput(true);
         }
         if (payload.warning) {
           showNotice('warning', payload.warning);
@@ -655,6 +643,7 @@ export default function App() {
     setAgendas(DEFAULT_AGENDAS);
     setDiscussions(DEFAULT_DISCUSSIONS);
     setDecisions('');
+    setHasGeneratedOutput(false);
     setClearQueueTrigger((prev) => prev + 1);
   };
 
@@ -779,6 +768,7 @@ export default function App() {
         activeSection={activeSection}
         scrollToSection={scrollToSection}
         documentType={documentType}
+        hasGeneratedOutput={hasGeneratedOutput}
       />
 
       {notice && (
@@ -994,26 +984,28 @@ export default function App() {
           </CollapsibleCard>
         )}
 
-        {/* 6. Live Document Preview & Export */}
-        <DocumentPreview
-          meta={meta}
-          agendas={agendas}
-          discussions={discussions}
-          decisions={decisions}
-          attendance={attendance}
-          transcript={transcript}
-          banglaTranscript={banglaTranscript}
-          englishTranscript={englishTranscript}
-          templates={templates}
-          activeTemplateId={activeTemplateId}
-          documentType={documentType}
-          customSectionsData={customSectionsData}
-          customTablesData={customTablesData}
-          settings={settings}
-          onDownloadDocx={handleDownloadDocx}
-          onOpenGDrive={() => setIsGDriveOpen(true)}
-          isGenerating={isGenerating}
-        />
+        {/* 6. Live Document Preview & Export - Only shown when generate button is clicked and returns output */}
+        {hasGeneratedOutput && (
+          <DocumentPreview
+            meta={meta}
+            agendas={agendas}
+            discussions={discussions}
+            decisions={decisions}
+            attendance={attendance}
+            transcript={transcript}
+            banglaTranscript={banglaTranscript}
+            englishTranscript={englishTranscript}
+            templates={templates}
+            activeTemplateId={activeTemplateId}
+            documentType={documentType}
+            customSectionsData={customSectionsData}
+            customTablesData={customTablesData}
+            settings={settings}
+            onDownloadDocx={handleDownloadDocx}
+            onOpenGDrive={() => setIsGDriveOpen(true)}
+            isGenerating={isGenerating}
+          />
+        )}
       </main>
 
       <GDriveModal
