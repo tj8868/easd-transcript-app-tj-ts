@@ -244,6 +244,10 @@ class ApiSettingsPayload(BaseModel):
     gemini_api_key: Optional[str] = ""
     local_whisper_model: Optional[str] = "auto"
     gemini_live_model: Optional[str] = "models/gemini-3.5-transcribe-live"
+    # v8.5: OpenAI-compatible custom endpoint (OpenRouter / DeepSeek / Ollama / LM Studio)
+    custom_api_base_url: Optional[str] = ""
+    custom_api_key: Optional[str] = ""
+    custom_api_model: Optional[str] = ""
     model_config = ConfigDict(extra="ignore")
 
 class TestEnginePayload(BaseModel):
@@ -254,6 +258,7 @@ class TestEnginePayload(BaseModel):
     llm_provider: Optional[str] = "gemini"
     llm_api_key: Optional[str] = None
     llm_model: Optional[str] = "gemini-3.8-flash"
+    base_url: Optional[str] = ""
     model_config = ConfigDict(extra="ignore")
 
 class DeleteTemplatePayload(BaseModel):
@@ -299,7 +304,8 @@ def get_settings_endpoint():
 def save_settings_endpoint(payload: ApiSettingsPayload):
     """Saves persistent AI configuration, model choices, and API keys to disk."""
     try:
-        updated = save_api_settings_to_disk(payload.model_dump())
+        # exclude_unset: saving one section must not reset the others (e.g. wipe the Gemini key)
+        updated = save_api_settings_to_disk(payload.model_dump(exclude_unset=True))
         return JSONResponse(content={"status": "success", "settings": updated, "message": "API settings saved successfully."})
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -310,8 +316,9 @@ def test_engine_endpoint(payload: TestEnginePayload):
     Actively tests STT transcription and/or LLM summarization endpoints.
     Returns live latency (ms), HTTP status, and diagnostic health report.
     """
+    from diag_logging import bind_job_id
     cfg = load_api_settings_from_disk()
-    results: Dict[str, Any] = {"status": "success"}
+    results: Dict[str, Any] = {"status": "success", "log_id": bind_job_id()}
 
     # Test STT Transcription Engine if requested
     if payload.test_type in ["stt", "both"]:
@@ -331,13 +338,18 @@ def test_engine_endpoint(payload: TestEnginePayload):
     # Test LLM Summarization Engine if requested
     if payload.test_type in ["llm", "both"]:
         llm_prov = payload.llm_provider or cfg.get("summarization_provider") or "gemini"
-        llm_key = payload.llm_api_key or cfg.get("gemini_api_key") or ""
-        llm_mod = payload.llm_model or cfg.get("summarization_model") or "gemini-3.8-flash"
+        if llm_prov.lower() in ("openai_compatible", "custom", "openai", "openrouter"):
+            llm_key = payload.llm_api_key or cfg.get("custom_api_key") or ""
+            llm_mod = payload.llm_model or cfg.get("custom_api_model") or ""
+        else:
+            llm_key = payload.llm_api_key or cfg.get("gemini_api_key") or ""
+            llm_mod = payload.llm_model or cfg.get("summarization_model") or "gemini-3.8-flash"
 
         llm_res = test_summarization_engine(
             provider=llm_prov,
             api_key=llm_key,
-            model_name=llm_mod
+            model_name=llm_mod,
+            base_url=payload.base_url or ""
         )
         results["llm"] = llm_res
         if not llm_res.get("success"):
@@ -510,6 +522,8 @@ def delete_skill_endpoint(payload: DeleteSkillPayload):
 @app.post("/api/verify_api_key")
 def verify_key_endpoint(payload: VerifyKeyPayload):
     """Verifies whether an API key or custom endpoint is active and valid."""
+    from diag_logging import bind_job_id
+    log_id = bind_job_id()
     res = verify_ai_api_key(payload.provider, payload.api_key or "", payload.base_url or "")
     is_valid = bool(res.get("valid", False) or res.get("success", False))
     return JSONResponse(content={
@@ -517,7 +531,8 @@ def verify_key_endpoint(payload: VerifyKeyPayload):
         "valid": is_valid,
         "success": is_valid,
         "message": res.get("message", "Key verified.") if is_valid else res.get("message", "Verification failed."),
-        "latency_ms": res.get("latency_ms")
+        "latency_ms": res.get("latency_ms"),
+        "log_id": log_id
     })
 
 @app.post("/api/transcribe_and_summarize")
@@ -656,9 +671,17 @@ async def summarize_transcript_endpoint(
     template_id: Optional[str] = Form(None)
 ):
     """Summarizes raw or edited transcript into structured template fields using specified model."""
+    from diag_logging import get_logger, bind_job_id, redact_key
+    _slog = get_logger("api.summarize_transcript")
+    job = bind_job_id()  # correlation id on every log line; returned as "log_id"
+    t0 = time.time()
     template_schema = None
     if not (transcript or "").strip():
-        return JSONResponse(content={"status": "error", "detail": "The transcript is empty - transcribe or paste text first."})
+        return JSONResponse(content={"status": "error", "log_id": job,
+                                     "detail": "The transcript is empty - transcribe or paste text first."})
+    _slog.info("REQUEST provider=%s summarization_provider=%s model=%s base_url=%s key=%s template=%s transcript_chars=%d",
+               provider, summarization_provider, summarization_model or model_name, base_url or "-",
+               redact_key(summarization_api_key or api_key), template_id, len(transcript))
     try:
         template_schema = get_template_by_id(template_id) if template_id else None
         res = await asyncio.to_thread(
@@ -675,17 +698,24 @@ async def summarize_transcript_endpoint(
             custom_skills=custom_skills,
             template_schema=template_schema
         )
-        return JSONResponse(content={"status": "success", "data": res})
+        res["log_id"] = job
+        _slog.info("DONE in %.1fs source=%s model=%s warning=%s", time.time() - t0, res.get("summary_source"),
+                   res.get("model"), bool(res.get("warning")))
+        return JSONResponse(content={"status": "success", "data": res, "log_id": job})
     except Exception as e:
-        from diag_logging import get_logger
-        get_logger("api.summarize_transcript").exception("summarize_transcript failed: %s", e)
+        _slog.exception("summarize_transcript failed after %.1fs: %s", time.time() - t0, e)
         try:
             fallback = deep_semantic_synthesis(transcript, custom_skills, org_context, template_schema)
-            fallback["warning"] = (f"Cloud AI error ({e}). Fields were filled offline only with text found in the "
-                                   f"transcript - please review before exporting.")
-            return JSONResponse(content={"status": "success", "data": fallback})
+            fallback["warning"] = (f"The AI model could not fill the template because of an unexpected error. Fields "
+                                   f"were filled offline only with text found in the transcript - please review before "
+                                   f"exporting. (reference {job})")
+            fallback["log_id"] = job
+            return JSONResponse(content={"status": "success", "data": fallback, "log_id": job})
         except Exception:
-            return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+            _slog.exception("offline fallback also failed")
+            return JSONResponse(status_code=500, content={
+                "status": "error", "log_id": job,
+                "detail": f"Could not fill the template because of an unexpected server error (reference {job})."})
 
 @app.post("/api/ocr_extract_and_optimize")
 async def ocr_extract_and_optimize_endpoint(
@@ -812,6 +842,23 @@ async def system_audit_endpoint():
         }
     except Exception as e:
         report["local_whisper"] = {"status": "unavailable", "error": f"{type(e).__name__}: {e}"}
+    # v8.5: OpenAI-compatible custom endpoint reachability (GET {base_url}/models, 5s timeout)
+    if cfg.get("custom_api_base_url"):
+        from ai_providers import ping_openai_compatible
+        ping = ping_openai_compatible(timeout=5.0)
+        report["custom_api"] = {
+            "base_url": cfg.get("custom_api_base_url"),
+            "model": cfg.get("custom_api_model"),
+            "key_present": bool(cfg.get("custom_api_key")),
+            "active_for_summarization": cfg.get("summarization_provider") == "openai_compatible",
+            "reachable": ping.get("success"),
+            "status_code": ping.get("status_code"),
+            "model_listed": ping.get("model_listed"),
+            "latency_ms": ping.get("latency_ms"),
+            "message": ping.get("message"),
+        }
+    else:
+        report["custom_api"] = {"configured": False}
     report["log_file"] = __import__("diag_logging").LOG_FILE_PATH
     return JSONResponse(content={"status": "success", "report": report})
 

@@ -1,4 +1,4 @@
-// Centralized API Key Management & Provider Storage (Strictly Gemini & Local Whisper)
+// Centralized API Key Management & Provider Storage (Gemini, Local Whisper, OpenAI-compatible custom endpoint)
 
 export const PROVIDERS = [
   {
@@ -26,7 +26,29 @@ export const PROVIDERS = [
     placeholder: 'No API Key required (Offline Engine)',
     keyPrefix: '',
     docsUrl: ''
+  },
+  {
+    id: 'openai_compatible',
+    name: 'Custom / OpenRouter / Local (OpenAI-Compatible)',
+    shortName: 'Custom API',
+    tag: 'OpenRouter, DeepSeek, Ollama, LM Studio, or any OpenAI-compatible endpoint',
+    badgeColor: '#f59e0b',
+    defaultSTT: '',
+    defaultLLM: '',
+    defaultBaseUrl: '',
+    placeholder: 'Paste API key (leave blank for local Ollama/LM Studio)',
+    keyPrefix: '',
+    docsUrl: 'https://openrouter.ai/docs'
   }
+];
+
+// Quick presets for the OpenAI-compatible custom endpoint: they only prefill the Settings fields.
+export const CUSTOM_API_PRESETS = [
+  { id: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'deepseek/deepseek-v4.1-flash', key: null },
+  { id: 'deepseek', label: 'DeepSeek (direct)', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', key: null },
+  { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', model: 'llama3.1', key: 'ollama' },
+  { id: 'lmstudio', label: 'LM Studio (local)', baseUrl: 'http://localhost:1234/v1', model: '', key: null },
+  { id: 'other', label: 'Other / custom', baseUrl: '', model: '', key: '' }
 ];
 
 
@@ -120,7 +142,7 @@ export const getActiveApiDisplayName = (aiConfig) => {
 
   const p = PROVIDERS.find((prov) => prov.id === aiConfig.provider);
   if (p) {
-    return `${p.shortName} API`;
+    return p.shortName.endsWith('API') ? p.shortName : `${p.shortName} API`;
   }
   return 'Gemini API';
 };

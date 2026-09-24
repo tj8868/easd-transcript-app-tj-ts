@@ -16,7 +16,7 @@ from google import genai
 from google.genai import types
 from document_engine import DEFAULT_MEMBERS
 from ocr_engine import optimize_ocr_text, preprocess_image_for_ocr
-from diag_logging import get_logger, describe_exception, fmt_ts, redact_key
+from diag_logging import get_logger, describe_exception, fmt_ts, redact_key, current_job_id
 _stt_log = get_logger("stt")
 try:
     import google.genai as _genai_pkg
@@ -568,7 +568,10 @@ def load_api_settings_from_disk() -> Dict[str, Any]:
         "summarization_provider": "gemini",
         "summarization_model": "gemini-3.8-flash",
         "gemini_api_key": "",
-        "local_whisper_model": "auto"
+        "local_whisper_model": "auto",
+        "custom_api_base_url": "",
+        "custom_api_key": "",
+        "custom_api_model": ""
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -609,6 +612,22 @@ def _requested_whisper_model(provider: str, model_name: str = "") -> str:
     return str(load_api_settings_from_disk().get("local_whisper_model") or "auto")
 
 
+# Provider ids accepted for the OpenAI-compatible custom endpoint (normalised to "openai_compatible").
+_OPENAI_COMPAT_ALIASES = ("openai_compatible", "openai-compatible", "openai", "custom", "openrouter")
+
+
+def _local_llm_user_reason(err: Exception) -> str:
+    """Plain-language reason for a local-LLM failure (the raw exception is only logged)."""
+    text = f"{type(err).__name__}: {err}".lower()
+    if "not installed" in text or "importerror" in text or "no module named" in text:
+        return "the on-device model software is not installed"
+    if "not found" in text or "download" in text or "filenotfound" in text or ".gguf" in text:
+        return "the on-device model file is not downloaded yet"
+    if "unparseable" in text:
+        return "the on-device model's answer could not be read"
+    return "it failed while generating - details are in the app log"
+
+
 def is_fatal_auth_error(err: Exception) -> bool:
     """Returns True if the error indicates a fatal permission/key denial or unavailable model (no retrying needed)."""
     s = str(err).lower()
@@ -618,10 +637,67 @@ def is_fatal_auth_error(err: Exception) -> bool:
         "not_found", "no longer available", "invalid_argument"
     ])
 
+def ping_openai_compatible(base_url: str = "", api_key: str = "", model_name: str = "",
+                           timeout: float = 10.0) -> Dict[str, Any]:
+    """
+    Lightweight reachability/auth check for an OpenAI-compatible endpoint: GET {base_url}/models
+    (supported by OpenRouter, DeepSeek, Ollama and LM Studio). Falls back to the saved
+    custom_api_* settings. Returns {valid, success, message, latency_ms, status_code, model_listed}.
+    """
+    cfg = load_api_settings_from_disk()
+    root = (base_url or cfg.get("custom_api_base_url") or "").strip().rstrip("/")
+    key = (api_key or cfg.get("custom_api_key") or "").strip()
+    model = (model_name or cfg.get("custom_api_model") or "").strip()
+    t0 = time.time()
+    if not root:
+        return {"valid": False, "success": False, "latency_ms": 0, "status_code": None,
+                "message": "Custom API Base URL is empty. Enter it in Settings."}
+    url = f"{root}/models"
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    _oac_log.info("ping GET %s key=%s", url, redact_key(key))
+    try:
+        resp = httpx.get(url, headers=headers, timeout=httpx.Timeout(timeout, connect=min(timeout, 5.0)))
+    except httpx.ConnectError as e:
+        _oac_log.error("ping connection FAILED %s: %s", url, describe_exception(e))
+        return {"valid": False, "success": False, "latency_ms": round((time.time() - t0) * 1000), "status_code": None,
+                "message": f"Could not connect to {root} - is the server running and the Base URL correct?"}
+    except httpx.TimeoutException as e:
+        _oac_log.error("ping TIMEOUT %s: %s", url, describe_exception(e))
+        return {"valid": False, "success": False, "latency_ms": round((time.time() - t0) * 1000), "status_code": None,
+                "message": f"{root} did not answer within {int(timeout)}s."}
+    except httpx.HTTPError as e:
+        _oac_log.error("ping FAILED %s: %s", url, describe_exception(e))
+        return {"valid": False, "success": False, "latency_ms": round((time.time() - t0) * 1000), "status_code": None,
+                "message": f"The request to {root} failed."}
+    lat = round((time.time() - t0) * 1000)
+    _oac_log.info("ping GET %s -> HTTP %s in %dms", url, resp.status_code, lat)
+    if resp.status_code in (401, 403):
+        _oac_log_body("ping AUTH rejected:", resp)
+        return {"valid": False, "success": False, "latency_ms": lat, "status_code": resp.status_code,
+                "message": "Custom API rejected the API key."}
+    if resp.status_code >= 400:
+        _oac_log_body("ping FAILED:", resp)
+        return {"valid": False, "success": False, "latency_ms": lat, "status_code": resp.status_code,
+                "message": f"Custom API answered with HTTP {resp.status_code} - check the Base URL."}
+    model_listed = None
+    try:
+        ids = [m.get("id") or m.get("name") for m in (resp.json().get("data") or resp.json().get("models") or [])]
+        if model:
+            model_listed = model in ids
+    except Exception:
+        pass
+    note = "" if model_listed in (None, True) else f" (model '{model}' is not in its model list - check the Model ID)"
+    return {"valid": True, "success": True, "latency_ms": lat, "status_code": resp.status_code,
+            "model_listed": model_listed, "message": f"Custom API reachable at {root}{note}"}
+
+
 def verify_ai_api_key(provider: str, api_key: str = "", base_url: str = "") -> Dict[str, Any]:
-    """Verifies Gemini API key or reports Local Whisper availability with latency (ms)."""
+    """Verifies Gemini API key, pings an OpenAI-compatible endpoint, or reports Local Whisper availability with latency (ms)."""
     t0 = time.time()
     prov = (provider or "gemini").lower()
+
+    if prov in _OPENAI_COMPAT_ALIASES:
+        return ping_openai_compatible(base_url=base_url, api_key=api_key)
 
     if prov in ["local_whisper", "local", "whisper_local"]:
         import local_whisper_engine
@@ -749,9 +825,14 @@ def test_summarization_engine(
     model_name: str = "gemini-3.8-flash",
     base_url: str = ""
 ) -> Dict[str, Any]:
-    """Tests the LLM Summarization engine (Gemini Flash or Local Semantic Synthesis)."""
+    """Tests the LLM Summarization engine (Gemini Flash, OpenAI-compatible endpoint or Local Semantic Synthesis)."""
     t0 = time.time()
     prov = (provider or "gemini").lower()
+
+    if prov in _OPENAI_COMPAT_ALIASES:
+        res = ping_openai_compatible(base_url=base_url, api_key=api_key, model_name=model_name)
+        res["model"] = model_name or load_api_settings_from_disk().get("custom_api_model")
+        return res
 
     if prov in ["local", "local_whisper"]:
         lat = round((time.time() - t0) * 1000)
@@ -1036,6 +1117,161 @@ def summarize_text_gemini(
                       f"text found in the transcript - please review and complete them before exporting.")
     return res
 
+_oac_log = get_logger("openai_compat")
+
+# HTTP statuses where retrying without response_format makes sense: the endpoint
+# understood the request but rejected a field (older Ollama / LM Studio builds).
+_OAC_FIELD_REJECTION_STATUSES = (400, 415, 422)
+
+
+class OpenAICompatibleError(RuntimeError):
+    """
+    Raised when an OpenAI-compatible endpoint can't fill the template.
+    ``user_message`` is short and safe to show; the full detail is only logged.
+    """
+
+    def __init__(self, user_message: str, detail: str = ""):
+        super().__init__(detail or user_message)
+        self.user_message = user_message
+
+
+def _oac_log_body(label: str, resp: "httpx.Response") -> None:
+    """Logs a non-2xx or unusable response body (truncated) - file only, never shown to users."""
+    try:
+        body = resp.text
+    except Exception:
+        body = "<unreadable>"
+    _oac_log.error("%s status=%s content_type=%s body=%s", label, resp.status_code,
+                   resp.headers.get("content-type"), (body or "")[:4000])
+
+
+def _oac_extract_content(data: Dict[str, Any]) -> str:
+    """Pulls the assistant text out of a Chat Completions response (string or content-part list)."""
+    choice = (data.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, list):  # some gateways return [{"type": "text", "text": "..."}]
+        content = "".join(part.get("text", "") for part in content if isinstance(part, dict))
+    return (content or "").strip()
+
+
+def summarize_text_openai_compatible(
+    text_content: str,
+    api_key: str = "",
+    base_url: str = "",
+    model_name: str = "",
+    org_context: str = "",
+    custom_skills: str = "",
+    template_schema: Optional[Dict[str, Any]] = None,
+    timeout: float = 120.0
+) -> Dict[str, Any]:
+    """
+    Fills the selected template's JSON schema from the transcript using any OpenAI
+    Chat-Completions-compatible endpoint (OpenRouter, DeepSeek, Ollama, LM Studio, ...).
+    - POST {base_url}/chat/completions with the same system prompt as the Gemini/local paths.
+    - Asks for response_format=json_object first; if the endpoint rejects that field,
+      retries once without it and salvages the JSON with extract_and_repair_json().
+    - Output goes through process_extracted_payload() like every other provider.
+    Raises OpenAICompatibleError (with a short user_message) on auth failure, connection
+    refused, timeout, HTTP errors or unparseable output - the caller falls back and warns.
+    """
+    cfg = load_api_settings_from_disk()
+    root = (base_url or cfg.get("custom_api_base_url") or "").strip().rstrip("/")
+    model = (model_name or cfg.get("custom_api_model") or "").strip()
+    key = (api_key or cfg.get("custom_api_key") or "").strip()
+    endpoint = f"{root}/chat/completions"
+    _oac_log.info("resolved provider=openai_compatible base_url=%s model=%s key=%s transcript_chars=%d timeout=%.0fs",
+                  root or "<none>", model or "<none>", redact_key(key), len(text_content or ""), timeout)
+    if not root or not model:
+        raise OpenAICompatibleError("the Custom API needs a Base URL and a Model ID in Settings",
+                                    f"missing config base_url={root!r} model={model!r}")
+    if not (text_content or "").strip():
+        raise OpenAICompatibleError("the transcript is empty")
+
+    system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"Transcript:\n\n{text_content}\n\nReturn only the JSON object, nothing else."},
+    ]
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    def _post(client: "httpx.Client", with_response_format: bool) -> "httpx.Response":
+        payload: Dict[str, Any] = {"model": model, "messages": messages, "temperature": 0.1}
+        if with_response_format:
+            payload["response_format"] = {"type": "json_object"}
+        t_req = time.time()
+        _oac_log.info("POST %s model=%s response_format=%s", endpoint, model,
+                      "json_object" if with_response_format else "none")
+        resp = client.post(endpoint, json=payload, headers=headers)
+        _oac_log.info("POST %s -> HTTP %s in %.1fs (response_format=%s)", endpoint, resp.status_code,
+                      time.time() - t_req, "json_object" if with_response_format else "none")
+        return resp
+
+    t0 = time.time()
+    used_response_format = True
+    try:
+        with httpx.Client(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+            resp = _post(client, with_response_format=True)
+            if resp.status_code in _OAC_FIELD_REJECTION_STATUSES:
+                _oac_log_body("response_format=json_object rejected; retrying once without it:", resp)
+                used_response_format = False
+                resp = _post(client, with_response_format=False)
+    except httpx.ConnectError as e:
+        _oac_log.error("connection FAILED to %s after %.1fs: %s", endpoint, time.time() - t0, describe_exception(e))
+        raise OpenAICompatibleError(f"could not connect to {root} - is the server running and the Base URL correct?",
+                                    str(e)) from e
+    except httpx.TimeoutException as e:
+        _oac_log.error("TIMEOUT after %.1fs calling %s: %s", time.time() - t0, endpoint, describe_exception(e))
+        raise OpenAICompatibleError(f"{root} did not answer within {int(timeout)}s", str(e)) from e
+    except httpx.HTTPError as e:
+        _oac_log.error("HTTP transport error calling %s after %.1fs: %s", endpoint, time.time() - t0,
+                       describe_exception(e))
+        raise OpenAICompatibleError(f"the request to {root} failed", str(e)) from e
+
+    if resp.status_code in (401, 403):
+        _oac_log_body("AUTH rejected:", resp)
+        raise OpenAICompatibleError("the Custom API rejected the API key - check it in Settings",
+                                    f"HTTP {resp.status_code}")
+    if resp.status_code == 404:
+        _oac_log_body("NOT FOUND (wrong Base URL or model id?):", resp)
+        raise OpenAICompatibleError(f"the endpoint or model '{model}' was not found - check the Base URL and Model ID",
+                                    "HTTP 404")
+    if resp.status_code == 429:
+        _oac_log_body("RATE LIMITED:", resp)
+        raise OpenAICompatibleError("the Custom API rate limit or credit was exceeded - try again shortly", "HTTP 429")
+    if resp.status_code >= 400:
+        _oac_log_body("request FAILED:", resp)
+        raise OpenAICompatibleError(f"the Custom API returned an error (HTTP {resp.status_code})",
+                                    f"HTTP {resp.status_code}")
+
+    try:
+        data = resp.json()
+    except ValueError:
+        _oac_log_body("response is not JSON:", resp)
+        raise OpenAICompatibleError("the Custom API returned a response that is not JSON")
+    raw_text = _oac_extract_content(data)
+    parsed = extract_and_repair_json(raw_text) if raw_text else None
+    _oac_log.info("completion model=%s finish_reason=%s chars_out=%d parsed=%s response_format=%s usage=%s in %.1fs",
+                  data.get("model") or model, ((data.get("choices") or [{}])[0]).get("finish_reason"),
+                  len(raw_text), bool(parsed), "json_object" if used_response_format else "none(fallback)",
+                  data.get("usage"), time.time() - t0)
+    if not (parsed and isinstance(parsed, dict)):
+        _oac_log_body("UNPARSEABLE completion (no JSON object found):", resp)
+        raise OpenAICompatibleError("the model's answer could not be read as the template's JSON",
+                                    f"unparseable output, {len(raw_text)} chars")
+
+    out = process_extracted_payload(
+        raw_text, fallback_content=text_content, custom_skills=custom_skills,
+        org_context=org_context, template_schema=template_schema
+    )
+    out["model"] = f"openai_compatible:{model}"
+    out["provider"] = "openai_compatible"
+    out["response_format_fallback"] = not used_response_format
+    return out
+
+
 def transcribe_and_summarize_gemini(
     media_bytes: Optional[bytes],
     mime_type: str,
@@ -1129,18 +1365,35 @@ def process_ai_request(
     if stt_prov not in ["gemini", "local_whisper", "local", "whisper_local"]:
         stt_prov = "gemini"
 
-    stt_key = (transcription_api_key or api_key or disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+    # A generic api_key that belongs to the Custom API must never be sent to Gemini STT.
+    generic_key_for_gemini = api_key if (provider or "").lower() not in _OPENAI_COMPAT_ALIASES else ""
+    stt_key = (transcription_api_key or generic_key_for_gemini or disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
     stt_model = transcription_model or disk_cfg.get("transcription_model") or "gemini-3.5-transcribe"
     _stt_log.info("process_ai_request resolved STT provider=%s model=%s whisper_model=%s key=%s",
                   stt_prov, stt_model, _requested_whisper_model(stt_prov, stt_model), redact_key(stt_key))
 
     # 2. Resolve LLM Provider & Model
     llm_prov = (summarization_provider or provider or disk_cfg.get("summarization_provider") or "gemini").lower()
-    if llm_prov not in ["gemini", "local", "local_whisper"]:
+    if llm_prov in _OPENAI_COMPAT_ALIASES:
+        llm_prov = "openai_compatible"
+    if llm_prov not in ["gemini", "local", "local_whisper", "openai_compatible"]:
+        _llm_log.warning("process_ai_request: unknown summarization provider %r - using gemini", llm_prov)
         llm_prov = "gemini"
 
-    llm_key = (summarization_api_key or api_key or disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
-    llm_model = summarization_model or model_name or disk_cfg.get("summarization_model") or "gemini-3.8-flash"
+    llm_base_url = ""
+    if llm_prov == "openai_compatible":
+        # Custom endpoint: its own key/model/base URL only - never the Gemini key.
+        llm_key = (summarization_api_key or api_key or disk_cfg.get("custom_api_key") or "").strip()
+        requested_model = (summarization_model or model_name or "").strip()
+        if not requested_model or requested_model.startswith("gemini") or requested_model.startswith("local"):
+            requested_model = disk_cfg.get("custom_api_model") or ""
+        llm_model = requested_model
+        llm_base_url = (base_url or disk_cfg.get("custom_api_base_url") or "").strip()
+    else:
+        llm_key = (summarization_api_key or api_key or disk_cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+        llm_model = summarization_model or model_name or disk_cfg.get("summarization_model") or "gemini-3.8-flash"
+    _llm_log.info("process_ai_request resolved LLM provider=%s model=%s base_url=%s key=%s",
+                  llm_prov, llm_model or "<none>", llm_base_url or "-", redact_key(llm_key))
 
     # 3. Vision OCR Check
     if media_bytes and mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf"):
@@ -1205,10 +1458,31 @@ def process_ai_request(
             _llm_log.info("Local LLM (%s) filled the template successfully.", result.get("model"))
         except Exception as e_local:
             _llm_log.error("Local LLM unavailable/failed (%s) - falling back to offline regex extraction",
-                            describe_exception(e_local))
+                            describe_exception(e_local), exc_info=True)
             result = deep_semantic_synthesis(raw_transcript, custom_skills, org_context, template_schema)
-            result["warning"] = (f"Local model could not run ({e_local}). Fields were filled offline only with "
-                                 f"text found in the transcript - please review and complete them before exporting.")
+            result["warning"] = (f"Local model could not run ({_local_llm_user_reason(e_local)}). Fields were filled "
+                                 f"offline only with text found in the transcript - please review and complete them "
+                                 f"before exporting. (reference {current_job_id()})")
+    elif llm_prov == "openai_compatible":
+        try:
+            result = summarize_text_openai_compatible(
+                text_content=raw_transcript,
+                api_key=llm_key,
+                base_url=llm_base_url,
+                model_name=llm_model,
+                org_context=org_context,
+                custom_skills=custom_skills,
+                template_schema=template_schema
+            )
+            _llm_log.info("Custom API (%s) filled the template successfully.", result.get("model"))
+        except Exception as e_custom:
+            _llm_log.error("Custom API failed (%s) - falling back to offline extraction",
+                           describe_exception(e_custom), exc_info=True)
+            reason = getattr(e_custom, "user_message", "") or "an unexpected error occurred"
+            result = deep_semantic_synthesis(raw_transcript, custom_skills, org_context, template_schema)
+            result["warning"] = (f"Custom API could not fill the template ({reason}). Fields were filled offline only "
+                                 f"with text found in the transcript - please review and complete them before "
+                                 f"exporting. (reference {current_job_id()})")
     else:
         result = summarize_text_gemini(
             text_content=raw_transcript,

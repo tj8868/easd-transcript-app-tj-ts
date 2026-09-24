@@ -11,9 +11,11 @@ import {
   activateProvider,
   saveKeyForProvider,
   getSavedKeyForProvider,
+  getSavedBaseUrlForProvider,
   getActiveApiDisplayName,
   saveServerSettings,
-  PROVIDERS
+  PROVIDERS,
+  CUSTOM_API_PRESETS
 } from '../utils/apiKeyStorage';
 
 export const ACCENT_PALETTES = [
@@ -138,6 +140,14 @@ export default function SettingsModal({
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [geminiFeedback, setGeminiFeedback] = useState('');
 
+  // Custom OpenAI-compatible endpoint (OpenRouter / DeepSeek / Ollama / LM Studio) State
+  const [customBaseUrl, setCustomBaseUrl] = useState(() => getSavedBaseUrlForProvider('openai_compatible') || '');
+  const [customModel, setCustomModel] = useState(() => localStorage.getItem('custom_api_model') || '');
+  const [customKeyInput, setCustomKeyInput] = useState(() => getSavedKeyForProvider('openai_compatible') || '');
+  const [customModelPlaceholder, setCustomModelPlaceholder] = useState('deepseek/deepseek-v4.1-flash');
+  const [showCustomKey, setShowCustomKey] = useState(false);
+  const [customFeedback, setCustomFeedback] = useState('');
+
   // Local Whisper (Fallback) State
   const [localWhisperModel, setLocalWhisperModel] = useState(() => localStorage.getItem('local_whisper_model') || 'auto');
   const [localWhisperFeedback, setLocalWhisperFeedback] = useState('');
@@ -214,6 +224,17 @@ export default function SettingsModal({
     setTimeout(() => setLogoFeedback(''), 3000);
   };
 
+  // Hydrate the custom endpoint fields from the server (api_settings.json survives app restarts)
+  useEffect(() => {
+    if (!isOpen) return;
+    axios.get('/api/settings').then((res) => {
+      const s = res.data?.settings || {};
+      if (s.custom_api_base_url) setCustomBaseUrl((prev) => prev || s.custom_api_base_url);
+      if (s.custom_api_model) setCustomModel((prev) => prev || s.custom_api_model);
+      if (s.custom_api_key) setCustomKeyInput((prev) => prev || s.custom_api_key);
+    }).catch(() => {});
+  }, [isOpen]);
+
   useEffect(() => {
     if (isOpen) {
       fetchEnvKeys();
@@ -249,6 +270,52 @@ export default function SettingsModal({
     });
     setGeminiFeedback('✅ Google Gemini saved & activated as default engine (Live 3.5 Transcribe + Flash 3.8 Low)!');
     setTimeout(() => setGeminiFeedback(''), 4000);
+  };
+
+  const applyCustomPreset = (preset) => {
+    setCustomBaseUrl(preset.baseUrl);
+    setCustomModel(preset.model);
+    setCustomModelPlaceholder(preset.model || (preset.id === 'lmstudio' ? 'model id shown in LM Studio' : 'model id'));
+    if (preset.key !== null) setCustomKeyInput(preset.key);
+    setCustomFeedback('');
+  };
+
+  const handleSaveCustom = () => {
+    const url = customBaseUrl.trim().replace(/\/+$/, '');
+    const model = customModel.trim();
+    const key = customKeyInput.trim();
+    if (!url || !model) {
+      setCustomFeedback('❌ Enter a Base URL and a Model ID first.');
+      setTimeout(() => setCustomFeedback(''), 4000);
+      return;
+    }
+    saveKeyForProvider('openai_compatible', key, url);
+    localStorage.setItem('custom_api_model', model);
+    saveServerSettings({
+      summarization_provider: 'openai_compatible',
+      summarization_model: model,
+      custom_api_base_url: url,
+      custom_api_key: key,
+      custom_api_model: model
+    });
+    // Only the template-fill (summarization) step moves to the custom endpoint; transcription is unchanged.
+    setAiConfig((prev) => ({
+      ...prev,
+      provider: 'openai_compatible',
+      name: PROVIDERS.find((p) => p.id === 'openai_compatible')?.name,
+      customName: '',
+      summarizationProvider: 'openai_compatible',
+      apiKey: key,
+      baseUrl: url,
+      summarizationModel: model,
+      modelName: model
+    }));
+    setCustomFeedback(`✅ Custom API saved & activated for Generate (${model}).`);
+    setTimeout(() => setCustomFeedback(''), 4000);
+  };
+
+  const handleTestCustom = () => {
+    return runVerifyKey('custom', 'openai_compatible', customKeyInput.trim(), customBaseUrl.trim(), 'Custom API reachable!');
   };
 
   const handleSaveLocalWhisper = () => {
@@ -580,7 +647,7 @@ export default function SettingsModal({
                       Google Gemini API (Default Engine)
                     </h4>
                     <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-                      High-speed Gemini 3.7 Flash for executive synthesis and Gemini 3.5 Flash Lite for audio transcription.
+                      Cloud engine using your configured Gemini transcription and summarization models.
                     </span>
                   </div>
                 </div>
@@ -759,7 +826,140 @@ export default function SettingsModal({
               </div>
             </div>
 
-            {/* SECTION 3: SYSTEM & .ENV ENVIRONMENT AUDIT (COLLAPSIBLE) */}
+            {/* SECTION 3: CUSTOM OPENAI-COMPATIBLE ENDPOINT (OpenRouter / DeepSeek / Ollama / LM Studio) */}
+            <div
+              style={{
+                background: 'var(--bg-secondary)',
+                border: aiConfig.provider === 'openai_compatible' ? '2px solid #f59e0b' : '1px solid var(--border-color)',
+                borderRadius: '12px',
+                padding: '18px 20px',
+                marginBottom: '20px',
+                boxShadow: aiConfig.provider === 'openai_compatible' ? '0 4px 16px rgba(245, 158, 11, 0.15)' : 'none'
+              }}
+            >
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ background: '#f59e0b', color: '#ffffff', borderRadius: '8px', padding: '6px', display: 'flex' }}>
+                    <Globe size={18} />
+                  </div>
+                  <div>
+                    <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                      Custom / OpenRouter / Local (OpenAI-Compatible)
+                    </h4>
+                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                      Fills the template on Generate using any OpenAI-compatible endpoint. Transcription is not affected.
+                    </span>
+                  </div>
+                </div>
+                <a
+                  href="https://openrouter.ai/docs"
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{ fontSize: '0.78rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', fontWeight: 600 }}
+                >
+                  OpenRouter docs <ExternalLink size={12} />
+                </a>
+              </div>
+
+              <div role="group" aria-label="Custom API presets" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
+                {CUSTOM_API_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => applyCustomPreset(preset)}
+                    style={{ padding: '4px 10px', fontSize: '0.76rem', borderRadius: '14px' }}
+                    title={preset.baseUrl ? `Prefill ${preset.baseUrl}` : 'Clear all fields'}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginBottom: '10px' }}>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label htmlFor="customApiBaseUrlInput" style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Base URL:
+                  </label>
+                  <input
+                    id="customApiBaseUrlInput"
+                    type="text"
+                    className="form-control"
+                    placeholder="https://openrouter.ai/api/v1"
+                    value={customBaseUrl}
+                    onChange={(e) => setCustomBaseUrl(e.target.value)}
+                    style={{ fontFamily: 'monospace', fontSize: '0.85rem', padding: '8px 12px' }}
+                  />
+                </div>
+                <div className="form-group" style={{ marginBottom: 0 }}>
+                  <label htmlFor="customApiModelInput" style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Model ID:
+                  </label>
+                  <input
+                    id="customApiModelInput"
+                    type="text"
+                    className="form-control"
+                    placeholder={customModelPlaceholder}
+                    value={customModel}
+                    onChange={(e) => setCustomModel(e.target.value)}
+                    style={{ fontFamily: 'monospace', fontSize: '0.85rem', padding: '8px 12px' }}
+                  />
+                </div>
+              </div>
+
+              <label htmlFor="customApiKeyInput" style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                API key <span style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>(optional - no key required for local Ollama / LM Studio)</span>
+              </label>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
+                <input
+                  id="customApiKeyInput"
+                  type={showCustomKey ? 'text' : 'password'}
+                  className="form-control"
+                  placeholder="Paste API key (leave blank for local Ollama/LM Studio)"
+                  value={customKeyInput}
+                  onChange={(e) => setCustomKeyInput(e.target.value)}
+                  style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.88rem', padding: '9px 12px' }}
+                />
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setShowCustomKey(!showCustomKey)}
+                  title={showCustomKey ? 'Hide key' : 'Show key'}
+                  style={{ padding: '9px 12px' }}
+                >
+                  {showCustomKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: customFeedback ? (customFeedback.startsWith('❌') ? '#ef4444' : '#10b981') : testStatus.custom?.success ? '#10b981' : '#ef4444' }}>
+                  {customFeedback || testStatus.custom?.message || ''}
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    type="button"
+                    id="testCustomApiBtn"
+                    className="btn btn-secondary btn-sm"
+                    onClick={handleTestCustom}
+                    disabled={testStatus.custom?.loading || !customBaseUrl.trim()}
+                    style={{ padding: '6px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  >
+                    <Globe size={14} /> {testStatus.custom?.loading ? 'Testing...' : 'Test Connection'}
+                  </button>
+                  <button
+                    type="button"
+                    id="saveCustomApiBtn"
+                    className="btn btn-primary btn-sm"
+                    onClick={handleSaveCustom}
+                    style={{ padding: '6px 14px', fontWeight: 700, background: '#f59e0b', borderColor: '#f59e0b' }}
+                  >
+                    <Check size={14} /> Use for Generate
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* SECTION 4: SYSTEM & .ENV ENVIRONMENT AUDIT (COLLAPSIBLE) */}
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden' }}>
               <div
                 onClick={() => setShowEnvKeys(!showEnvKeys)}

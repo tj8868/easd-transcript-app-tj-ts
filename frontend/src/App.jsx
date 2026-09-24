@@ -349,7 +349,17 @@ export default function App() {
             summarizationModel: s.summarization_model || prev.summarizationModel || 'gemini-3.8-flash',
             provider: s.summarization_provider || prev.provider || 'gemini',
             apiKey: s.summarization_api_key || s.gemini_api_key || prev.apiKey || '',
-            modelName: s.summarization_model || prev.modelName || 'gemini-3.8-flash'
+            modelName: s.summarization_model || prev.modelName || 'gemini-3.8-flash',
+            // Custom OpenAI-compatible endpoint: its own key / base URL / model (never the Gemini key)
+            ...(s.summarization_provider === 'openai_compatible'
+              ? {
+                  apiKey: s.custom_api_key || '',
+                  summarizationApiKey: s.custom_api_key || '',
+                  baseUrl: s.custom_api_base_url || prev.baseUrl || '',
+                  summarizationModel: s.custom_api_model || prev.summarizationModel || '',
+                  modelName: s.custom_api_model || prev.modelName || ''
+                }
+              : {})
           }));
         }
       })
@@ -498,18 +508,22 @@ export default function App() {
 
     setIsProcessing(true);
     setNotice(null);
-    const gemKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
+    const isCustomLlm = aiConfig.provider === 'openai_compatible';
+    // The Custom API only fills the template; transcription always uses Gemini / Local Whisper and the Gemini key.
+    const gemKey = ((isCustomLlm ? '' : aiConfig.apiKey) || aiConfig.transcriptionApiKey || getSavedKeyForProvider('gemini') || '').trim();
+    const llmKey = isCustomLlm ? (aiConfig.apiKey || getSavedKeyForProvider('openai_compatible') || '').trim() : gemKey;
+    const sttProvider = aiConfig.transcriptionProvider || (isCustomLlm ? 'gemini' : aiConfig.provider) || 'gemini';
 
     const formData = new FormData();
     formData.append('provider', aiConfig.provider || 'gemini');
-    formData.append('api_key', gemKey);
+    formData.append('api_key', llmKey);
     formData.append('base_url', (aiConfig.baseUrl || '').trim());
     formData.append('model_name', aiConfig.summarizationModel || 'gemini-3.8-flash');
-    formData.append('transcription_provider', aiConfig.transcriptionProvider || aiConfig.provider || 'gemini');
+    formData.append('transcription_provider', sttProvider);
     formData.append('transcription_api_key', gemKey);
-    formData.append('transcription_model', aiConfig.transcriptionModel || 'gemini-3.5-transcribe');
+    formData.append('transcription_model', (isCustomLlm ? '' : aiConfig.transcriptionModel) || 'gemini-3.5-transcribe');
     formData.append('summarization_provider', aiConfig.summarizationProvider || aiConfig.provider || 'gemini');
-    formData.append('summarization_api_key', gemKey);
+    formData.append('summarization_api_key', llmKey);
     formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.8-flash');
     formData.append('org_context', orgContext);
     formData.append('template_id', activeTemplateId || 'easd_default_minutes');
@@ -567,23 +581,31 @@ export default function App() {
     let chosenProvider = aiConfig.provider || 'gemini';
     let chosenModelName = aiConfig.summarizationModel || 'gemini-3.8-flash';
 
-    if (selectedModel === 'gemini') {
-      chosenProvider = 'gemini';
-      chosenModelName = 'gemini-3.8-flash';
-    } else if (selectedModel === 'local_whisper' || selectedModel === 'local') {
+    let chosenKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
+    let chosenBaseUrl = (aiConfig.baseUrl || '').trim();
+
+    if (selectedModel === 'local_whisper' || selectedModel === 'local') {
       chosenProvider = 'local_whisper';
       chosenModelName = 'local_qwen2.5';
+    } else if (aiConfig.provider === 'openai_compatible') {
+      // "Cloud" uses the configured custom endpoint: its free-text model id, base URL and own key only
+      chosenProvider = 'openai_compatible';
+      chosenModelName = (aiConfig.summarizationModel || localStorage.getItem('custom_api_model') || '').trim();
+      chosenBaseUrl = (aiConfig.baseUrl || getSavedBaseUrlForProvider('openai_compatible') || '').trim();
+      chosenKey = (aiConfig.apiKey || getSavedKeyForProvider('openai_compatible') || '').trim();
+    } else if (selectedModel === 'gemini') {
+      chosenProvider = 'gemini';
+      chosenModelName = 'gemini-3.8-flash';
+      chosenKey = (getSavedKeyForProvider('gemini') || aiConfig.apiKey || '').trim();
     }
-
-    const gemKey = (aiConfig.apiKey || getSavedKeyForProvider('gemini') || '').trim();
 
     const formData = new FormData();
     formData.append('transcript', transcriptText);
     formData.append('provider', chosenProvider);
-    formData.append('api_key', gemKey);
-    formData.append('summarization_api_key', gemKey);
+    formData.append('api_key', chosenKey);
+    formData.append('summarization_api_key', chosenKey);
     formData.append('summarization_provider', chosenProvider);
-    formData.append('base_url', (aiConfig.baseUrl || '').trim());
+    formData.append('base_url', chosenBaseUrl);
     formData.append('model_name', chosenModelName);
     formData.append('summarization_model', chosenModelName);
     formData.append('org_context', orgContext);

@@ -469,7 +469,7 @@ export default function Transcripts({
             <button
               type="button"
               onClick={() => setGenMode('gemini')}
-              title="Fill the template using the cloud Gemini model"
+              title="Fill the template using the cloud model configured in Settings (Gemini or your Custom API)"
               style={{
                 padding: '8px 12px', border: 'none', cursor: 'pointer',
                 background: genMode === 'gemini' ? 'var(--accent-color, #6366f1)' : 'transparent',
@@ -498,7 +498,7 @@ export default function Transcripts({
             className="btn btn-primary transcript-btn-generate"
             onClick={() => (onGenerate || onSummarize) && (onGenerate || onSummarize)(currentText, genMode)}
             disabled={!currentText.trim() || isSummarizing}
-            title={`Generate document by fitting transcript to active template (${genMode === 'local' ? 'local on-device model' : 'cloud Gemini'})`}
+            title={`Generate document by fitting transcript to active template (${genMode === 'local' ? 'local on-device model' : 'cloud model from Settings'})`}
             style={{
               fontSize: '0.96rem',
               fontWeight: 800,

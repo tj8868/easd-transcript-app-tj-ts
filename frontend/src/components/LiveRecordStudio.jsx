@@ -455,12 +455,13 @@ export default function LiveRecordStudio({
     setTestingSTT(true);
     setSttTestResult(null);
     try {
-      const prov = aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'local_whisper' : (aiConfig?.provider || 'gemini'));
+      const prov = aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'local_whisper'
+        : (aiConfig?.provider === 'openai_compatible' ? 'gemini' : (aiConfig?.provider || 'gemini')));
       const res = await testAiEngine({
         test_type: 'stt',
         stt_provider: prov,
         stt_model: aiConfig?.transcriptionModel || 'gemini-3.5-transcribe',
-        stt_api_key: aiConfig?.transcriptionApiKey || aiConfig?.apiKey || '',
+        stt_api_key: aiConfig?.transcriptionApiKey || (aiConfig?.provider === 'openai_compatible' ? '' : aiConfig?.apiKey) || '',
         base_url: aiConfig?.baseUrl || ''
       });
       setTestingSTT(false);
@@ -504,7 +505,8 @@ export default function LiveRecordStudio({
         aiConfig?.transcriptionApiKey ||
         getSavedKeyForProvider(resolvedSttProv) ||
         (resolvedSttProv === 'gemini' ? getSavedKeyForProvider('gemini') : '') ||
-        (aiConfig?.apiKey || '')
+        // never send the Custom API (OpenRouter/DeepSeek/...) key to the Gemini transcription service
+        (aiConfig?.provider === 'openai_compatible' ? '' : (aiConfig?.apiKey || ''))
       ).trim();
 
       const totalItems = items.length;
