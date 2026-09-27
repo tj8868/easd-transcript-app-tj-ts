@@ -13,18 +13,40 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # 1. Automatic Virtual Environment Hand-off:
 # If run_app.pyw is executed directly using system Python rather than .venv,
 # automatically re-execute inside the project's dedicated virtual environment (.venv)
-venv_py = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
-venv_pyw = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
+candidate_venvs = [
+    os.path.join(BASE_DIR, ".venv"),
+    os.path.join(BASE_DIR, "venv"),
+    os.path.join(os.path.dirname(BASE_DIR), "easd-transcript-app-tj-ts-7", ".venv"),
+]
+known_vp_paths = []
+for cv in candidate_venvs:
+    known_vp_paths.extend([
+        os.path.join(cv, "Scripts", "python.exe"),
+        os.path.join(cv, "Scripts", "pythonw.exe")
+    ])
 
 current_exe = os.path.abspath(sys.executable).lower()
+current_real = os.path.realpath(sys.executable).lower()
 is_in_venv = False
-for vp in [venv_py, venv_pyw]:
-    if os.path.isfile(vp) and current_exe == os.path.abspath(vp).lower():
-        is_in_venv = True
-        break
+for vp in known_vp_paths:
+    if os.path.isfile(vp):
+        vp_abs = os.path.abspath(vp).lower()
+        vp_real = os.path.realpath(vp).lower()
+        if current_exe in (vp_abs, vp_real) or current_real in (vp_abs, vp_real):
+            is_in_venv = True
+            break
 
 if not is_in_venv:
-    target_py = venv_pyw if os.path.isfile(venv_pyw) else (venv_py if os.path.isfile(venv_py) else None)
+    target_py = None
+    for cv in candidate_venvs:
+        p_pyw = os.path.join(cv, "Scripts", "pythonw.exe")
+        p_py = os.path.join(cv, "Scripts", "python.exe")
+        if os.path.isfile(p_pyw):
+            target_py = p_pyw
+            break
+        elif os.path.isfile(p_py):
+            target_py = p_py
+            break
     if target_py:
         cmd = [target_py, os.path.abspath(__file__)] + sys.argv[1:]
         subprocess.Popen(cmd, cwd=BASE_DIR)

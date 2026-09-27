@@ -13,6 +13,9 @@ if exist "%~dp0.venv\Scripts\python.exe" (
 ) else if exist "%~dp0venv\Scripts\python.exe" (
     set "PY=%~dp0venv\Scripts\python.exe"
     set "PYW=%~dp0venv\Scripts\pythonw.exe"
+) else if exist "%~dp0..\easd-transcript-app-tj-ts-7\.venv\Scripts\python.exe" (
+    set "PY=%~dp0..\easd-transcript-app-tj-ts-7\.venv\Scripts\python.exe"
+    set "PYW=%~dp0..\easd-transcript-app-tj-ts-7\.venv\Scripts\pythonw.exe"
 ) else if exist "%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe" (
     set "PY=%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\python.exe"
     set "PYW=%LOCALAPPDATA%\hermes\hermes-agent\venv\Scripts\pythonw.exe"
