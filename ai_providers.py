@@ -9,6 +9,7 @@ import wave
 import struct
 import math
 import random
+import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
@@ -986,6 +987,85 @@ def live_transcribe_audio_chunk(
     except Exception as e:
         return {"text": "", "language": "auto", "error": str(e)}
 
+def transcribe_single_chunk(
+    media_bytes: bytes,
+    provider: str = "gemini",
+    api_key: str = "",
+    base_url: str = "",
+    model_name: str = "gemini-3.5-transcribe",
+    mime_type: str = "audio/mp3",
+) -> str:
+    """Transcribes a single audio chunk and returns verbatim text."""
+    if not media_bytes or len(media_bytes) < 32:
+        return ""
+    prov = (provider or "gemini").lower()
+    if prov in ["local_whisper", "local", "whisper_local"]:
+        try:
+            import local_whisper_engine
+            opt_m, _ = local_whisper_engine.resolve_whisper_model_choice(_requested_whisper_model(prov, model_name))
+            res = local_whisper_engine.transcribe_local_audio(
+                media_input=media_bytes,
+                language=None,
+                model_name=opt_m,
+                mime_type=mime_type or "audio/mp3",
+                beam_size=1,
+                temperature=0.0
+            )
+            return local_whisper_engine.sanitize_whisper_text(res.get("raw_transcript") or res.get("clean_text", ""))
+        except Exception as e:
+            return ""
+    res = transcribe_audio_gemini(
+        media_bytes=media_bytes,
+        api_key=api_key,
+        model_name=model_name or "gemini-3.5-transcribe",
+        mime_type=mime_type or "audio/mp3",
+    )
+    if isinstance(res, dict):
+        return (res.get("text") or res.get("raw_transcript") or "").strip()
+    return str(res).strip() if res else ""
+
+
+MAX_CONCURRENT_CHUNKS = 5
+
+async def transcribe_chunks_parallel(
+    audio_chunks: list[bytes],
+    provider: str,
+    api_key: str,
+    base_url: str,
+    model_name: str,
+    mime_type: str,
+) -> list[str]:
+    """Transcribe all audio chunks at the same time instead of one by one."""
+
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHUNKS)
+
+    async def transcribe_one(index: int, chunk: bytes) -> tuple[int, str]:
+        async with semaphore:
+            text = await asyncio.to_thread(
+                transcribe_single_chunk,
+                media_bytes=chunk,
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url,
+                model_name=model_name,
+                mime_type=mime_type,
+            )
+            return index, text
+
+    tasks = [transcribe_one(i, chunk) for i, chunk in enumerate(audio_chunks)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    ordered = [None] * len(audio_chunks)
+    for r in results:
+        if isinstance(r, Exception):
+            print(f"[transcribe_chunks_parallel] chunk failed: {r}")
+            continue
+        index, text = r
+        ordered[index] = text
+
+    return [t or "" for t in ordered]
+
+
 def transcribe_audio_chunks_detailed(
     chunks: List[bytes],
     provider: str = "gemini",
@@ -1288,6 +1368,19 @@ def transcribe_and_summarize_gemini(
     clean_key = (api_key or get_default_api_key_from_disk().get("api_key") or "").strip()
     system_prompt = build_template_system_prompt(template_schema, org_context=org_context, custom_skills=custom_skills)
 
+    if audio_chunks and len(audio_chunks) > 0:
+        texts = asyncio.run(transcribe_chunks_parallel(
+            audio_chunks=audio_chunks,
+            provider="gemini",
+            api_key=clean_key,
+            base_url="",
+            model_name=transcription_model,
+            mime_type=mime_type or "audio/mp3"
+        ))
+        joined = "\n\n".join([t for t in texts if t])
+        if joined:
+            text_content = f"{text_content}\n\n{joined}".strip() if text_content else joined
+
     if (mime_type and (mime_type.startswith("image/") or mime_type == "application/pdf")) and media_bytes and clean_key:
         target_bytes = media_bytes
         target_mime = mime_type
@@ -1418,22 +1511,50 @@ def process_ai_request(
             segments = [{"name": "", "chunks": chunks, "durations": None}]
 
     stt_report: Dict[str, Any] = {}
-    if segments:
+    if audio_chunks and len(audio_chunks) > 0:
+        chunk_texts = asyncio.run(transcribe_chunks_parallel(
+            audio_chunks=audio_chunks,
+            provider=stt_prov,
+            api_key=stt_key,
+            base_url=base_url,
+            model_name=stt_model,
+            mime_type=mime_type or "audio/mp3",
+        ))
+        joined = "\n\n".join([t for t in chunk_texts if t])
+        if joined:
+            raw_transcript = f"{raw_transcript}\n\n{joined}".strip() if raw_transcript else joined
+            stt_report = {"status": "success", "errors": [], "missing_ranges": []}
+    elif segments:
         parts, all_errors, all_missing, statuses = [], [], [], []
         for seg in segments:
-            res = transcribe_audio_chunks_detailed(
-                chunks=seg.get("chunks") or [], provider=stt_prov, api_key=stt_key, model_name=stt_model,
-                language="auto", mime_type=seg.get("mime_type") or mime_type or "audio/mp3",
-                segment_time_sec=600.0, chunk_durations=seg.get("durations"), label=seg.get("name", "")
-            )
-            statuses.append(res["status"])
-            multi = len(segments) > 1 and seg.get("name")
-            prefix = f"{seg['name']}: " if multi else ""
-            all_errors.extend(prefix + e for e in res.get("errors", []))
-            all_missing.extend(dict(m, file=seg.get("name", "")) for m in res.get("missing_ranges", []))
-            if res.get("transcript"):
-                header = f"=== {seg['name']} ===\n" if multi else ""
-                parts.append(header + res["transcript"])
+            seg_chunks = seg.get("chunks") or []
+            if len(seg_chunks) > 1 and not seg.get("durations"):
+                c_texts = asyncio.run(transcribe_chunks_parallel(
+                    audio_chunks=seg_chunks,
+                    provider=stt_prov,
+                    api_key=stt_key,
+                    base_url=base_url,
+                    model_name=stt_model,
+                    mime_type=seg.get("mime_type") or mime_type or "audio/mp3"
+                ))
+                seg_text = "\n\n".join([t for t in c_texts if t])
+                if seg_text:
+                    parts.append(seg_text)
+                statuses.append("success" if seg_text else "error")
+            else:
+                res = transcribe_audio_chunks_detailed(
+                    chunks=seg_chunks, provider=stt_prov, api_key=stt_key, model_name=stt_model,
+                    language="auto", mime_type=seg.get("mime_type") or mime_type or "audio/mp3",
+                    segment_time_sec=600.0, chunk_durations=seg.get("durations"), label=seg.get("name", "")
+                )
+                statuses.append(res["status"])
+                multi = len(segments) > 1 and seg.get("name")
+                prefix = f"{seg['name']}: " if multi else ""
+                all_errors.extend(prefix + e for e in res.get("errors", []))
+                all_missing.extend(dict(m, file=seg.get("name", "")) for m in res.get("missing_ranges", []))
+                if res.get("transcript"):
+                    header = f"=== {seg['name']} ===\n" if multi else ""
+                    parts.append(header + res["transcript"])
         audio_text = "\n\n".join(parts)
         overall = ("success" if all(st == "success" for st in statuses)
                    else "error" if all(st == "error" for st in statuses) else "partial")
