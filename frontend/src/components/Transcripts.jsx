@@ -23,7 +23,26 @@ export default function Transcripts({
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
   const [genMode, setGenMode] = useState('gemini'); // 'gemini' (cloud) | 'local' (on-device model)
+  const [isSnapped, setIsSnapped] = useState(true);
   const textareaRef = useRef(null);
+  const cardRef = useRef(null);
+
+  // Snap the toolbar to the transcript card when the card is in view, and float when scrolled past
+  useEffect(() => {
+    const cardEl = cardRef.current;
+    if (!cardEl) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        // Snap when transcript card is in view or user is above it; float only when user scrolls down past it
+        setIsSnapped(entry.isIntersecting || entry.boundingClientRect.top > 0);
+      },
+      { threshold: 0.1 }
+    );
+
+    observer.observe(cardEl);
+    return () => observer.disconnect();
+  }, []);
 
   // Derive current active transcript value
   const currentText = transcript || banglaTranscript || englishTranscript || '';
@@ -150,7 +169,7 @@ export default function Transcripts({
   };
 
   return (
-    <div className="card" id="section-transcripts" style={{ border: isRecording ? '1.5px solid var(--accent-color)' : '1.5px solid var(--border-color)', transition: 'border-color 0.25s ease' }}>
+    <div ref={cardRef} className="card" id="section-transcripts" style={{ border: isRecording ? '1.5px solid var(--accent-color)' : '1.5px solid var(--border-color)', transition: 'border-color 0.25s ease' }}>
       {/* Frozen / Sticky Header Command Bar */}
       <div className="transcript-frozen-header">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%', flexWrap: 'wrap', gap: '12px' }}>
@@ -455,8 +474,8 @@ export default function Transcripts({
       </div>
 
       {/* Frozen / Sticky Bottom Command Bar directly below timestamped dialogue */}
-      <div className="transcript-frozen-footer">
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className={`transcript-frozen-footer ${isSnapped ? 'snapped' : 'floating'}`}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'nowrap', width: '100%', overflowX: 'auto', paddingBottom: '2px' }}>
           {/* Cloud / Local model toggle for the Generate button */}
           <div
             role="group"

@@ -49,6 +49,7 @@ if not logger.handlers and not logger.name.startswith("easd."):
     logger.addHandler(ch)
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_TURBO_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-large-v3-turbo")
 _MEDIUM_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-medium")
 _SMALL_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-small")
 _BASE_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-base")
@@ -408,17 +409,20 @@ def select_optimal_model_name() -> str:
     return _pick("base", "no weights on disk - base will be downloaded on first use")
 
 
-_KNOWN_MODEL_SIZES = ("tiny", "base", "small", "medium")
+_KNOWN_MODEL_SIZES = ("tiny", "base", "small", "medium", "turbo", "large-v3-turbo")
 
 
 def resolve_whisper_model_choice(requested: Optional[str] = None) -> Tuple[str, str]:
     """
     Resolves which Whisper model a request should use.
-    An explicit size ('tiny'/'base'/'small'/'medium') is always respected; only
+    An explicit size ('tiny'/'base'/'small'/'medium'/'turbo'/'large-v3-turbo') is always respected; only
     None/''/'auto' (or an unknown value) falls through to select_optimal_model_name().
     Returns: (model_name, source) where source is 'explicit' or 'auto'.
     """
     req = (requested or "").strip().lower()
+    if "turbo" in req:
+        logger.info(f"resolve_whisper_model_choice: using explicitly requested model 'large-v3-turbo' (requested={requested!r})")
+        return "large-v3-turbo", "explicit"
     for size in _KNOWN_MODEL_SIZES:
         if req == size or req == f"whisper-{size}" or req.endswith(f"/{size}"):
             logger.info(f"resolve_whisper_model_choice: using explicitly requested model '{size}' (requested={requested!r})")
@@ -442,7 +446,15 @@ def get_model_path(preferred_name: Optional[str] = None) -> str:
     """Resolve the local model path on disk, gracefully falling back to available weights."""
     if preferred_name:
         pref_clean = preferred_name.strip().lower()
-        if "medium" in pref_clean:
+        if "turbo" in pref_clean:
+            if _model_has_weights(_TURBO_MODEL_DIR):
+                return _TURBO_MODEL_DIR
+            if _model_has_weights(_SMALL_MODEL_DIR):
+                return _SMALL_MODEL_DIR
+            if _model_has_weights(_BASE_MODEL_DIR):
+                return _BASE_MODEL_DIR
+            return _TURBO_MODEL_DIR
+        elif "medium" in pref_clean:
             if _model_has_weights(_MEDIUM_MODEL_DIR):
                 return _MEDIUM_MODEL_DIR
             if _model_has_weights(_SMALL_MODEL_DIR):
@@ -558,7 +570,10 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
 
             if not fallback_found:
                 base_name = os.path.basename(resolved_path)
-                target_size = next((sz for sz in _KNOWN_MODEL_SIZES if sz in base_name), "base")
+                if "turbo" in base_name:
+                    target_size = "deepdml/faster-whisper-large-v3-turbo"
+                else:
+                    target_size = next((sz for sz in _KNOWN_MODEL_SIZES if sz in base_name), "base")
                 logger.info(f"Downloading local Whisper model '{target_size}' to '{resolved_path}'...")
                 try:
                     from faster_whisper import download_model

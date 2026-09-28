@@ -1393,24 +1393,78 @@ select:focus {
 }
 
 .transcript-frozen-footer {
+  box-sizing: border-box;
+  z-index: 1000;
+  border-radius: 16px;
+  background: rgba(18, 22, 32, 0.25);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(240, 246, 252, 0.14);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35), 0 0 1px 1px rgba(255, 255, 255, 0.08);
+  padding: 8px 14px;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 10px;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 1. Snapped state: docks directly to the transcript card when in view */
+.transcript-frozen-footer.snapped {
+  position: static;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 14px;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.2);
+}
+
+/* 2. Floating state: detaches and follows scroll smoothly when user scrolls away */
+.transcript-frozen-footer.floating {
   position: fixed;
-  bottom: 24px;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(calc(100% - 32px), 820px);
-  max-width: 100%;
-  box-sizing: border-box;
-  border-radius: 20px;
-  background: #fff;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-  padding: 16px 20px;
-  z-index: 50;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  transition: all 0.2s ease;
+  width: min(calc(100% - 40px), 1240px);
+  max-width: calc(100% - 40px);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5), 0 0 1px 1px rgba(255, 255, 255, 0.12);
+  animation: fadeIn 0.25s ease-out;
+}
+
+[data-theme="light"] .transcript-frozen-footer {
+  background: rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(0, 75, 135, 0.22);
+  box-shadow: 0 10px 30px rgba(0, 75, 135, 0.16), 0 0 1px 1px rgba(0, 75, 135, 0.08);
+}
+
+/* Ensure buttons themselves remain fully opaque, crisp, and high-contrast */
+.transcript-frozen-footer button {
+  white-space: nowrap;
+  flex-shrink: 0;
+  opacity: 1 !important;
+}
+
+.transcript-frozen-footer .btn-secondary {
+  background: var(--bg-secondary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border-color) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+.transcript-frozen-footer .transcript-btn-clear {
+  background: #ef4444 !important;
+  color: #ffffff !important;
+  border: 1.5px solid #dc2626 !important;
+  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.35) !important;
+}
+
+.transcript-frozen-footer [role="group"] {
+  background: var(--bg-secondary) !important;
+  border: 1px solid var(--border-color) !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
 }
 
 .preview-floating-header {

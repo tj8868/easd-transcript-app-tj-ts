@@ -13,6 +13,12 @@ import asyncio
 from typing import Dict, Any, Optional, List, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"), override=False)
+except Exception:
+    pass
+
 from google import genai
 from google.genai import types
 from document_engine import DEFAULT_MEMBERS
@@ -562,17 +568,17 @@ def get_default_api_key_from_disk() -> Dict[str, str]:
     }
 
 def load_api_settings_from_disk() -> Dict[str, Any]:
-    """Loads persistent settings from api_settings.json."""
+    """Loads persistent settings from api_settings.json and environment variables."""
     default_settings = {
         "transcription_provider": "gemini",
         "transcription_model": "gemini-3.5-transcribe",
         "summarization_provider": "gemini",
         "summarization_model": "gemini-3.8-flash",
-        "gemini_api_key": "",
-        "local_whisper_model": "auto",
-        "custom_api_base_url": "",
-        "custom_api_key": "",
-        "custom_api_model": ""
+        "gemini_api_key": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "",
+        "local_whisper_model": "whisper-small",
+        "custom_api_base_url": os.getenv("CUSTOM_API_BASE_URL") or "",
+        "custom_api_key": os.getenv("CUSTOM_API_KEY") or "",
+        "custom_api_model": os.getenv("CUSTOM_API_MODEL") or ""
     }
     if os.path.exists(SETTINGS_FILE):
         try:
@@ -582,14 +588,52 @@ def load_api_settings_from_disk() -> Dict[str, Any]:
                     default_settings.update(saved)
         except Exception:
             pass
+    # If settings file had empty keys, fallback to environment
+    if not default_settings.get("gemini_api_key"):
+        default_settings["gemini_api_key"] = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+    if not default_settings.get("custom_api_key"):
+        default_settings["custom_api_key"] = os.getenv("CUSTOM_API_KEY") or ""
+    if not default_settings.get("custom_api_base_url"):
+        default_settings["custom_api_base_url"] = os.getenv("CUSTOM_API_BASE_URL") or ""
+    if not default_settings.get("custom_api_model"):
+        default_settings["custom_api_model"] = os.getenv("CUSTOM_API_MODEL") or ""
+
     return default_settings
 
 def save_api_settings_to_disk(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Saves streamlined settings to api_settings.json."""
+    """Saves settings to api_settings.json and synchronizes active keys to environment variables and .env."""
     current = load_api_settings_from_disk()
     current.update({k: v for k, v in settings.items() if v is not None})
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(current, f, indent=2)
+
+    # Sync environment variables in process
+    if current.get("gemini_api_key"):
+        os.environ["GEMINI_API_KEY"] = current["gemini_api_key"].strip()
+    if current.get("custom_api_key"):
+        os.environ["CUSTOM_API_KEY"] = current["custom_api_key"].strip()
+    if current.get("custom_api_base_url"):
+        os.environ["CUSTOM_API_BASE_URL"] = current["custom_api_base_url"].strip()
+    if current.get("custom_api_model"):
+        os.environ["CUSTOM_API_MODEL"] = current["custom_api_model"].strip()
+
+    # Sync to .env file (safely ignored from git commits by .gitignore)
+    env_file = os.path.join(BASE_DIR, ".env")
+    try:
+        lines = [
+            "# EASD AI Engine Environment Configuration",
+            "# DO NOT COMMIT OR SHARE THIS FILE (ignored in .gitignore)",
+            f"GEMINI_API_KEY={current.get('gemini_api_key', '')}",
+            f"CUSTOM_API_KEY={current.get('custom_api_key', '')}",
+            f"CUSTOM_API_BASE_URL={current.get('custom_api_base_url', '')}",
+            f"CUSTOM_API_MODEL={current.get('custom_api_model', '')}",
+            f"EASD_TRANSCRIPTION_PROVIDER={current.get('transcription_provider', 'gemini')}",
+            f"EASD_SUMMARIZATION_PROVIDER={current.get('summarization_provider', 'gemini')}",
+        ]
+        with open(env_file, "w", encoding="utf-8") as ef:
+            ef.write("\n".join(lines) + "\n")
+    except Exception:
+        pass
 
     # Sync to GeminiAPI.txt if updated
     if current.get("gemini_api_key"):
@@ -638,17 +682,17 @@ def is_fatal_auth_error(err: Exception) -> bool:
         "not_found", "no longer available", "invalid_argument"
     ])
 
-def ping_openai_compatible(base_url: str = "", api_key: str = "", model_name: str = "",
+def ping_openai_compatible(base_url: Optional[str] = None, api_key: Optional[str] = None, model_name: Optional[str] = None,
                            timeout: float = 10.0) -> Dict[str, Any]:
     """
     Lightweight reachability/auth check for an OpenAI-compatible endpoint: GET {base_url}/models
     (supported by OpenRouter, DeepSeek, Ollama and LM Studio). Falls back to the saved
-    custom_api_* settings. Returns {valid, success, message, latency_ms, status_code, model_listed}.
+    custom_api_* settings when arguments are None. Returns {valid, success, message, latency_ms, status_code, model_listed}.
     """
     cfg = load_api_settings_from_disk()
-    root = (base_url or cfg.get("custom_api_base_url") or "").strip().rstrip("/")
-    key = (api_key or cfg.get("custom_api_key") or "").strip()
-    model = (model_name or cfg.get("custom_api_model") or "").strip()
+    root = (base_url if base_url is not None else (cfg.get("custom_api_base_url") or "")).strip().rstrip("/")
+    key = (api_key if api_key is not None else (cfg.get("custom_api_key") or "")).strip()
+    model = (model_name if model_name is not None else (cfg.get("custom_api_model") or "")).strip()
     t0 = time.time()
     if not root:
         return {"valid": False, "success": False, "latency_ms": 0, "status_code": None,
@@ -769,6 +813,9 @@ def test_transcription_engine(
     t0 = time.time()
     prov = (provider or "gemini").lower()
 
+    if prov in _OPENAI_COMPAT_ALIASES:
+        return ping_openai_compatible(base_url=base_url, api_key=api_key, model_name=model_name)
+
     if prov in ["local_whisper", "local", "whisper_local"]:
         import stt_pipeline
         st = stt_pipeline.whisper_status(_requested_whisper_model(prov, model_name))
@@ -835,15 +882,27 @@ def test_summarization_engine(
         res["model"] = model_name or load_api_settings_from_disk().get("custom_api_model")
         return res
 
-    if prov in ["local", "local_whisper"]:
+    if prov in ["local", "local_whisper", "local_llm"]:
         lat = round((time.time() - t0) * 1000)
-        return {
-            "success": True,
-            "valid": True,
-            "message": "Local Deep Semantic Synthesis ready.",
-            "latency_ms": lat,
-            "model": "deep_semantic_synthesis"
-        }
+        try:
+            import local_llm_engine
+            st = local_llm_engine.get_local_llm_status()
+            gpu_str = " (Vulkan GPU offload)" if st.get("vulkan_supported") else " (CPU)"
+            return {
+                "success": True,
+                "valid": True,
+                "message": f"Local LLM ready ({st.get('model')}{gpu_str}, {lat}ms).",
+                "latency_ms": lat,
+                "model": st.get("model")
+            }
+        except Exception:
+            return {
+                "success": True,
+                "valid": True,
+                "message": "Local Deep Semantic Synthesis ready.",
+                "latency_ms": lat,
+                "model": "deep_semantic_synthesis"
+            }
 
     key = (api_key or get_default_api_key_from_disk().get("api_key") or "").strip()
     if not key:
@@ -1237,9 +1296,9 @@ def _oac_extract_content(data: Dict[str, Any]) -> str:
 
 def summarize_text_openai_compatible(
     text_content: str,
-    api_key: str = "",
-    base_url: str = "",
-    model_name: str = "",
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model_name: Optional[str] = None,
     org_context: str = "",
     custom_skills: str = "",
     template_schema: Optional[Dict[str, Any]] = None,
@@ -1256,9 +1315,9 @@ def summarize_text_openai_compatible(
     refused, timeout, HTTP errors or unparseable output - the caller falls back and warns.
     """
     cfg = load_api_settings_from_disk()
-    root = (base_url or cfg.get("custom_api_base_url") or "").strip().rstrip("/")
-    model = (model_name or cfg.get("custom_api_model") or "").strip()
-    key = (api_key or cfg.get("custom_api_key") or "").strip()
+    root = (base_url if base_url is not None else (cfg.get("custom_api_base_url") or "")).strip().rstrip("/")
+    model = (model_name if model_name is not None else (cfg.get("custom_api_model") or "")).strip()
+    key = (api_key if api_key is not None else (cfg.get("custom_api_key") or "")).strip()
     endpoint = f"{root}/chat/completions"
     _oac_log.info("resolved provider=openai_compatible base_url=%s model=%s key=%s transcript_chars=%d timeout=%.0fs",
                   root or "<none>", model or "<none>", redact_key(key), len(text_content or ""), timeout)
@@ -1476,7 +1535,8 @@ def process_ai_request(
     llm_base_url = ""
     if llm_prov == "openai_compatible":
         # Custom endpoint: its own key/model/base URL only - never the Gemini key.
-        llm_key = (summarization_api_key or api_key or disk_cfg.get("custom_api_key") or "").strip()
+        llm_key = (summarization_api_key if summarization_api_key is not None
+                   else (api_key or disk_cfg.get("custom_api_key") or "")).strip()
         requested_model = (summarization_model or model_name or "").strip()
         if not requested_model or requested_model.startswith("gemini") or requested_model.startswith("local"):
             requested_model = disk_cfg.get("custom_api_model") or ""

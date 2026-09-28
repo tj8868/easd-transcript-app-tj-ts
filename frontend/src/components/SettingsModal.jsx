@@ -140,7 +140,7 @@ export default function SettingsModal({
   const [showGeminiKey, setShowGeminiKey] = useState(false);
   const [geminiFeedback, setGeminiFeedback] = useState('');
 
-  // Custom OpenAI-compatible endpoint (OpenRouter / DeepSeek / Ollama / LM Studio) State
+  // Custom STT / LLM State
   const [customBaseUrl, setCustomBaseUrl] = useState(() => getSavedBaseUrlForProvider('openai_compatible') || '');
   const [customModel, setCustomModel] = useState(() => localStorage.getItem('custom_api_model') || '');
   const [customKeyInput, setCustomKeyInput] = useState(() => getSavedKeyForProvider('openai_compatible') || '');
@@ -148,9 +148,17 @@ export default function SettingsModal({
   const [showCustomKey, setShowCustomKey] = useState(false);
   const [customFeedback, setCustomFeedback] = useState('');
 
-  // Local Whisper (Fallback) State
-  const [localWhisperModel, setLocalWhisperModel] = useState(() => localStorage.getItem('local_whisper_model') || 'auto');
-  const [localWhisperFeedback, setLocalWhisperFeedback] = useState('');
+  // Transcription Model Selection State
+  const [sttProvider, setSttProvider] = useState(() => localStorage.getItem('transcriptionProvider') || (aiConfig?.transcriptionProvider || aiConfig?.provider === 'local_whisper' ? 'local_whisper' : 'gemini'));
+  const [sttModel, setSttModel] = useState(() => localStorage.getItem('transcriptionModel') || (aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'));
+  const [localWhisperModel, setLocalWhisperModel] = useState(() => localStorage.getItem('local_whisper_model') || 'whisper-small');
+  const [sttFeedback, setSttFeedback] = useState('');
+
+  // Summarization Model Selection State
+  const [llmProvider, setLlmProvider] = useState(() => localStorage.getItem('summarizationProvider') || (aiConfig?.summarizationProvider || aiConfig?.provider || 'gemini'));
+  const [geminiLlmModel, setGeminiLlmModel] = useState(() => localStorage.getItem('gemini_llm_model') || 'gemini-3.8-flash');
+  const [localLlmModel, setLocalLlmModel] = useState(() => localStorage.getItem('local_llm_model') || 'qwen2.5-1.5b');
+  const [llmFeedback, setLlmFeedback] = useState('');
 
   const [envKeys, setEnvKeys] = useState(null);
   const [loadingEnvKeys, setLoadingEnvKeys] = useState(false);
@@ -376,32 +384,149 @@ export default function SettingsModal({
     return runVerifyKey('gemini', 'gemini', geminiKeyInput.trim(), '', 'Gemini connected successfully!');
   };
 
-  const handleTestLocalWhisper = async () => {
-    setTestStatus(prev => ({ ...prev, local_whisper: { loading: true, message: 'Testing Local Whisper engine...' } }));
+  // Save & Apply Transcription Model (STT)
+  const handleSaveTranscriptionModel = (overrideProvider = null, overrideModel = null) => {
+    const prov = overrideProvider || sttProvider;
+    const mod = overrideModel || (prov === 'local_whisper' ? localWhisperModel : prov === 'openai_compatible' ? (customModel || 'whisper-1') : 'gemini-3.5-transcribe');
+    const key = prov === 'gemini' ? geminiKeyInput.trim() : prov === 'openai_compatible' ? customKeyInput.trim() : '';
+    
+    setSttProvider(prov);
+    setSttModel(mod);
+    localStorage.setItem('transcriptionProvider', prov);
+    localStorage.setItem('transcriptionModel', mod);
+    if (prov === 'local_whisper') {
+      localStorage.setItem('local_whisper_model', mod);
+    }
+    
+    saveServerSettings({
+      transcription_provider: prov,
+      transcription_model: mod,
+      local_whisper_model: prov === 'local_whisper' ? mod : undefined,
+      ...(prov === 'gemini' && key ? { gemini_api_key: key } : {}),
+      ...(prov === 'openai_compatible' && customBaseUrl ? { custom_api_base_url: customBaseUrl.trim() } : {}),
+      ...(prov === 'openai_compatible' && key ? { custom_api_key: key } : {})
+    });
+
+    setAiConfig(prev => ({
+      ...prev,
+      transcriptionProvider: prov,
+      transcriptionModel: mod
+    }));
+
+    const label = prov === 'gemini' ? 'Gemini 3.5 Transcribe' : prov === 'local_whisper' ? `Local Whisper (${mod})` : `Custom STT (${mod})`;
+    setSttFeedback(`✅ Active STT updated: ${label}`);
+    setTimeout(() => setSttFeedback(''), 4000);
+  };
+
+  // Test Transcription Model (STT)
+  const handleTestTranscriptionEngine = async (provToTest = null, modToTest = null) => {
+    const targetProv = provToTest || sttProvider;
+    const targetMod = modToTest || (targetProv === 'local_whisper' ? localWhisperModel : targetProv === 'openai_compatible' ? customModel : 'gemini-3.5-transcribe');
+    const targetKey = targetProv === 'gemini' ? geminiKeyInput.trim() : targetProv === 'openai_compatible' ? customKeyInput.trim() : '';
+    
+    setTestStatus(prev => ({ ...prev, stt: { loading: true, message: `Testing ${targetProv} STT (${targetMod})...` } }));
     try {
       const res = await axios.post('/api/test_engine', {
         test_type: 'stt',
-        stt_provider: 'local_whisper',
-        stt_model: localWhisperModel
+        stt_provider: targetProv,
+        stt_model: targetMod,
+        stt_api_key: targetKey,
+        base_url: customBaseUrl.trim()
       });
       const stt = res.data?.stt || {};
       const isValid = Boolean(stt.success);
       const lat = stt.latency_ms ? ` (${stt.latency_ms}ms)` : '';
       setTestStatus(prev => ({
         ...prev,
-        local_whisper: {
+        stt: {
           loading: false,
           success: isValid,
-          message: (stt.message || 'Local Whisper engine verified & ready!') + lat
+          message: (stt.message || `${targetProv} STT verified & ready!`) + lat
         }
       }));
     } catch (err) {
       setTestStatus(prev => ({
         ...prev,
-        local_whisper: {
+        stt: {
           loading: false,
           success: false,
-          message: err.response?.data?.detail || err.message || 'Local Whisper test failed'
+          message: err.response?.data?.detail || err.message || 'STT connection test failed'
+        }
+      }));
+    }
+  };
+
+  // Save & Apply Summarization Model (LLM)
+  const handleSaveSummarizationModel = (overrideProvider = null, overrideModel = null) => {
+    const prov = overrideProvider || llmProvider;
+    const mod = overrideModel || (prov === 'gemini' ? geminiLlmModel : prov === 'local' || prov === 'local_whisper' ? localLlmModel : (customModel || 'deepseek/deepseek-v4.1-flash'));
+    const key = prov === 'gemini' ? geminiKeyInput.trim() : prov === 'openai_compatible' ? customKeyInput.trim() : '';
+    
+    setLlmProvider(prov);
+    localStorage.setItem('summarizationProvider', prov);
+    localStorage.setItem('summarizationModel', mod);
+    if (prov === 'gemini') {
+      localStorage.setItem('gemini_llm_model', mod);
+    } else if (prov === 'local' || prov === 'local_whisper') {
+      localStorage.setItem('local_llm_model', mod);
+    }
+    
+    saveServerSettings({
+      summarization_provider: prov === 'local_whisper' ? 'local' : prov,
+      summarization_model: mod,
+      ...(prov === 'gemini' && key ? { gemini_api_key: key, summarization_api_key: key } : {}),
+      ...(prov === 'openai_compatible' && customBaseUrl ? { custom_api_base_url: customBaseUrl.trim(), custom_api_model: mod } : {}),
+      ...(prov === 'openai_compatible' && key ? { custom_api_key: key, summarization_api_key: key } : {})
+    });
+
+    setAiConfig(prev => ({
+      ...prev,
+      provider: prov === 'local_whisper' ? 'local' : prov,
+      summarizationProvider: prov === 'local_whisper' ? 'local' : prov,
+      summarizationModel: mod,
+      modelName: mod,
+      ...(key ? { apiKey: key } : {}),
+      ...(prov === 'openai_compatible' && customBaseUrl ? { baseUrl: customBaseUrl.trim() } : {})
+    }));
+
+    const label = prov === 'gemini' ? `Gemini (${mod})` : (prov === 'local' || prov === 'local_whisper') ? `Local LLM (${mod})` : `Custom (${mod})`;
+    setLlmFeedback(`✅ Active LLM updated: ${label}`);
+    setTimeout(() => setLlmFeedback(''), 4000);
+  };
+
+  // Test Summarization Model (LLM)
+  const handleTestSummarizationEngine = async (provToTest = null, modToTest = null) => {
+    const targetProv = provToTest || (llmProvider === 'local_whisper' ? 'local' : llmProvider);
+    const targetMod = modToTest || (targetProv === 'gemini' ? geminiLlmModel : targetProv === 'local' ? localLlmModel : customModel);
+    const targetKey = targetProv === 'gemini' ? geminiKeyInput.trim() : targetProv === 'openai_compatible' ? customKeyInput.trim() : '';
+
+    setTestStatus(prev => ({ ...prev, llm: { loading: true, message: `Testing ${targetProv} LLM (${targetMod})...` } }));
+    try {
+      const res = await axios.post('/api/test_engine', {
+        test_type: 'llm',
+        llm_provider: targetProv,
+        llm_model: targetMod,
+        llm_api_key: targetKey,
+        base_url: customBaseUrl.trim()
+      });
+      const llm = res.data?.llm || {};
+      const isValid = Boolean(llm.success);
+      const lat = llm.latency_ms ? ` (${llm.latency_ms}ms)` : '';
+      setTestStatus(prev => ({
+        ...prev,
+        llm: {
+          loading: false,
+          success: isValid,
+          message: (llm.message || `${targetProv} LLM verified!`) + lat
+        }
+      }));
+    } catch (err) {
+      setTestStatus(prev => ({
+        ...prev,
+        llm: {
+          loading: false,
+          success: false,
+          message: err.response?.data?.detail || err.message || 'LLM connection test failed'
         }
       }));
     }
@@ -629,337 +754,523 @@ export default function SettingsModal({
               )}
             </div>
 
-            {/* SECTION 1: GOOGLE GEMINI (DEFAULT ENGINE) */}
-            <div
-              style={{
-                background: 'var(--bg-secondary)',
-                border: aiConfig.provider === 'gemini' ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
-                borderRadius: '12px',
-                padding: '18px 20px',
-                marginBottom: '20px'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <Cpu size={20} color="var(--accent-color)" />
-                  <div>
-                    <h4 style={{ margin: 0, fontSize: '0.98rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                      Google Gemini API (Default Engine)
-                    </h4>
-                    <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-                      Cloud engine using your configured Gemini transcription and summarization models.
-                    </span>
-                  </div>
-                </div>
-                <a
-                  href="https://aistudio.google.com/app/apikey"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: '0.78rem', color: 'var(--accent-color)', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', fontWeight: 600 }}
-                >
-                  Get Gemini Key <ExternalLink size={12} />
-                </a>
-              </div>
-
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
-                <input
-                  type={showGeminiKey ? 'text' : 'password'}
-                  id="geminiApiKeyInput"
-                  className="form-control"
-                  placeholder="Paste Google Gemini API Key (e.g. AIzaSy...)"
-                  value={geminiKeyInput}
-                  onChange={(e) => setGeminiKeyInput(e.target.value)}
-                  style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.88rem', padding: '9px 12px' }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowGeminiKey(!showGeminiKey)}
-                  title={showGeminiKey ? 'Hide key' : 'Show key'}
-                  style={{ padding: '9px 12px' }}
-                >
-                  {showGeminiKey ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={async () => {
-                    try {
-                      if (navigator.clipboard?.readText) {
-                        const t = await navigator.clipboard.readText();
-                        if (t) setGeminiKeyInput(t.trim());
-                      }
-                    } catch (e) {}
-                  }}
-                  title="Paste from clipboard"
-                  style={{ padding: '9px 12px', fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '4px' }}
-                >
-                  <Clipboard size={14} /> Paste
-                </button>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: geminiFeedback ? '#10b981' : testStatus.gemini?.success ? '#10b981' : '#ef4444' }}>
-                  {geminiFeedback || testStatus.gemini?.message || ''}
-                </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    type="button"
-                    id="testGeminiBtn"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleTestGemini}
-                    disabled={testStatus.gemini?.loading || !geminiKeyInput.trim()}
-                    style={{ padding: '6px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Cpu size={14} /> {testStatus.gemini?.loading ? 'Testing...' : 'Test Gemini API'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary btn-sm"
-                    onClick={handleSaveGemini}
-                    style={{ padding: '6px 14px', fontWeight: 700 }}
-                  >
-                    <Check size={14} /> Set as Active Default
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* SECTION 2: LOCAL WHISPER (OFFLINE & HARDWARE-ADAPTIVE FALLBACK) */}
-            <div
-              style={{
-                background: 'var(--bg-secondary)',
-                border: aiConfig.provider === 'local_whisper' ? '2px solid #10b981' : '1px solid var(--border-color)',
-                borderRadius: '12px',
-                padding: '18px 20px',
-                marginBottom: '20px',
-                boxShadow: aiConfig.provider === 'local_whisper' ? '0 4px 16px rgba(16, 185, 129, 0.15)' : 'none'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ background: '#10b981', color: '#ffffff', borderRadius: '8px', padding: '6px', display: 'flex' }}>
+            {/* ========================================================
+                HEADING 1: TRANSCRIPTION MODEL (STT)
+                Under this heading: Gemini, Whisper (Small for low-end / Turbo for fast PC), and Custom STT
+                ======================================================== */}
+            <div style={{ marginBottom: '32px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', borderBottom: '2px solid var(--border-color)', paddingBottom: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ background: 'rgba(2, 132, 199, 0.15)', color: 'var(--accent-color)', padding: '6px', borderRadius: '8px', display: 'flex' }}>
                     <Server size={18} />
                   </div>
                   <div>
-                    <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                      Local Whisper Engine (Offline & Hardware-Adaptive Fallback)
-                    </h4>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                      100% Free & Zero Cloud Dependency. Automatically adapts model size to available system RAM.
+                    <h3 style={{ margin: 0, fontSize: '1.08rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.01em' }}>
+                      Transcription Model (Speech-to-Text)
+                    </h3>
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                      Select speech engine for transcribing audio files & microphone takes.
                     </span>
                   </div>
                 </div>
-                <span style={{ fontSize: '0.74rem', padding: '3px 8px', borderRadius: '6px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 700 }}>
-                  Offline Engine
+                <span style={{ fontSize: '0.72rem', padding: '3px 8px', borderRadius: '12px', background: 'rgba(2, 132, 199, 0.15)', color: 'var(--accent-color)', fontWeight: 700 }}>
+                  Active STT: {sttProvider === 'gemini' ? 'Gemini 3.5 Transcribe' : sttProvider === 'local_whisper' ? `Whisper (${localWhisperModel})` : `Custom (${customModel || 'OpenAI-compatible'})`}
                 </span>
               </div>
 
-              {/* Hardware Sizing Architecture Banner */}
-              <div style={{ background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '8px', padding: '10px 14px', marginBottom: '14px', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: '1.5' }}>
-                <strong style={{ color: '#10b981' }}>Model sizing:</strong> <code>auto</code> picks the largest downloaded model your free RAM can run (<code>whisper-medium</code> needs ~8GB total and 2.5GB free). A model you choose here is always used as-is. Runs INT8 on the CPU, or on an NVIDIA GPU automatically when one is available.
+              {/* 1.A: Gemini Transcribe */}
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: sttProvider === 'gemini' ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '16px',
+                  marginBottom: '14px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Cpu size={16} color="var(--accent-color)" />
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                      Gemini 3.5 Transcribe (Cloud Live STT)
+                    </span>
+                    <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(2, 132, 199, 0.12)', color: 'var(--accent-color)', fontWeight: 600 }}>
+                      Official Google API
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleTestTranscriptionEngine('gemini', 'gemini-3.5-transcribe')}
+                      disabled={testStatus.stt?.loading || !geminiKeyInput.trim()}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      {testStatus.stt?.loading && sttProvider === 'gemini' ? 'Testing...' : 'Test STT'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveTranscriptionModel('gemini', 'gemini-3.5-transcribe')}
+                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700 }}
+                    >
+                      {sttProvider === 'gemini' ? '✓ Selected' : 'Use Gemini STT'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
+                  <input
+                    type={showGeminiKey ? 'text' : 'password'}
+                    className="form-control"
+                    placeholder="Gemini API Key (stored in .env / os.environ)"
+                    value={geminiKeyInput}
+                    onChange={(e) => setGeminiKeyInput(e.target.value)}
+                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    onClick={() => setShowGeminiKey(!showGeminiKey)}
+                    title={showGeminiKey ? 'Hide key' : 'Show key'}
+                    style={{ padding: '7px 10px' }}
+                  >
+                    {showGeminiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                  </button>
+                </div>
+                <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                  🔒 Credential stored safely in server environment & <code>.env</code>. Never exposed to git repository.
+                </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginBottom: '12px' }}>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    Whisper Model Selection:
+              {/* 1.B: Whisper (Offline STT with Small / Turbo differentiation) */}
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: sttProvider === 'local_whisper' ? '2px solid #10b981' : '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '16px',
+                  marginBottom: '14px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Server size={16} color="#10b981" />
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                      Whisper (Offline STT)
+                    </span>
+                    <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600 }}>
+                      100% Local • Zero API Cost
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleTestTranscriptionEngine('local_whisper', localWhisperModel)}
+                      disabled={testStatus.stt?.loading}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      {testStatus.stt?.loading && sttProvider === 'local_whisper' ? 'Testing...' : 'Test Whisper'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveTranscriptionModel('local_whisper', localWhisperModel)}
+                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
+                    >
+                      {sttProvider === 'local_whisper' ? '✓ Selected' : 'Use Whisper STT'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: '10px' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Model Precision & Performance Profile:
                   </label>
                   <select
-                    id="localWhisperModelSelect"
                     className="form-control"
                     value={localWhisperModel}
-                    onChange={(e) => setLocalWhisperModel(e.target.value)}
-                    style={{ fontSize: '0.85rem', padding: '8px 12px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                    onChange={(e) => {
+                      const newMod = e.target.value;
+                      setLocalWhisperModel(newMod);
+                      if (sttProvider === 'local_whisper') {
+                        handleSaveTranscriptionModel('local_whisper', newMod);
+                      }
+                    }}
+                    style={{ fontSize: '0.84rem', padding: '7px 10px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
                   >
-                    <option value="auto">auto (Hardware Adaptive: Auto-size to system RAM)</option>
-                    <option value="whisper-tiny">whisper-tiny (Ultra-Fast / Low RAM: &lt;= 4GB)</option>
-                    <option value="whisper-base">whisper-base (Fast Lightweight: 4-8GB)</option>
-                    <option value="whisper-small">whisper-small (Standard Balance: 6GB+)</option>
-                    <option value="whisper-medium">whisper-medium (High Precision: 8GB+ with 2.5GB free)</option>
+                    <option value="whisper-small">whisper-small ⚡ (Recommended for Low-End PC: ~460MB weights, low RAM)</option>
+                    <option value="whisper-large-v3-turbo">whisper-large-v3-turbo 🚀 (Recommended for Faster PC / GPU: Top accuracy + 8x speed)</option>
+                    <option value="auto">auto (Hardware Adaptive: Picks largest model RAM can comfortably host)</option>
+                    <option value="whisper-base">whisper-base (Ultra-Lightweight: 4-8 GB RAM)</option>
+                    <option value="whisper-medium">whisper-medium (Standard Precision: 8+ GB RAM)</option>
                   </select>
                 </div>
 
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    Offline Meeting Minutes Synthesis:
-                  </label>
-                  <input
-                    type="text"
-                    className="form-control"
-                    disabled
-                    value="Deep Semantic Synthesis (Built-in Rule Engine)"
-                    style={{ fontSize: '0.82rem', padding: '8px 12px', background: 'var(--bg-primary)', color: 'var(--text-secondary)', borderStyle: 'dashed' }}
-                  />
-                  <small style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-                    Structures discussions, decisions, and action items locally without external API tokens.
-                  </small>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  <div style={{ background: 'var(--bg-primary)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>💻 Low-End PC:</strong> Choose <code>whisper-small</code>. Minimal RAM load with stable Bengali/English bilingual recognition.
+                  </div>
+                  <div style={{ background: 'var(--bg-primary)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
+                    <strong style={{ color: 'var(--text-primary)' }}>⚡ Faster PC / GPU:</strong> Choose <code>whisper-large-v3-turbo</code>. State-of-the-art accuracy with fast 4-layer decoder speed.
+                  </div>
                 </div>
               </div>
 
-              {/* Action row & Feedback */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
-                <div style={{ fontSize: '0.82rem', fontWeight: 700, color: localWhisperFeedback ? '#10b981' : testStatus.local_whisper?.success ? '#10b981' : '#ef4444' }}>
-                  {localWhisperFeedback || testStatus.local_whisper?.message || ''}
+              {/* 1.C: Custom STT (OpenAI-compatible / Whisper API) */}
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: sttProvider === 'openai_compatible' ? '2px solid #f59e0b' : '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '16px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Globe size={16} color="#f59e0b" />
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                      Custom STT (OpenAI-Compatible / Remote Endpoint)
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleTestTranscriptionEngine('openai_compatible', customModel || 'whisper-1')}
+                      disabled={testStatus.stt?.loading || !customBaseUrl.trim()}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      {testStatus.stt?.loading && sttProvider === 'openai_compatible' ? 'Testing...' : 'Test STT'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveTranscriptionModel('openai_compatible', customModel || 'whisper-1')}
+                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#f59e0b', borderColor: '#f59e0b' }}
+                    >
+                      {sttProvider === 'openai_compatible' ? '✓ Selected' : 'Use Custom STT'}
+                    </button>
+                  </div>
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    type="button"
-                    id="testLocalWhisperBtn"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleTestLocalWhisper}
-                    disabled={testStatus.local_whisper?.loading}
-                    style={{ padding: '7px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Server size={14} /> {testStatus.local_whisper?.loading ? 'Testing Engine...' : 'Test Local Whisper'}
-                  </button>
-                  <button
-                    type="button"
-                    id="saveLocalWhisperBtn"
-                    className="btn btn-primary btn-sm"
-                    onClick={handleSaveLocalWhisper}
-                    style={{ padding: '7px 16px', fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
-                  >
-                    <Check size={15} /> Set as Active Engine
-                  </button>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  Connects to external audio endpoints (Groq Whisper, self-hosted faster-whisper server, or cloud transcription proxies).
                 </div>
               </div>
+
+              {/* STT Status & Feedback banner */}
+              {(sttFeedback || testStatus.stt?.message) && (
+                <div style={{
+                  marginTop: '10px',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  background: (sttFeedback || testStatus.stt?.success) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  color: (sttFeedback || testStatus.stt?.success) ? '#10b981' : '#ef4444',
+                  border: (sttFeedback || testStatus.stt?.success) ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  {(sttFeedback || testStatus.stt?.success) ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+                  <span>{sttFeedback || testStatus.stt?.message}</span>
+                </div>
+              )}
             </div>
 
-            {/* SECTION 3: CUSTOM OPENAI-COMPATIBLE ENDPOINT (OpenRouter / DeepSeek / Ollama / LM Studio) */}
-            <div
-              style={{
-                background: 'var(--bg-secondary)',
-                border: aiConfig.provider === 'openai_compatible' ? '2px solid #f59e0b' : '1px solid var(--border-color)',
-                borderRadius: '12px',
-                padding: '18px 20px',
-                marginBottom: '20px',
-                boxShadow: aiConfig.provider === 'openai_compatible' ? '0 4px 16px rgba(245, 158, 11, 0.15)' : 'none'
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div style={{ background: '#f59e0b', color: '#ffffff', borderRadius: '8px', padding: '6px', display: 'flex' }}>
-                    <Globe size={18} />
+            {/* ========================================================
+                HEADING 2: SUMMARIZATION MODEL (LLM)
+                Under this heading: Gemini, Local LLM (llama.cpp / Vulkan), and Custom LLM
+                ======================================================== */}
+            <div style={{ marginBottom: '32px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', borderBottom: '2px solid var(--border-color)', paddingBottom: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <div style={{ background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed', padding: '6px', borderRadius: '8px', display: 'flex' }}>
+                    <Sparkles size={18} />
                   </div>
                   <div>
-                    <h4 style={{ margin: 0, fontSize: '1rem', fontWeight: 800, color: 'var(--text-primary)' }}>
-                      Custom / OpenRouter / Local (OpenAI-Compatible)
-                    </h4>
-                    <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                      Fills the template on Generate using any OpenAI-compatible endpoint. Transcription is not affected.
+                    <h3 style={{ margin: 0, fontSize: '1.08rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.01em' }}>
+                      Summarization Model (Meeting Minutes & Reports)
+                    </h3>
+                    <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                      Select AI engine for structuring transcripts into executive minutes and custom templates.
                     </span>
                   </div>
                 </div>
-                <a
-                  href="https://openrouter.ai/docs"
-                  target="_blank"
-                  rel="noreferrer"
-                  style={{ fontSize: '0.78rem', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', fontWeight: 600 }}
-                >
-                  OpenRouter docs <ExternalLink size={12} />
-                </a>
+                <span style={{ fontSize: '0.72rem', padding: '3px 8px', borderRadius: '12px', background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed', fontWeight: 700 }}>
+                  Active LLM: {llmProvider === 'gemini' ? `Gemini (${geminiLlmModel})` : (llmProvider === 'local' || llmProvider === 'local_whisper') ? `Local (${localLlmModel})` : `Custom (${customModel || 'OpenAI-compatible'})`}
+                </span>
               </div>
 
-              <div role="group" aria-label="Custom API presets" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '12px' }}>
-                {CUSTOM_API_PRESETS.map((preset) => (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={() => applyCustomPreset(preset)}
-                    style={{ padding: '4px 10px', fontSize: '0.76rem', borderRadius: '14px' }}
-                    title={preset.baseUrl ? `Prefill ${preset.baseUrl}` : 'Clear all fields'}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
+              {/* 2.A: Gemini LLM */}
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: llmProvider === 'gemini' ? '2px solid var(--accent-color)' : '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '16px',
+                  marginBottom: '14px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Cpu size={16} color="var(--accent-color)" />
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                      Gemini (Cloud Executive Synthesis)
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleTestSummarizationEngine('gemini', geminiLlmModel)}
+                      disabled={testStatus.llm?.loading || !geminiKeyInput.trim()}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      {testStatus.llm?.loading && llmProvider === 'gemini' ? 'Testing...' : 'Test Gemini'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveSummarizationModel('gemini', geminiLlmModel)}
+                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700 }}
+                    >
+                      {llmProvider === 'gemini' ? '✓ Selected' : 'Use Gemini LLM'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                      Model Variant:
+                    </label>
+                    <select
+                      className="form-control"
+                      value={geminiLlmModel}
+                      onChange={(e) => {
+                        const m = e.target.value;
+                        setGeminiLlmModel(m);
+                        if (llmProvider === 'gemini') {
+                          handleSaveSummarizationModel('gemini', m);
+                        }
+                      }}
+                      style={{ fontSize: '0.84rem', padding: '7px 10px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                    >
+                      <option value="gemini-3.8-flash">gemini-3.8-flash (Fast, High Quality Executive Output)</option>
+                      <option value="gemini-3.5-pro">gemini-3.5-pro (Deep Multi-Hour Analytical Synthesis)</option>
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center' }}>
+                    <span style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
+                      Uses the Gemini key configured above. Credentials persist automatically in <code>.env</code> and environment variables.
+                    </span>
+                  </div>
+                </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '12px', marginBottom: '10px' }}>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label htmlFor="customApiBaseUrlInput" style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    Base URL:
+              {/* 2.B: Local LLM (llama.cpp with Vulkan GPU Auto-Acceleration) */}
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: (llmProvider === 'local' || llmProvider === 'local_whisper') ? '2px solid #10b981' : '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '16px',
+                  marginBottom: '14px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Server size={16} color="#10b981" />
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                      Local LLM (llama.cpp with Vulkan GPU Auto-Acceleration)
+                    </span>
+                    <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600 }}>
+                      100% Offline
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleTestSummarizationEngine('local', localLlmModel)}
+                      disabled={testStatus.llm?.loading}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      {testStatus.llm?.loading && (llmProvider === 'local' || llmProvider === 'local_whisper') ? 'Testing...' : 'Test Local LLM'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveSummarizationModel('local', localLlmModel)}
+                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
+                    >
+                      {(llmProvider === 'local' || llmProvider === 'local_whisper') ? '✓ Selected' : 'Use Local LLM'}
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{ background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '6px', padding: '8px 12px', marginBottom: '10px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                  <strong style={{ color: '#10b981' }}>Hardware Auto-Detection:</strong> When a GPU supporting Vulkan (Intel, AMD, NVIDIA, or Apple) is present, llama.cpp automatically shifts inference to Vulkan GPU layers (<code>n_gpu_layers = -1</code>) for fast offline processing, or seamlessly falls back to optimized multi-threaded CPU.
+                </div>
+
+                <div style={{ marginBottom: '8px' }}>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    Local Model Architecture:
                   </label>
-                  <input
-                    id="customApiBaseUrlInput"
-                    type="text"
+                  <select
                     className="form-control"
-                    placeholder="https://openrouter.ai/api/v1"
-                    value={customBaseUrl}
-                    onChange={(e) => setCustomBaseUrl(e.target.value)}
-                    style={{ fontFamily: 'monospace', fontSize: '0.85rem', padding: '8px 12px' }}
-                  />
+                    value={localLlmModel}
+                    onChange={(e) => {
+                      const m = e.target.value;
+                      setLocalLlmModel(m);
+                      if (llmProvider === 'local' || llmProvider === 'local_whisper') {
+                        handleSaveSummarizationModel('local', m);
+                      }
+                    }}
+                    style={{ fontSize: '0.84rem', padding: '7px 10px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
+                  >
+                    <option value="qwen2.5-1.5b">Qwen2.5-1.5B-Instruct (~1.0 GB GGUF, High accuracy for meeting minutes & tables)</option>
+                    <option value="qwen2.5-0.5b">Qwen2.5-0.5B-Instruct (~0.4 GB GGUF, Ultra-lightweight for very low RAM)</option>
+                    <option value="gemma-2-2b">Gemma-2-2B-IT (~1.6 GB GGUF, Google family local instruction model)</option>
+                  </select>
                 </div>
-                <div className="form-group" style={{ marginBottom: 0 }}>
-                  <label htmlFor="customApiModelInput" style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                    Model ID:
+              </div>
+
+              {/* 2.C: Custom LLM (OpenRouter / DeepSeek / Ollama / LM Studio) */}
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: llmProvider === 'openai_compatible' ? '2px solid #f59e0b' : '1px solid var(--border-color)',
+                  borderRadius: '10px',
+                  padding: '16px'
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Globe size={16} color="#f59e0b" />
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
+                      Custom / Other LLM (OpenRouter, DeepSeek, Ollama, LM Studio)
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => handleTestSummarizationEngine('openai_compatible', customModel)}
+                      disabled={testStatus.llm?.loading || !customBaseUrl.trim()}
+                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
+                    >
+                      {testStatus.llm?.loading && llmProvider === 'openai_compatible' ? 'Testing...' : 'Test Connection'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-sm"
+                      onClick={() => handleSaveSummarizationModel('openai_compatible', customModel)}
+                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#f59e0b', borderColor: '#f59e0b' }}
+                    >
+                      {llmProvider === 'openai_compatible' ? '✓ Selected' : 'Use Custom LLM'}
+                    </button>
+                  </div>
+                </div>
+
+                <div role="group" aria-label="Custom API presets" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                  {CUSTOM_API_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={() => applyCustomPreset(preset)}
+                      style={{ padding: '3px 10px', fontSize: '0.74rem', borderRadius: '14px' }}
+                      title={preset.baseUrl ? `Prefill ${preset.baseUrl}` : 'Clear all fields'}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px', marginBottom: '10px' }}>
+                  <div>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                      Base URL:
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="https://openrouter.ai/api/v1"
+                      value={customBaseUrl}
+                      onChange={(e) => setCustomBaseUrl(e.target.value)}
+                      style={{ fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                      Model ID:
+                    </label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder={customModelPlaceholder}
+                      value={customModel}
+                      onChange={(e) => setCustomModel(e.target.value)}
+                      style={{ fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '0.78rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
+                    API Key (Optional for local Ollama / LM Studio):
                   </label>
-                  <input
-                    id="customApiModelInput"
-                    type="text"
-                    className="form-control"
-                    placeholder={customModelPlaceholder}
-                    value={customModel}
-                    onChange={(e) => setCustomModel(e.target.value)}
-                    style={{ fontFamily: 'monospace', fontSize: '0.85rem', padding: '8px 12px' }}
-                  />
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <input
+                      type={showCustomKey ? 'text' : 'password'}
+                      className="form-control"
+                      placeholder="Paste Custom API Key (optional)"
+                      value={customKeyInput}
+                      onChange={(e) => setCustomKeyInput(e.target.value)}
+                      style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      onClick={() => setShowCustomKey(!showCustomKey)}
+                      title={showCustomKey ? 'Hide key' : 'Show key'}
+                      style={{ padding: '7px 10px' }}
+                    >
+                      {showCustomKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              <label htmlFor="customApiKeyInput" style={{ fontSize: '0.8rem', fontWeight: 700, display: 'block', marginBottom: '4px' }}>
-                API key <span style={{ fontWeight: 500, color: 'var(--text-secondary)' }}>(optional - no key required for local Ollama / LM Studio)</span>
-              </label>
-              <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' }}>
-                <input
-                  id="customApiKeyInput"
-                  type={showCustomKey ? 'text' : 'password'}
-                  className="form-control"
-                  placeholder="Paste API key (leave blank for local Ollama/LM Studio)"
-                  value={customKeyInput}
-                  onChange={(e) => setCustomKeyInput(e.target.value)}
-                  style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.88rem', padding: '9px 12px' }}
-                />
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => setShowCustomKey(!showCustomKey)}
-                  title={showCustomKey ? 'Hide key' : 'Show key'}
-                  style={{ padding: '9px 12px' }}
-                >
-                  {showCustomKey ? <EyeOff size={15} /> : <Eye size={15} />}
-                </button>
-              </div>
-
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', paddingTop: '10px', borderTop: '1px solid var(--border-color)' }}>
-                <div style={{ fontSize: '0.8rem', fontWeight: 600, color: customFeedback ? (customFeedback.startsWith('❌') ? '#ef4444' : '#10b981') : testStatus.custom?.success ? '#10b981' : '#ef4444' }}>
-                  {customFeedback || testStatus.custom?.message || ''}
+              {/* LLM Status & Feedback banner */}
+              {(llmFeedback || testStatus.llm?.message) && (
+                <div style={{
+                  marginTop: '10px',
+                  padding: '8px 12px',
+                  borderRadius: '6px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                  background: (llmFeedback || testStatus.llm?.success) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+                  color: (llmFeedback || testStatus.llm?.success) ? '#10b981' : '#ef4444',
+                  border: (llmFeedback || testStatus.llm?.success) ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px'
+                }}>
+                  {(llmFeedback || testStatus.llm?.success) ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+                  <span>{llmFeedback || testStatus.llm?.message}</span>
                 </div>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  <button
-                    type="button"
-                    id="testCustomApiBtn"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleTestCustom}
-                    disabled={testStatus.custom?.loading || !customBaseUrl.trim()}
-                    style={{ padding: '6px 14px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  >
-                    <Globe size={14} /> {testStatus.custom?.loading ? 'Testing...' : 'Test Connection'}
-                  </button>
-                  <button
-                    type="button"
-                    id="saveCustomApiBtn"
-                    className="btn btn-primary btn-sm"
-                    onClick={handleSaveCustom}
-                    style={{ padding: '6px 14px', fontWeight: 700, background: '#f59e0b', borderColor: '#f59e0b' }}
-                  >
-                    <Check size={14} /> Use for Generate
-                  </button>
-                </div>
-              </div>
+              )}
             </div>
 
-            {/* SECTION 4: SYSTEM & .ENV ENVIRONMENT AUDIT (COLLAPSIBLE) */}
+            {/* ========================================================
+                ENVIRONMENT VARIABLES & GITHUB SECURITY CARD
+                Confirms secrets are stored in .env and strictly excluded from git
+                ======================================================== */}
             <div style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '10px', overflow: 'hidden' }}>
               <div
                 onClick={() => setShowEnvKeys(!showEnvKeys)}
@@ -972,9 +1283,17 @@ export default function SettingsModal({
                   userSelect: 'none'
                 }}
               >
-                <span style={{ fontSize: '0.84rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--text-secondary)' }}>
-                  <Terminal size={14} color="var(--accent-color)" /> System Environment & Key Detection
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <ShieldCheck size={16} color="#10b981" />
+                  <div>
+                    <span style={{ fontSize: '0.84rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                      Environment Variables & GitHub Security
+                    </span>
+                    <span style={{ fontSize: '0.74rem', color: '#10b981', display: 'block' }}>
+                      🔒 Secrets stored in <code>.env</code> & excluded from GitHub commits via <code>.gitignore</code>
+                    </span>
+                  </div>
+                </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <button
                     type="button"
@@ -994,8 +1313,11 @@ export default function SettingsModal({
 
               {showEnvKeys && (
                 <div style={{ padding: '0 16px 14px 16px', borderTop: '1px solid var(--border-color)' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: '10px 0 8px 0', lineHeight: 1.4 }}>
+                    Environment keys detected by server process. Any changes saved above sync into <code>os.environ</code> and the local <code>.env</code> file.
+                  </div>
                   {envKeys ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px', marginTop: '12px' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '8px' }}>
                       {Object.entries(envKeys).map(([envName, info]) => (
                         <div
                           key={envName}
@@ -1013,6 +1335,7 @@ export default function SettingsModal({
                           <div style={{ display: 'flex', flexDirection: 'column' }}>
                             <code style={{ fontSize: '0.76rem', fontWeight: 600, color: 'var(--accent-color)' }}>{envName}</code>
                             <span style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>{info.preview}</span>
+                            {info.source && <span style={{ fontSize: '0.66rem', color: 'var(--text-secondary)', opacity: 0.8 }}>Source: {info.source}</span>}
                           </div>
                           <span
                             style={{

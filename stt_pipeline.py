@@ -502,7 +502,8 @@ def transcribe_chunks(
             if info["status"] != "ok":
                 w = whisper_transcribe_bytes(audio, language, mime_type, ctx, model_name=whisper_model)
                 if w["ok"]:
-                    info.update(status="ok", provider="local_whisper", text=w["text"], model=w.get("model"))
+                    info.update(status="ok", provider="local_whisper", text=w["text"], model=w.get("model"),
+                                language=w.get("language"))
                 else:
                     info["errors"].append(w["error"] if w["error"].startswith("Local Whisper") else f"Local Whisper: {w['error']}")
         info["elapsed_sec"] = round(time.time() - t0, 1)
@@ -536,7 +537,14 @@ def transcribe_chunks(
                 _notify_progress(i + 1)
 
     ok_text = "\n".join(r["text"] for r in results if r["status"] == "ok")
-    lang = language if language not in ("auto", "detect", "", None) else _detect_lang(ok_text)
+    if language not in ("auto", "detect", "", None):
+        lang = language
+    else:
+        audio_langs = [r.get("language") for r in results if r and r.get("status") == "ok" and r.get("language")]
+        if audio_langs:
+            lang = max(set(audio_langs), key=audio_langs.count)
+        else:
+            lang = _detect_lang(ok_text)
 
     out_lines: List[str] = []
     missing, errors = [], []

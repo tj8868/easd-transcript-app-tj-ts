@@ -58,6 +58,12 @@ import uuid
 import re
 import time
 import asyncio
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
+except Exception:
+    pass
 import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -360,30 +366,60 @@ def test_engine_endpoint(payload: TestEnginePayload):
 @app.get("/api/env_keys")
 @app.post("/api/env_keys")
 def get_env_keys_endpoint():
-    """Reports detected AI API environment variables safely."""
-    gemini_env = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+    """Reports detected AI API environment variables safely (.env and os.environ)."""
+    gemini_val = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     gemini_file = False
     gem_path = os.path.join(base_dir, "GeminiAPI.txt")
-    if os.path.exists(gem_path):
+    if not gemini_val and os.path.exists(gem_path):
         try:
             with open(gem_path, "r", encoding="utf-8") as f:
                 for line in f:
                     c = line.split("#")[0].strip()
                     if c and (c.startswith("AIzaSy") or c.startswith("AQ.")):
+                        gemini_val = c
                         gemini_file = True
                         break
         except Exception:
             pass
 
+    custom_key_val = os.getenv("CUSTOM_API_KEY") or ""
+    custom_url_val = os.getenv("CUSTOM_API_BASE_URL") or ""
+    custom_model_val = os.getenv("CUSTOM_API_MODEL") or ""
+
+    def _preview_secret(val: str, prefix_len: int = 6) -> str:
+        if not val:
+            return "Not configured"
+        clean = val.strip()
+        if len(clean) <= 8:
+            return "••••••••"
+        return f"{clean[:prefix_len]}...•••• ({len(clean)} chars)"
+
     return JSONResponse(content={
         "status": "success",
         "env_keys": {
             "GEMINI_API_KEY": {
-                "configured": bool(gemini_env or gemini_file),
-                "preview": "Set in GeminiAPI.txt / ENV" if (gemini_env or gemini_file) else "Not configured"
+                "configured": bool(gemini_val),
+                "preview": _preview_secret(gemini_val) if gemini_val else "Not configured",
+                "source": "GeminiAPI.txt" if gemini_file else (".env / Environment" if gemini_val else "None")
+            },
+            "CUSTOM_API_KEY": {
+                "configured": bool(custom_key_val),
+                "preview": _preview_secret(custom_key_val, 4) if custom_key_val else "Not configured",
+                "source": ".env / Environment" if custom_key_val else "None"
+            },
+            "CUSTOM_API_BASE_URL": {
+                "configured": bool(custom_url_val),
+                "preview": custom_url_val if custom_url_val else "Not configured",
+                "source": ".env / Environment" if custom_url_val else "None"
+            },
+            "CUSTOM_API_MODEL": {
+                "configured": bool(custom_model_val),
+                "preview": custom_model_val if custom_model_val else "Not configured",
+                "source": ".env / Environment" if custom_model_val else "None"
             }
-        }
+        },
+        "env_file_protected": True
     })
 
 @app.get("/api/document_types")
@@ -842,6 +878,12 @@ async def system_audit_endpoint():
         }
     except Exception as e:
         report["local_whisper"] = {"status": "unavailable", "error": f"{type(e).__name__}: {e}"}
+    # v8.9: Local LLM engine diagnostics and Vulkan GPU hardware status
+    try:
+        import local_llm_engine
+        report["local_llm"] = local_llm_engine.get_local_llm_status()
+    except Exception as e:
+        report["local_llm"] = {"status": "unavailable", "error": f"{type(e).__name__}: {e}"}
     # v8.5: OpenAI-compatible custom endpoint reachability (GET {base_url}/models, 5s timeout)
     if cfg.get("custom_api_base_url"):
         from ai_providers import ping_openai_compatible
