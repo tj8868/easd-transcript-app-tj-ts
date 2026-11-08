@@ -17,16 +17,41 @@ import subprocess
 from typing import Optional, Dict, Any, Union, List, Tuple
 
 def get_optimal_cpu_threads() -> int:
-    """Calculates optimal CPU threads for faster-whisper on Windows without thrashing."""
+    """CPU threads for faster-whisper: all cores but one, at most 3 (more thrashes small CPUs).
+    psutil is optional; without it the old code silently fell back to 1 thread (~3x slower)."""
+    cores = os.cpu_count() or 4
+    avail_gb = None
     try:
         import psutil
         avail_gb = psutil.virtual_memory().available / (1024 ** 3)
-        if avail_gb < 0.5:
-            return 1
-        cores = os.cpu_count() or 4
-        return max(1, min(cores - 1, 3))
     except Exception:
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        avail_gb = int(line.split()[1]) / (1024 ** 2)
+                        break
+        except Exception:
+            pass
+    if avail_gb is not None and avail_gb < 0.5:
         return 1
+    return max(1, min(cores - 1, 3))
+
+
+# Progress hook for long transcriptions. stt_pipeline sets it per chunk; transcribe_local_audio calls
+# it before and after every slice so the UI keeps moving instead of sitting on one percentage.
+# Signature: callback(slices_done: int, slices_total: int, note: str).
+import contextvars
+progress_callback: "contextvars.ContextVar" = contextvars.ContextVar("whisper_progress_callback", default=None)
+
+
+def _report_progress(done: int, total: int, note: str = "") -> None:
+    cb = progress_callback.get()
+    if cb is not None:
+        try:
+            cb(done, total, note)
+        except Exception:
+            pass
 
 _DYNAMIC_THREADS = str(get_optimal_cpu_threads())
 os.environ.setdefault("OMP_NUM_THREADS", _DYNAMIC_THREADS)
@@ -880,7 +905,9 @@ def _transcribe_local_audio_openvino(media_input, language: Optional[str], promp
         last_text = ""
         model_used = device_used = None
         slice_sec = 180.0
-        for k in range(max(1, math.ceil(total / slice_sec))):
+        n_pieces = max(1, math.ceil(total / slice_sec))
+        for k in range(n_pieces):
+            _report_progress(k, n_pieces, f"section {k + 1} of {n_pieces}")
             off = k * slice_sec
             piece = audio[int(off * 16000):int(min(total, off + slice_sec) * 16000)]
             if len(piece) < 16000 * 0.5:
@@ -1078,6 +1105,7 @@ def transcribe_local_audio(
                 input_to_transcribe = temp_audio_file
 
             slice_ctx = f"[whisper slice {slice_idx + 1}/{len(chunk_slices)} @{chunk_start_sec:.0f}s]"
+            _report_progress(slice_idx, len(chunk_slices), f"section {slice_idx + 1} of {len(chunk_slices)}")
             _sl0 = time.time()
             _seen = _drop_nospeech = _drop_lowconf = _drop_loop = _drop_sanitize = _drop_dup = _kept = 0
             run_temp_files: List[str] = []
@@ -1108,6 +1136,9 @@ def transcribe_local_audio(
                         run_temp_files.append(run_tmp.name)
                         run_input = run_tmp.name if slice_wav_pcm16k(input_to_transcribe, run_off, run_dur, run_tmp.name) \
                             else input_to_transcribe
+                    # Hold the lock while decoding: model.transcribe() returns a lazy generator, so the
+                    # real work happens while iterating. Without list() two chunks decoded at once
+                    # (double RAM on 8 GB PCs) even though this lock looked like it serialised them.
                     with _TRANSCRIBE_LOCK:
                         segments, info = model.transcribe(
                             run_input,
@@ -1123,6 +1154,7 @@ def transcribe_local_audio(
                             no_speech_threshold=0.6,
                             compression_ratio_threshold=_max_compression(run_lang)
                         )
+                        segments = list(segments)
 
                     if detected_whisper_lang is None and hasattr(info, "language"):
                         detected_whisper_lang = info.language
@@ -1195,6 +1227,7 @@ def transcribe_local_audio(
                         except Exception:
                             pass
                 gc.collect()
+                _report_progress(slice_idx + 1, len(chunk_slices))
 
         # Dual-pass resilience: If a specific language was requested (e.g. 'bn') but produced
         # zero valid speech segments, automatically fall back to unforced auto-detection

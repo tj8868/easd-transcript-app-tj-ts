@@ -1177,8 +1177,22 @@ async def transcribe_take_endpoint(
         "chunks_done": 0,
         "message": "File received. Converting audio & preparing segments with FFmpeg...",
         "created_at": _t0,
-        "updated_at": _t0
+        "updated_at": _t0,
+        "alive_at": _t0
     }
+
+    # Heartbeat: stamps alive_at every 3 s for the whole request (FFmpeg + every chunk), so the browser
+    # can tell "slow but alive" from "server crashed or hung" instead of waiting silently.
+    async def _heartbeat():
+        while True:
+            job = _active_transcribe_jobs.get(clean_job_id)
+            if job is not None and job.get("status") == "processing":
+                now = time.time()
+                job["alive_at"] = now
+                job["elapsed_sec"] = round(now - _t0)
+            await asyncio.sleep(3)
+
+    hb = asyncio.create_task(_heartbeat())
 
     def _err(msg: str, **extra):
         _tlog.error("[job %s] ERROR after %.1fs: %s", _job, time.time() - _t0, msg)
@@ -1248,17 +1262,22 @@ async def transcribe_take_endpoint(
         def _on_chunk_progress(info: Dict[str, Any]):
             done = info.get("chunks_done", 0)
             total = info.get("chunks_total", n_chunks or 1)
-            chunk_range = info.get("last_chunk_range", "")
-            chunk_pct = 35 + int((done / max(1, total)) * 57)
-            pct = min(92, max(35, chunk_pct))
-            msg = f"Transcribing chunk {done} of {total} ({chunk_range})..." if chunk_range else f"Transcribing chunk {done} of {total}..."
-            if clean_job_id in _active_transcribe_jobs:
-                _active_transcribe_jobs[clean_job_id].update({
+            fraction = info.get("fraction_done")
+            if fraction is None:
+                fraction = done / max(1, total)
+            pct = min(92, max(35, 35 + int(fraction * 57)))
+            detail = info.get("detail") or ""
+            msg = f"{done} of {total} chunk{'s' if total > 1 else ''} done"
+            msg += f" - {detail}" if detail else ""
+            job = _active_transcribe_jobs.get(clean_job_id)
+            if job is not None:
+                job.update({
                     "stage": "transcribing",
-                    "progress": pct,
+                    "progress": max(pct, job.get("progress", 0)),  # never move backwards
                     "chunks_total": total,
                     "chunks_done": done,
                     "message": msg,
+                    "engine_warning": info.get("engine_warning") or job.get("engine_warning", ""),
                     "updated_at": time.time()
                 })
 
@@ -1303,8 +1322,10 @@ async def transcribe_take_endpoint(
         _tlog.exception("[job %s] unhandled exception: %s", _job, e)
         return _err(f"Unexpected server error while transcribing (reference {_job}).")
     finally:
+        hb.cancel()
         now = time.time()
-        expired = [k for k, v in _active_transcribe_jobs.items() if now - v.get("updated_at", now) > 600]
+        expired = [k for k, v in _active_transcribe_jobs.items()
+                   if v.get("status") != "processing" and now - v.get("updated_at", now) > 600]
         for k in expired:
             _active_transcribe_jobs.pop(k, None)
         if uploaded_tmp_path and os.path.exists(uploaded_tmp_path):

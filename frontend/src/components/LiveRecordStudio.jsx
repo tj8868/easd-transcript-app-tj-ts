@@ -175,60 +175,90 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
 
   let pollInterval = null;
   let simulatedPct = 25;
+  // Failure detection (no more silent waiting): the server stamps alive_at every 3 s while the job runs.
+  const controller = new AbortController();
+  let failReason = '';
+  let seenJob = false;
+  let pollFailures = 0;
+  let lastAlive = null;
+  let lastAliveChangedAt = Date.now();
+  const POLL_MS = 1500;
+  const MAX_POLL_FAILURES = 8;        // ~12-60 s without any answer -> server is down
+  const STALE_HEARTBEAT_MS = 60000;   // server answers but the job stopped updating -> hung
+  const fail = (reason) => {
+    if (failReason) return;
+    failReason = reason;
+    controller.abort();
+  };
+  const fmtElapsed = (sec) => {
+    const s = Math.max(0, Math.round(Number(sec) || 0));
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+    return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m ${String(r).padStart(2, '0')}s`;
+  };
 
   const startPolling = () => {
     if (pollInterval) return;
     pollInterval = setInterval(async () => {
+      if (failReason) return;
       try {
         const progRes = await axios.get(`/api/transcribe_progress/${jobId}`, { timeout: 6000 });
-        if (progRes.data && progRes.data.status !== 'not_found') {
-          const pData = progRes.data;
-          // IMPORTANT: Never let polling report 100% until the POST request itself returns!
-          const safeServerPct = Math.min(96, Math.max(25, Number(pData.progress) || 25));
-          simulatedPct = Math.max(simulatedPct, safeServerPct);
-          const title = pData.stage === 'transcribing'
-            ? 'Transcribing Audio...'
-            : pData.stage === 'finalizing'
-            ? 'Finalizing Transcript...'
-            : 'Processing Audio...';
-          const subtitle = pData.message || 'Transcribing speech with AI...';
-          if (onProgress) {
-            onProgress({
-              percent: simulatedPct,
-              title,
-              subtitle,
-              stage: pData.stage || 'processing'
-            });
+        pollFailures = 0;
+        const pData = progRes.data || {};
+        if (pData.status === 'not_found') {
+          if (seenJob) {
+            fail('The app server lost this job - it was restarted or closed (for example when the PC ran out of memory). Please transcribe the file again.');
+            return;
           }
-        } else {
-          // If server job not registered yet, gently advance between 25% and 34%
+          // Job not registered yet (upload still finishing): advance gently between 25% and 34%
           if (simulatedPct < 34) {
             simulatedPct += 1;
-            if (onProgress) {
-              onProgress({
-                percent: simulatedPct,
-                title: 'Processing Audio...',
-                subtitle: 'Converting audio format & preparing chunks with FFmpeg...',
-                stage: 'converting'
-              });
-            }
-          }
-        }
-      } catch (err) {
-        // Asymptotically creep slowly if polling fails, never exceeding 92%
-        if (simulatedPct < 92) {
-          simulatedPct += 1;
-          if (onProgress) {
-            onProgress({
+            onProgress?.({
               percent: simulatedPct,
-              title: 'Transcribing Audio...',
-              subtitle: 'Transcribing speech with AI...',
-              stage: 'transcribing'
+              title: 'Processing Audio...',
+              subtitle: 'Converting audio format & preparing chunks with FFmpeg...',
+              stage: 'converting'
             });
           }
+          return;
         }
+        seenJob = true;
+        if (pData.status === 'error') {
+          fail(pData.message || 'Transcription failed on the server.');
+          return;
+        }
+        if (pData.alive_at !== lastAlive) {
+          lastAlive = pData.alive_at;
+          lastAliveChangedAt = Date.now();
+        } else if (pData.status === 'processing' && Date.now() - lastAliveChangedAt > STALE_HEARTBEAT_MS) {
+          fail('The app server stopped working on this file (no activity for over a minute). Check app_service.log, then try again.');
+          return;
+        }
+        // Never report 100% from polling - only when the POST itself returns.
+        const safeServerPct = Math.min(96, Math.max(25, Number(pData.progress) || 25));
+        simulatedPct = Math.max(simulatedPct, safeServerPct);
+        const title = pData.stage === 'transcribing'
+          ? 'Transcribing Audio...'
+          : pData.stage === 'finalizing'
+          ? 'Finalizing Transcript...'
+          : 'Processing Audio...';
+        const parts = [pData.message || 'Transcribing speech with AI...'];
+        if (pData.elapsed_sec != null) parts.push(`elapsed ${fmtElapsed(pData.elapsed_sec)}`);
+        if (pData.engine_warning) parts.push(`⚠ ${pData.engine_warning}`);
+        onProgress?.({ percent: simulatedPct, title, subtitle: parts.join(' • '), stage: pData.stage || 'processing' });
+      } catch (err) {
+        pollFailures += 1;
+        if (pollFailures >= MAX_POLL_FAILURES) {
+          fail('Lost connection to the app server - it may have crashed (for example when the PC ran out of memory). Restart the app and try again.');
+          return;
+        }
+        onProgress?.({
+          percent: simulatedPct,
+          title: 'Reconnecting to the app...',
+          subtitle: `The app server is not answering (attempt ${pollFailures} of ${MAX_POLL_FAILURES})`,
+          stage: 'transcribing'
+        });
       }
-    }, 800);
+    }, POLL_MS);
   };
 
   let fallbackPollTimer = null;
@@ -246,8 +276,11 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
       startPolling();
     }, 1200);
 
+    // No fixed timeout: long recordings on the on-device model can take hours. The heartbeat checks
+    // above abort the request as soon as the server crashes, restarts or stops making progress.
     const res = await axios.post('/api/transcribe_take', formData, {
-      timeout: 3 * 60 * 60 * 1000,
+      timeout: 0,
+      signal: controller.signal,
       onUploadProgress: (progressEvent) => {
         if (progressEvent.total && progressEvent.total > 0) {
           const uploadFraction = Math.min(1, progressEvent.loaded / progressEvent.total);
@@ -337,6 +370,10 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
     if (pollInterval) {
       clearInterval(pollInterval);
       pollInterval = null;
+    }
+    if (failReason) throw new Error(failReason);
+    if (!err?.response && (err?.code === 'ERR_NETWORK' || /network error/i.test(err?.message || ''))) {
+      throw new Error('Lost connection to the app server while transcribing - it stopped or crashed (for example when the PC ran out of memory). Restart the app and try again.');
     }
     throw err;
   } finally {

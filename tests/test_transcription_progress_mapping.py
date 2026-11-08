@@ -110,7 +110,7 @@ class TestTranscriptionProgressMapping(unittest.TestCase):
 
     def test_frontend_progress_invariants(self):
         """Verify the static code invariants in frontend components."""
-        frontend_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "frontend", "src", "components")
+        frontend_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "src", "components")
 
         # 1. CircularProgressSpinner: must cap fallback at 92% and never reach 98% or 100% in loop
         spinner_file = os.path.join(frontend_dir, "CircularProgressSpinner.jsx")

@@ -58,7 +58,10 @@ GEMINI_INLINE_MAX_BYTES = int(os.environ.get("EASD_GEMINI_INLINE_MAX_BYTES", str
 GAP_MARKER = "TRANSCRIPT GAP"
 
 _RETRYABLE_HTTP = {408, 429, 500, 502, 503, 504}
+# Errors that will not change for the rest of a job: bad key (401/403) or no credits left (402).
+_FATAL_HTTP = {401, 402, 403}
 _gemini_semaphore = threading.BoundedSemaphore(GEMINI_MAX_PARALLEL)
+_whisper_job_lock = threading.Lock()  # local Whisper runs one chunk at a time across all jobs
 
 
 # ---------------------------------------------------------------------------
@@ -116,6 +119,8 @@ def _friendly(reason: str) -> str:
     if any(w in r for w in ("proxyerror", "connecterror", "connecttimeout", "name resolution", "getaddrinfo",
                             "ssl", "network is unreachable", "connection refused", "remoteprotocolerror")):
         return "Cannot reach the Gemini service - check the internet connection, proxy or firewall"
+    if "402" in r or "prepayment" in r or "credits are depleted" in r:
+        return f"Gemini credits are used up - add credits in Google AI Studio or use another key{tag}"
     if "429" in r or "resource_exhausted" in r or "quota" in r:
         return f"Gemini rate limit / quota exceeded{tag}"
     if "401" in r or "403" in r or "api key" in r or "permission" in r:
@@ -335,9 +340,12 @@ def gemini_transcribe_bytes(audio: bytes, api_key: str, model_name: str = "", mi
         m = re.match(r"HTTP (\d+)", last_err)
         if m:
             code = int(m.group(1))
-        if code in (401, 403):
-            break  # bad key: other models won't help
-    return {"ok": False, "text": "", "provider": "gemini", "attempts": attempts, "error": _friendly(last_err)}
+        if code in _FATAL_HTTP:
+            break  # bad key / no credits: other models won't help
+    m = re.match(r"HTTP (\d+)", last_err)
+    fatal = bool(m and int(m.group(1)) in _FATAL_HTTP)
+    return {"ok": False, "text": "", "provider": "gemini", "attempts": attempts, "error": _friendly(last_err),
+            "fatal": fatal}
 
 
 # ---------------------------------------------------------------------------
@@ -508,16 +516,24 @@ def transcribe_chunks(
              redact_key(api_key), [round(d, 1) for d in durs])
 
     results: List[Dict[str, Any]] = [None] * n  # type: ignore
+    partial: List[float] = [0.0] * n       # fraction of each unfinished chunk already transcribed
+    gemini_fatal: Dict[str, str] = {}      # set once Gemini fails with 401/402/403: skip it for the rest
+    progress_lock = threading.Lock()
 
-    def _notify_progress(chunk_idx: int):
+    def _notify_progress(chunk_idx: int, detail: str = ""):
         if callable(on_progress):
             try:
-                finished_count = sum(1 for r in results if r is not None)
-                ok_count = sum(1 for r in results if r is not None and r.get("status") == "ok")
+                with progress_lock:
+                    finished_count = sum(1 for r in results if r is not None)
+                    ok_count = sum(1 for r in results if r is not None and r.get("status") == "ok")
+                    fraction = (finished_count + sum(partial[j] for j in range(n) if results[j] is None)) / n
                 on_progress({
                     "chunks_total": n,
                     "chunks_done": finished_count,
                     "chunks_ok": ok_count,
+                    "fraction_done": min(1.0, fraction),
+                    "detail": detail,
+                    "engine_warning": gemini_fatal.get("reason", ""),
                     "last_chunk_index": chunk_idx,
                     "last_chunk_range": f"{fmt_ts(starts[chunk_idx-1])}-{fmt_ts(starts[chunk_idx-1]+durs[chunk_idx-1])}"
                 })
@@ -535,14 +551,36 @@ def transcribe_chunks(
         if len(audio) < 1024:
             info["errors"].append(f"chunk is empty ({len(audio)} bytes)")
         else:
-            if not use_local_only:
+            if not use_local_only and gemini_fatal:
+                info["errors"].append(f"Gemini: {gemini_fatal['reason']}")
+            elif not use_local_only:
                 g = gemini_transcribe_bytes(audio, api_key, model_name, mime_type, ctx)
                 if g["ok"]:
                     info.update(status="ok", provider="gemini", text=g["text"], model=g.get("model"))
                 else:
                     info["errors"].append(f"Gemini: {g['error']}")
+                    if g.get("fatal") and not gemini_fatal:
+                        gemini_fatal["reason"] = g["error"]
+                        log.warning("%s Gemini cannot be used for this job (%s) - remaining chunks go straight "
+                                    "to local Whisper", ctx, g["error"])
             if info["status"] != "ok":
-                w = whisper_transcribe_bytes(audio, language, mime_type, ctx, model_name=whisper_model)
+                import local_whisper_engine as _lwe
+                rng = f"{fmt_ts(s)}-{fmt_ts(e)}"
+
+                def _slice_cb(done: int, total: int, note: str = "", _i=i, _rng=rng):
+                    with progress_lock:
+                        partial[_i] = max(partial[_i], done / max(1, total))
+                    what = f"on-device Whisper, chunk {_i + 1} of {n} ({_rng})"
+                    _notify_progress(_i + 1, f"{what}, {note}" if note else what)
+
+                _notify_progress(i + 1, f"waiting for on-device Whisper (chunk {i + 1} of {n})")
+                token = _lwe.progress_callback.set(_slice_cb)
+                try:
+                    # One Whisper job at a time: two concurrent decodes double RAM and are not faster on a small CPU.
+                    with _whisper_job_lock:
+                        w = whisper_transcribe_bytes(audio, language, mime_type, ctx, model_name=whisper_model)
+                finally:
+                    _lwe.progress_callback.reset(token)
                 if w["ok"]:
                     info.update(status="ok", provider="local_whisper", text=w["text"], model=w.get("model"),
                                 language=w.get("language"))
@@ -556,7 +594,7 @@ def transcribe_chunks(
         return info
 
     if n == 1 or use_local_only:
-        # Whisper is CPU-bound and serialised internally; run sequentially.
+        # Local-only (or a single chunk): run sequentially.
         for i in range(n):
             results[i] = run(i)
             _notify_progress(i + 1)
