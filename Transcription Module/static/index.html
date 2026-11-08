@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transcription Module - Universal Speech-to-Text</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Navigation Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-icon">🎙️</div>
+        <div>
+          <h1>Transcription Module</h1>
+          <p class="subtitle">Universal ASR Engine • Bangla & English Bilingual</p>
+        </div>
+      </div>
+
+      <!-- System Hardware & Status Bar -->
+      <div class="status-cluster">
+        <div class="badge badge-hw" id="badgeHw" title="Auto-detected system specifications">
+          <span class="dot"></span>
+          <span id="hwLabel">Detecting Hardware...</span>
+        </div>
+        <div class="badge badge-success" title="Diarization is always enabled">
+          👥 Diarization: ON
+        </div>
+        <div class="badge badge-info" title="Timestamps are always enabled">
+          ⏱️ Timestamps: ON
+        </div>
+        <button class="btn btn-outline" id="btnCustomApiModal">
+          ⚙️ Custom API Settings
+        </button>
+      </div>
+    </header>
+
+    <!-- Engine Control & Language Bar -->
+    <div class="engine-bar">
+      <div class="engine-mode-group">
+        <label for="engineModeSelect">Engine Mode:</label>
+        <select id="engineModeSelect" class="form-select">
+          <option value="auto">Auto (Spec-Based: Low PC -> INT8, High PC -> Turbo)</option>
+          <option value="faster-whisper-int8">Faster-Whisper INT8 (Low RAM / CPU Optimized)</option>
+          <option value="whisper-turbo">Whisper Large-v3-Turbo (High Accuracy)</option>
+          <option value="custom_api">Custom Cloud / Self-Hosted API</option>
+        </select>
+      </div>
+
+      <div class="engine-mode-group">
+        <label for="languageSelect">Spoken Language:</label>
+        <select id="languageSelect" class="form-select">
+          <option value="auto">Auto Detect (Bangla & English mixed)</option>
+          <option value="bn">Bengali (বাংলা)</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+
+      <div class="active-engine-indicator">
+        Active Engine: <strong id="activeEngineText">Loading...</strong>
+      </div>
+    </div>
+
+    <!-- Main Navigation Tabs -->
+    <div class="tabs-nav">
+      <button class="tab-btn active" data-tab="liveTab">
+        <span class="tab-icon">🎙️</span>
+        <span class="tab-text">Live Transcription</span>
+        <span class="tab-desc">Record Button</span>
+      </button>
+      <button class="tab-btn" data-tab="batchTab">
+        <span class="tab-icon">📁</span>
+        <span class="tab-text">Batch Processing</span>
+        <span class="tab-desc">Upload Button</span>
+      </button>
+    </div>
+
+    <!-- TAB 1: Live Studio (Record Button) -->
+    <main class="tab-content active" id="liveTab">
+      <div class="card live-card">
+        <div class="live-controls-row">
+          <button class="record-btn" id="recordBtn">
+            <span class="rec-icon" id="recIcon">●</span>
+            <span id="recordBtnText">Start Recording</span>
+          </button>
+          
+          <div class="timer-display" id="timerDisplay">00:00</div>
+
+          <div class="audio-visualizer-container">
+            <canvas id="visualizerCanvas" width="280" height="42"></canvas>
+            <span class="mic-status" id="micStatus">Microphone Ready</span>
+          </div>
+
+          <div class="live-action-buttons">
+            <button class="btn btn-secondary" id="btnClearLive" title="Clear transcript">🗑️ Clear</button>
+            <button class="btn btn-secondary" id="btnCopyLive" title="Copy to clipboard">📋 Copy</button>
+            <div class="dropdown">
+              <button class="btn btn-primary" id="btnExportLive">💾 Export ▼</button>
+              <div class="dropdown-content" id="exportDropdownLive">
+                <a href="#" data-format="txt">Text (.txt)</a>
+                <a href="#" data-format="srt">Subtitles (.srt)</a>
+                <a href="#" data-format="vtt">WebVTT (.vtt)</a>
+                <a href="#" data-format="json">JSON Metadata</a>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Transcript Stream Area -->
+        <div class="transcript-feed" id="liveTranscriptFeed">
+          <div class="placeholder-notice" id="livePlaceholder">
+            <div class="placeholder-icon">🎙️</div>
+            <h3>Microphone Standby</h3>
+            <p>Click <strong>Start Recording</strong> to transcribe live speech in real time with automatic speaker diarization and timestamps.</p>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- TAB 2: Batch Processing (Upload Button) -->
+    <main class="tab-content" id="batchTab">
+      <div class="card batch-card">
+        <!-- Drag & Drop Zone -->
+        <div class="upload-dropzone" id="uploadDropzone">
+          <input type="file" id="batchFileInput" multiple accept="audio/*,video/*,.mp3,.wav,.m4a,.flac,.ogg,.mp4,.mkv,.mov,.webm" style="display: none;">
+          <div class="drop-icon">📤</div>
+          <h3>Drag & Drop Audio or Video Files Here</h3>
+          <p>Supports MP3, WAV, M4A, FLAC, OGG, MP4, MKV, MOV, WEBM (up to 2 GB)</p>
+          <button class="btn btn-primary" id="btnSelectFiles">📁 Select Files to Upload</button>
+        </div>
+
+        <!-- Queued Files List -->
+        <div class="batch-queue-section" id="batchQueueSection" style="display: none;">
+          <div class="section-header">
+            <h4>Uploaded Files Queue (<span id="queueCount">0</span>)</h4>
+            <button class="btn btn-success" id="btnStartBatch">⚡ Start Batch Processing</button>
+          </div>
+          <div class="queue-list" id="queueList"></div>
+        </div>
+
+        <!-- Batch Results Display -->
+        <div class="batch-results-section" id="batchResultsSection" style="display: none;">
+          <div class="section-header">
+            <h4>Transcription Results</h4>
+            <div class="export-actions">
+              <button class="btn btn-secondary" id="btnCopyBatch">📋 Copy</button>
+              <div class="dropdown">
+                <button class="btn btn-primary" id="btnExportBatch">💾 Export Results ▼</button>
+                <div class="dropdown-content" id="exportDropdownBatch">
+                  <a href="#" data-format="txt">Formatted Text (.txt)</a>
+                  <a href="#" data-format="srt">Subtitles (.srt)</a>
+                  <a href="#" data-format="vtt">WebVTT (.vtt)</a>
+                  <a href="#" data-format="json">JSON Data</a>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="batch-transcript-view" id="batchTranscriptView"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Custom API Modal (Single Customizable API Option) -->
+  <div class="modal-overlay" id="customApiModal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <h3>Custom API Configuration</h3>
+          <p>Add and customize your single external API connector (Groq, OpenAI, DeepSeek, OpenRouter, Gemini, or Local Ollama/vLLM).</p>
+        </div>
+        <button class="close-btn" id="btnCloseModal">×</button>
+      </div>
+
+      <div class="modal-body">
+        <div class="form-group toggle-group">
+          <label class="switch-label">
+            <input type="checkbox" id="apiEnabledCheckbox">
+            <span class="switch-slider"></span>
+            <span class="toggle-text">Enable Custom API (Overrides Local Whisper)</span>
+          </label>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group col-6">
+            <label for="apiName">API Name / Label:</label>
+            <input type="text" id="apiName" class="form-input" placeholder="e.g. My Groq Whisper Endpoint">
+          </div>
+          <div class="form-group col-6">
+            <label for="apiProviderType">Provider Protocol:</label>
+            <select id="apiProviderType" class="form-select">
+              <option value="openai_compatible">OpenAI-Compatible (Groq, DeepSeek, vLLM, OpenRouter)</option>
+              <option value="gemini">Google Gemini GenAI</option>
+              <option value="custom_http">Custom HTTP Endpoint</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="apiBaseUrl">Base URL:</label>
+          <input type="text" id="apiBaseUrl" class="form-input" placeholder="https://api.groq.com/openai/v1">
+          <small class="field-hint">e.g. https://api.groq.com/openai/v1 or http://localhost:11434/v1</small>
+        </div>
+
+        <div class="form-group">
+          <label for="apiKey">API Key / Secret:</label>
+          <input type="password" id="apiKey" class="form-input" placeholder="sk-...">
+          <small class="field-hint" id="apiMaskedHint"></small>
+        </div>
+
+        <div class="form-group">
+          <label for="apiModelName">Model Name / Identifier:</label>
+          <input type="text" id="apiModelName" class="form-input" placeholder="whisper-large-v3-turbo">
+        </div>
+
+        <div class="test-feedback" id="testFeedback" style="display: none;"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="btnTestApi">🔌 Test Connection</button>
+        <button class="btn btn-primary" id="btnSaveApi">💾 Save & Activate API</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

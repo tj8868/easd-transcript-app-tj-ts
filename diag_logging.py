@@ -7,8 +7,8 @@ Where logs go
 -------------
 * ALWAYS: ``app_service.log`` next to app.py (UTF-8, append). Override the
   location with the env var ``EASD_LOG_FILE``.
-* ALSO the console (stderr) when one exists - i.e. ``Launch_App.bat debug``
-  or ``python run_app.pyw`` from a terminal. Under pythonw / the .vbs
+* ALSO the console (stderr) when one exists - i.e. ``run_app.pyw console``
+  or ``python run_app.pyw`` from a terminal. Under pythonw
   launcher, run_app.pyw already redirects stdout/stderr into
   app_service.log, so the console handler is skipped to avoid every line
   being written twice.

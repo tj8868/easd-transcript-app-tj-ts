@@ -37,6 +37,7 @@ import GDriveModal from './components/GDriveModal';
 import SettingsModal, { ACCENT_PALETTES } from './components/SettingsModal';
 import ResponsiveDeviceViewer from './components/ResponsiveDeviceViewer';
 import { getSavedKeyForProvider, getSavedBaseUrlForProvider, saveKeyForProvider, activateProvider, getActiveApiDisplayName, PROVIDERS } from './utils/apiKeyStorage';
+import { downloadBlob } from './utils/download';
 
 const DEFAULT_AGENDAS = [];
 const DEFAULT_DISCUSSIONS = [];
@@ -175,6 +176,11 @@ export default function App() {
   });
 
   const [transcript, setTranscript] = useState('');
+  // English-only / Bangla-only versions of the verbatim transcript (v8.9): { en|bn: { text, source } }.
+  // `source` is the verbatim text a version was made from, so the UI can say when it is out of date.
+  const [translations, setTranslations] = useState({});
+  const [transcriptView, setTranscriptView] = useState('verbatim'); // 'verbatim' | 'en' | 'bn'
+  const [translatingTo, setTranslatingTo] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
   const [liveInterimText, setLiveInterimText] = useState('');
   // Backward-compatibility aliases for DOCX generation and components
@@ -481,6 +487,13 @@ export default function App() {
   };
 
   // AI Process Request
+  // Fields every template-fill request sends: org context, active template and active AI skills.
+  const appendTemplateContext = (formData) => {
+    formData.append('org_context', orgContext);
+    formData.append('template_id', activeTemplateId || 'easd_default_minutes');
+    formData.append('custom_skills', buildActiveSkillPrompts(activeSkills, customSkillsList));
+  };
+
   const handleProcessAi = async () => {
     if (!selectedFile && !directText.trim()) {
       alert('Please select an audio/video/text file or paste draft text.');
@@ -511,11 +524,7 @@ export default function App() {
     formData.append('summarization_provider', aiConfig.summarizationProvider || aiConfig.provider || 'gemini');
     formData.append('summarization_api_key', llmKey);
     formData.append('summarization_model', aiConfig.summarizationModel || 'gemini-3.8-flash');
-    formData.append('org_context', orgContext);
-    formData.append('template_id', activeTemplateId || 'easd_default_minutes');
-    
-    const activeSkillPrompts = buildActiveSkillPrompts(activeSkills, customSkillsList);
-    formData.append('custom_skills', activeSkillPrompts);
+    appendTemplateContext(formData);
 
     if (selectedFile) formData.append('file', selectedFile);
     if (directText.trim()) formData.append('text_content', directText.trim());
@@ -595,11 +604,7 @@ export default function App() {
     formData.append('base_url', chosenBaseUrl);
     formData.append('model_name', chosenModelName);
     formData.append('summarization_model', chosenModelName);
-    formData.append('org_context', orgContext);
-    formData.append('template_id', activeTemplateId || 'easd_default_minutes');
-
-    const activeSkillPrompts = buildActiveSkillPrompts(activeSkills, customSkillsList);
-    formData.append('custom_skills', activeSkillPrompts);
+    appendTemplateContext(formData);
 
     try {
       const res = await axios.post('/api/summarize_transcript', formData);
@@ -629,12 +634,60 @@ export default function App() {
     }
   };
 
+  // Convert the verbatim transcript to English-only or Bangla-only; timestamps and speakers are kept.
+  const handleTranslateTranscript = async (target, mode = 'gemini') => {
+    if (!transcript || !transcript.trim()) {
+      showNotice('warning', 'The transcript is empty - transcribe a recording or paste text first.');
+      return;
+    }
+    setTranslatingTo(target);
+    setNotice(null);
+    let provider = 'gemini';
+    let apiKey = (getSavedKeyForProvider('gemini') || aiConfig.apiKey || '').trim();
+    let modelName = aiConfig.summarizationModel || '';
+    let baseUrl = '';
+    if (mode === 'local') {
+      provider = 'local';
+      modelName = '';
+      apiKey = '';
+    } else if (aiConfig.provider === 'openai_compatible') {
+      provider = 'openai_compatible';
+      apiKey = (aiConfig.apiKey || getSavedKeyForProvider('openai_compatible') || '').trim();
+      modelName = (aiConfig.summarizationModel || localStorage.getItem('custom_api_model') || '').trim();
+      baseUrl = (aiConfig.baseUrl || getSavedBaseUrlForProvider('openai_compatible') || '').trim();
+    }
+    try {
+      const res = await axios.post('/api/translate_transcript', {
+        transcript, target, provider, api_key: apiKey, model_name: modelName, base_url: baseUrl
+      });
+      if (res.data?.status === 'success') {
+        const data = res.data.data;
+        setTranslations((prev) => ({ ...prev, [target]: { text: data.text, source: transcript } }));
+        setTranscriptView(target);
+        const label = target === 'en' ? 'English' : 'Bangla';
+        if (data.warnings && data.warnings.length) {
+          showNotice('warning', `${label} version is ready, with some lines left as spoken`, data.warnings);
+        } else {
+          showNotice('success', `${label} version is ready. "Fill Template" will now use it.`);
+        }
+      } else {
+        showNotice('error', 'Could not convert the transcript', [res.data?.detail || 'Unknown error']);
+      }
+    } catch (err) {
+      showNotice('error', 'Could not convert the transcript', [err?.response?.data?.detail || err?.message || 'Network error']);
+    } finally {
+      setTranslatingTo(null);
+    }
+  };
+
   // Big Clear All Handler (Clears all records, audio queue, transcripts, and generated data)
   const handleClearAll = () => {
     if (!window.confirm('Are you sure you want to clear all recordings, transcripts, and document content?')) {
       return;
     }
     setTranscript('');
+    setTranslations({});
+    setTranscriptView('verbatim');
     setDirectText('');
     setSelectedFile(null);
     setLiveInterimText('');
@@ -702,13 +755,7 @@ export default function App() {
         filename = `${namePart}.docx`;
       }
 
-      const url = window.URL.createObjectURL(new Blob([res.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', filename);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      downloadBlob(new Blob([res.data]), filename);
     } catch (err) {
       setIsGenerating(false);
       alert('Error generating DOCX: ' + (err.response?.data?.detail || err.message));
@@ -836,6 +883,12 @@ export default function App() {
           isRecording={isRecording}
           interimText={liveInterimText}
           onClearAll={handleClearAll}
+          translations={translations}
+          setTranslations={setTranslations}
+          transcriptView={transcriptView}
+          setTranscriptView={setTranscriptView}
+          onTranslate={handleTranslateTranscript}
+          translatingTo={translatingTo}
         />
 
         {/* --- HEADINGS BELOW ARE COLLAPSED BY DEFAULT --- */}

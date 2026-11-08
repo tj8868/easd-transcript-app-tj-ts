@@ -169,12 +169,65 @@ def extract_and_repair_json(raw_text: str) -> Optional[Dict[str, Any]]:
         except json.JSONDecodeError:
             pass
 
+    # Attempt recovery if JSON was truncated mid-generation
+    if start_idx != -1:
+        fragment = cleaned[start_idx:]
+        in_string = False
+        escape = False
+        stack = []
+        clean_chars = []
+        for ch in fragment:
+            if escape:
+                escape = False
+                clean_chars.append(ch)
+                continue
+            if ch == '\\':
+                escape = True
+                clean_chars.append(ch)
+                continue
+            if ch == '"':
+                in_string = not in_string
+                clean_chars.append(ch)
+                continue
+            if not in_string:
+                if ch in '{[':
+                    stack.append('}' if ch == '{' else ']')
+                elif ch in '}]':
+                    if stack and stack[-1] == ch:
+                        stack.pop()
+            clean_chars.append(ch)
+        if in_string:
+            clean_chars.append('"')
+        while stack:
+            clean_chars.append(stack.pop())
+        repaired = "".join(clean_chars)
+        repaired = re.sub(r",\s*([\]}])", r"\1", repaired)
+        try:
+            return json.loads(repaired)
+        except Exception:
+            pass
+
     return None
+
+def _count_name_parts() -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for m in DEFAULT_MEMBERS:
+        for pt in set(re.split(r"[\s.]+", m["name"].lower())):
+            if len(pt) >= 4:
+                counts[pt] = counts.get(pt, 0) + 1
+    return counts
+
+
+_NAME_PART_COUNTS = _count_name_parts()
+# Surnames/titles shared with many people outside the team are never enough on their own.
+for _common in ("hossain", "islam", "begum", "akter", "hasan", "kumar", "sultana", "mahmud", "munshi"):
+    _NAME_PART_COUNTS[_common] = max(2, _NAME_PART_COUNTS.get(_common, 0))
+
 
 def match_attendance_list(present_names: List[str], text_corpus: str = "") -> List[Dict[str, str]]:
     """Matches detected attendee names against the default 21 EASD members."""
     results = []
-    text_corpus_lower = text_corpus.lower() if text_corpus else ""
+    corpus_words = set(re.findall(r"\w+", text_corpus.lower())) if text_corpus else set()
 
     for item in DEFAULT_MEMBERS:
         mem_name = item["name"]
@@ -187,10 +240,12 @@ def match_attendance_list(present_names: List[str], text_corpus: str = "") -> Li
                 is_present = True
                 break
 
-        if not is_present and text_corpus_lower:
-            parts = [pt for pt in mem_norm.split() if len(pt) >= 4]
-            if any(pt in text_corpus_lower for pt in parts):
-                is_present = True
+        if not is_present and corpus_words:
+            # A single common surname ("Hossain", "Islam", "Begum") used to mark several members
+            # present at once. Now two of the member's name parts, or one part that belongs to
+            # no other member, must appear as whole words (the full name implies two parts).
+            hits = {pt for pt in re.split(r"[\s.]+", mem_norm) if len(pt) >= 4 and pt in corpus_words}
+            is_present = len(hits) >= 2 or any(_NAME_PART_COUNTS.get(pt, 0) == 1 for pt in hits)
 
         results.append({
             "serial": item["serial"],
@@ -540,8 +595,9 @@ def process_extracted_payload(
 
 # --- CONFIGURATION & PERSISTENCE HELPERS ---
 
-SETTINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_settings.json")
-GEMINI_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "GeminiAPI.txt")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_FILE = os.path.join(BASE_DIR, "api_settings.json")
+GEMINI_KEY_FILE = os.path.join(BASE_DIR, "GeminiAPI.txt")
 
 def get_default_api_key_from_disk() -> Dict[str, str]:
     """Retrieves default Gemini API key and active providers from disk."""
@@ -575,7 +631,7 @@ def load_api_settings_from_disk() -> Dict[str, Any]:
         "summarization_provider": "gemini",
         "summarization_model": "gemini-3.8-flash",
         "gemini_api_key": os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or "",
-        "local_whisper_model": "whisper-small",
+        "local_whisper_model": "auto",
         "custom_api_base_url": os.getenv("CUSTOM_API_BASE_URL") or "",
         "custom_api_key": os.getenv("CUSTOM_API_KEY") or "",
         "custom_api_model": os.getenv("CUSTOM_API_MODEL") or ""
@@ -886,7 +942,8 @@ def test_summarization_engine(
         lat = round((time.time() - t0) * 1000)
         try:
             import local_llm_engine
-            st = local_llm_engine.get_local_llm_status()
+            selected_local_model = model_name if model_name in getattr(local_llm_engine, "SUPPORTED_MODELS", {}) else None
+            st = local_llm_engine.get_local_llm_status(model_key=selected_local_model)
             gpu_str = " (Vulkan GPU offload)" if st.get("vulkan_supported") else " (CPU)"
             return {
                 "success": True,
@@ -990,61 +1047,70 @@ def live_transcribe_audio_chunk(
     provider: str = "gemini",
     model_name: str = "gemini-3.5-transcribe",
     mime_type: str = "audio/webm",
-    language: str = "auto"
+    language: str = "auto",
+    offset_sec: float = 0.0
 ) -> Dict[str, Any]:
-    """High-speed live transcription for microphone audio chunks."""
+    """
+    Live preview transcription.
+
+    The browser sends the whole recording so far (a WebM fragment cannot be decoded on its
+    own), plus offset_sec = how many seconds were already previewed. Only the audio AFTER
+    offset_sec is transcribed, and the returned lines carry timestamps on the recording's
+    own timeline ("[MM:SS] Speaker N: ..."). end_sec tells the client where to continue.
+
+    Uses the model the user selected (e.g. gemini-3.5-transcribe-live) through the same
+    stt_pipeline path as batch transcription, then local Whisper as fallback.
+    Speaker numbers in a live preview are per-slice; the final pass over the whole take
+    (/api/transcribe_take) assigns the definitive, voice-matched labels.
+    """
+    import stt_pipeline
+    import local_whisper_engine
+    empty = {"text": "", "language": "auto", "end_sec": float(offset_sec or 0.0)}
     if not media_bytes or len(media_bytes) < 32:
-        return {"text": "", "language": "auto"}
+        return empty
 
     prov = (provider or "gemini").lower()
     clean_key = (api_key or get_default_api_key_from_disk().get("api_key") or "").strip()
-
-    if prov == "gemini" and clean_key:
-        try:
-            client = genai.Client(api_key=clean_key)
-            prompt_instruction = (
-                "You are an expert real-time verbatim meeting transcriptionist. "
-                "CRITICAL REQUIREMENTS:\n"
-                "1. Auto-detect spoken language dynamically (Bengali or English).\n"
-                "2. If spoken in Bengali, transcribe in authentic Bengali script (বাংলা).\n"
-                "3. If spoken in English, transcribe verbatim in English.\n"
-                "4. If code-switching occurs (Bangla + English in same utterance), preserve both languages verbatim.\n"
-                "5. NEVER translate. NEVER hallucinate. Output ONLY the exact words spoken with temperature 0 accuracy."
-            )
-            cfg = types.GenerateContentConfig(
-                temperature=0.0,
-                system_instruction=prompt_instruction
-            )
-            # Use gemini-2.5-flash for real-time low latency and multimodal audio transcription
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[types.Part.from_bytes(data=media_bytes, mime_type=mime_type or "audio/webm")],
-                config=cfg
-            )
-            txt = getattr(resp, "text", "") or ""
-            if txt:
-                return {"text": txt.strip(), "language": detect_text_language(txt)}
-        except Exception as e:
-            if is_fatal_auth_error(e):
-                pass
-
-    # Instant Fallback: Local Whisper (beam_size=1 for lowest latency)
+    full_wav = slice_wav = None
     try:
-        import local_whisper_engine
-        # Respect an explicit model choice; only auto-select when none was requested
-        opt_m, _src = local_whisper_engine.resolve_whisper_model_choice(_requested_whisper_model(prov, model_name))
-        res = local_whisper_engine.transcribe_local_audio(
-            media_input=media_bytes,
-            language=None if language in ["auto", ""] else language,
-            model_name=opt_m,
-            mime_type=mime_type,
-            beam_size=1,
-            temperature=0.0
-        )
-        clean = local_whisper_engine.sanitize_whisper_text(res.get("raw_transcript") or res.get("clean_text", ""))
-        return {"text": clean, "language": res.get("detected_language", "auto")}
+        full_wav = local_whisper_engine.convert_to_wav_pcm16k(media_bytes, input_hint=local_whisper_engine._mime_to_hint(mime_type))
+        import wave
+        with wave.open(full_wav, "rb") as wf:
+            total_sec = wf.getnframes() / float(wf.getframerate() or 16000)
+        start = max(0.0, float(offset_sec or 0.0))
+        if total_sec - start < 1.0:
+            return dict(empty, end_sec=start)
+        slice_wav = full_wav + ".live.wav"
+        if not local_whisper_engine.slice_wav_pcm16k(full_wav, start, total_sec - start, slice_wav):
+            return {"text": "", "language": "auto", "end_sec": start, "error": "could not slice live audio"}
+        with open(slice_wav, "rb") as f:
+            audio = f.read()
+
+        lines: List[str] = []
+        if prov == "gemini" and clean_key:
+            g = stt_pipeline.gemini_transcribe_bytes(audio, clean_key, model_name or "", "audio/wav", ctx="[live]")
+            if g.get("ok"):
+                lines = g["text"].splitlines()
+        if not lines:
+            w = stt_pipeline.whisper_transcribe_bytes(audio, language or "auto", "audio/wav", ctx="[live]",
+                                                      model_name=_requested_whisper_model(prov, model_name))
+            if w.get("ok"):
+                lines = w["text"].splitlines()
+        span = total_sec - start
+        shifted = [stt_pipeline.shift_line_timestamp(stt_pipeline.clamp_line_timestamp(l, span), start)
+                   for l in lines if l.strip()]
+        text = "\n".join(shifted)
+        return {"text": text, "language": detect_text_language(text) if text else "auto", "end_sec": total_sec}
     except Exception as e:
-        return {"text": "", "language": "auto", "error": str(e)}
+        _stt_log.error("live chunk failed: %s", describe_exception(e))
+        return dict(empty, error=str(e))
+    finally:
+        for p in (slice_wav, full_wav):
+            if p and os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
 def transcribe_single_chunk(
     media_bytes: bytes,
@@ -1250,11 +1316,39 @@ def summarize_text_gemini(
     elif not (text_content or "").strip():
         failure_reason = "transcript is empty"
 
-    _llm_log.error("summarize FALLBACK to offline extraction: %s", failure_reason)
-    res = deep_semantic_synthesis(text_content, custom_skills, org_context, template_schema)
-    res["warning"] = (f"Cloud AI could not fill the template ({failure_reason}). Fields were filled offline only with "
-                      f"text found in the transcript - please review and complete them before exporting.")
-    return res
+    _llm_log.error("summarize: Gemini unavailable (%s) - falling back to the local model", failure_reason)
+    return fill_template_locally(text_content, template_schema, org_context, custom_skills,
+                                 cloud_reason=f"Cloud AI could not fill the template ({failure_reason})")
+
+
+def fill_template_locally(text_content: str, template_schema: Optional[Dict[str, Any]], org_context: str = "",
+                          custom_skills: str = "", model_key: Optional[str] = None,
+                          cloud_reason: str = "") -> Dict[str, Any]:
+    """
+    The local half of "cloud first, local when the cloud is unavailable":
+    on-device LLM first, then offline text extraction as the last resort. Never raises.
+    cloud_reason (if any) is prefixed to the warning so the user knows why local was used.
+    """
+    prefix = f"{cloud_reason}; used the on-device model instead. " if cloud_reason else ""
+    try:
+        import local_llm_engine
+        key = model_key if model_key in getattr(local_llm_engine, "SUPPORTED_MODELS", {}) else None
+        result = local_llm_engine.generate_template_fill(transcript=text_content, template_schema=template_schema,
+                                                         org_context=org_context, custom_skills=custom_skills,
+                                                         model_key=key)
+        _llm_log.info("Local LLM (%s) filled the template.", result.get("model"))
+        if prefix:
+            result["warning"] = prefix + "Please review before exporting."
+        return result
+    except Exception as e_local:
+        _llm_log.error("Local LLM unavailable/failed (%s) - falling back to offline extraction",
+                       describe_exception(e_local), exc_info=True)
+        result = deep_semantic_synthesis(text_content, custom_skills, org_context, template_schema)
+        result["warning"] = (f"{cloud_reason + '. ' if cloud_reason else ''}Local model could not run "
+                             f"({_local_llm_user_reason(e_local)}). Fields were filled offline only with text found "
+                             f"in the transcript - please review and complete them before exporting. "
+                             f"(reference {current_job_id()})")
+        return result
 
 _oac_log = get_logger("openai_compat")
 
@@ -1630,20 +1724,7 @@ def process_ai_request(
 
     # 5. Summarization & Meeting Minutes Stage (LLM)
     if llm_prov in ["local", "local_whisper", "offline"]:
-        try:
-            import local_llm_engine
-            result = local_llm_engine.generate_template_fill(
-                transcript=raw_transcript, template_schema=template_schema,
-                org_context=org_context, custom_skills=custom_skills
-            )
-            _llm_log.info("Local LLM (%s) filled the template successfully.", result.get("model"))
-        except Exception as e_local:
-            _llm_log.error("Local LLM unavailable/failed (%s) - falling back to offline regex extraction",
-                            describe_exception(e_local), exc_info=True)
-            result = deep_semantic_synthesis(raw_transcript, custom_skills, org_context, template_schema)
-            result["warning"] = (f"Local model could not run ({_local_llm_user_reason(e_local)}). Fields were filled "
-                                 f"offline only with text found in the transcript - please review and complete them "
-                                 f"before exporting. (reference {current_job_id()})")
+        result = fill_template_locally(raw_transcript, template_schema, org_context, custom_skills, model_key=llm_model)
     elif llm_prov == "openai_compatible":
         try:
             result = summarize_text_openai_compatible(
@@ -1660,10 +1741,8 @@ def process_ai_request(
             _llm_log.error("Custom API failed (%s) - falling back to offline extraction",
                            describe_exception(e_custom), exc_info=True)
             reason = getattr(e_custom, "user_message", "") or "an unexpected error occurred"
-            result = deep_semantic_synthesis(raw_transcript, custom_skills, org_context, template_schema)
-            result["warning"] = (f"Custom API could not fill the template ({reason}). Fields were filled offline only "
-                                 f"with text found in the transcript - please review and complete them before "
-                                 f"exporting. (reference {current_job_id()})")
+            result = fill_template_locally(raw_transcript, template_schema, org_context, custom_skills,
+                                           cloud_reason=f"Custom API could not fill the template ({reason})")
     else:
         result = summarize_text_gemini(
             text_content=raw_transcript,

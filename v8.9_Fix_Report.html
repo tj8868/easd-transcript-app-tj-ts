@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>v8.9 Fix Report</title>
+<style>
+:root{--bg:#f7f8fa;--card:#fff;--ink:#16202c;--muted:#5b6776;--line:#e2e6ec;--accent:#0b5cad;--ok:#137a3f;--warn:#9a5b00;--bad:#b42318;--code:#f0f2f5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1419;--card:#161d25;--ink:#e6ebf1;--muted:#9aa7b5;--line:#26313d;--accent:#5aa9ff;--ok:#4cc38a;--warn:#f0b450;--bad:#ff7b72;--code:#1e2731}}
+:root[data-theme="dark"]{--bg:#0f1419;--card:#161d25;--ink:#e6ebf1;--muted:#9aa7b5;--line:#26313d;--accent:#5aa9ff;--ok:#4cc38a;--warn:#f0b450;--bad:#ff7b72;--code:#1e2731}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Hind Siliguri",sans-serif}
+.wrap{max-width:940px;margin:0 auto;padding:28px 16px 80px}
+h1{font-size:1.9rem;margin:0 0 4px}
+h2{font-size:1.3rem;margin:40px 0 12px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+h3{font-size:1.08rem;margin:0 0 8px}
+p{margin:8px 0}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin:14px 0}
+.tag{display:inline-block;font-size:.75rem;font-weight:700;padding:2px 9px;border-radius:99px;margin-right:6px;vertical-align:middle}
+.crit{background:rgba(180,35,24,.12);color:var(--bad)}.high{background:rgba(154,91,0,.14);color:var(--warn)}.med{background:rgba(11,92,173,.12);color:var(--accent)}.new{background:rgba(19,122,63,.13);color:var(--ok)}
+.label{font-weight:700;font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-top:12px}
+code{background:var(--code);padding:1px 6px;border-radius:5px;font-size:.88em;word-break:break-word}
+pre{background:var(--code);padding:12px;border-radius:8px;overflow-x:auto;font-size:.86rem}
+ol,ul{padding-left:22px;margin:6px 0}
+li{margin:3px 0}
+table{width:100%;border-collapse:collapse;font-size:.92rem;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--muted);font-size:.8rem;text-transform:uppercase}
+.ok{color:var(--ok);font-weight:700}.warn{color:var(--warn);font-weight:700}.bad{color:var(--bad);font-weight:700}
+.toc a{color:var(--accent);text-decoration:none}
+.toc{columns:2;column-gap:28px}
+@media (max-width:640px){.toc{columns:1}h1{font-size:1.5rem}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>EASD Transcription App: v8.9 Fix Report</h1>
+<p class="sub">Branch <code>v8.9</code> · 28 October 2026 · All changes are in the working tree and <b>not committed</b>. Review them, then commit.</p>
+
+<div class="card">
+<h3>Summary</h3>
+<p>The app was meant to do four things:</p>
+<ol>
+<li>Take bulk recordings or a live recording.</li>
+<li>Transcribe them word for word, with timestamps and who is speaking.</li>
+<li>Optionally convert that to English only or Bangla only.</li>
+<li>Fill the EASD <code>.docx</code> template from the transcript.</li>
+</ol>
+<p>Before this release, step&nbsp;3 did not exist and speaker labels were guesses. Both now work: speakers are identified by voice, using a local AI model that runs on this computer. The remaining items from the bug report are also fixed, Intel/AMD/NVIDIA GPU acceleration has been added, and the screen has been made easier to use on PC, tablet and phone.</p>
+<p><b>Verified on the running app:</b> Bangla→English and English→Bangla conversion through Gemini (timestamps and speakers unchanged), live preview with the new timeline, voice-based speaker labels (4 voices labelled 1-2-3-1-2-3 correctly), matching speakers across chunks, the attendance fix, and the CORS lock-down.</p>
+</div>
+
+<div class="card toc">
+<a href="#f1">1. English-only / Bangla-only conversion</a><br>
+<a href="#f2">2. Real speaker identification (local model)</a><br>
+<a href="#f3">3. Same speaker numbers across chunks</a><br>
+<a href="#f4">4. Timestamps no longer fall back to 00:00</a><br>
+<a href="#f5">5. Live recording: timeline, model, no freezing</a><br>
+<a href="#f6">6. Template fill reports failures</a><br>
+<a href="#f7">7. No more shared transcript file on disk</a><br>
+<a href="#f8">8. Template wiring (checked, no change)</a><br>
+<a href="#f9">9. Attendance false matches</a><br>
+<a href="#f10">10. API keys readable by other websites</a><br>
+<a href="#f11">11. Broken tests</a><br>
+<a href="#f12">12. Smaller fixes</a><br>
+<a href="#gpu">GPU acceleration (NVIDIA, AMD, Intel Iris/Arc)</a><br>
+<a href="#tq">TurboQuant (Tom's fork)</a><br>
+<a href="#ui">UI clean-up</a><br>
+<a href="#tests">Test results</a><br>
+<a href="#files">Files changed</a><br>
+<a href="#settings">Settings / switches</a><br>
+<a href="#next">Open items and next steps</a>
+</div>
+
+<h2 id="f1">1. English-only / Bangla-only conversion <span class="tag crit">Critical</span><span class="tag new">New feature</span></h2>
+<div class="card">
+<div class="label">Problem</div>
+<p>The app could only show the transcript as spoken (mixed Bangla and English). There was no way to get an all-English or all-Bangla version, and nothing in the code attempted it.</p>
+<div class="label">What was done</div>
+<p>A new translation module, an API endpoint, and three tabs above the transcript box: <b>As spoken · English only · বাংলা only</b>.</p>
+<div class="label">How it works, step by step</div>
+<ol>
+<li>The transcript is split into lines. The <code>[MM:SS] Speaker N:</code> part of each line is set aside and is never sent to the AI, so timestamps and speaker labels cannot be changed or lost.</li>
+<li>Lines that are already entirely in the target language are skipped. This saves time and money, and those lines stay exactly as spoken.</li>
+<li>The remaining lines are sent in numbered batches (up to 40 lines or 6,000 characters each). The AI must return exactly the same number of lines, in order.</li>
+<li>If a batch comes back with the wrong number of lines, that batch is retried one line at a time. If a single line still fails, it keeps its original wording and the user sees a warning naming the line numbers. Nothing is silently dropped.</li>
+<li>The prompt tells the model to keep names, numbers, dates, amounts and acronyms (EASD, Q4…) exactly, and not to summarise or add anything.</li>
+<li>The prefixes are re-attached, and the result appears in the chosen tab.</li>
+</ol>
+<div class="label">How to use it</div>
+<ol>
+<li>Transcribe or paste the meeting.</li>
+<li>Click <b>English only</b> or <b>বাংলা only</b>. The first click converts; later clicks just switch tabs.</li>
+<li>Edits in that tab stay in that version; the "As spoken" record is never overwritten.</li>
+<li><b>Fill Template</b> uses whichever tab is showing, so you can fill the minutes from the English or Bangla version.</li>
+<li>If you edit the "As spoken" text afterwards, a yellow note says the converted version is out of date. Press <b>Convert again</b> to refresh it.</li>
+</ol>
+<p>It uses the same AI setting as Fill Template: Gemini by default, your Custom API if one is selected, or the on-device model when the Cloud/Local switch is set to Local.</p>
+<div class="label">Files</div>
+<p><code>transcript_translator.py</code> (new) · <code>app.py</code> (<code>POST /api/translate_transcript</code>) · <code>frontend/src/App.jsx</code> · <code>frontend/src/components/Transcripts.jsx</code></p>
+</div>
+
+<h2 id="f2">2. Real speaker identification, using a local model <span class="tag crit">Critical</span></h2>
+<div class="card">
+<div class="label">Problem</div>
+<p>In local Whisper mode, "Speaker 1 / Speaker 2" was a guess: the label flipped every time someone paused for more than 1.6 seconds. Meetings with three or more people only ever showed two speakers, and a pause mid-sentence handed the rest of the sentence to the "other" person.</p>
+<div class="label">What was done</div>
+<p>A new module, <code>speaker_diarization.py</code>, identifies speakers by their voice using <b>WeSpeaker ResNet34</b>. This is a 26 MB neural speaker-recognition model that runs on this computer, with no internet, no API key and no extra large packages (no PyTorch). It is downloaded once into <code>models/</code>; that has already been done on this PC.</p>
+<div class="label">How it works, step by step</div>
+<ol>
+<li>Whisper produces the utterances with start and end times, as before.</li>
+<li>For each utterance, the module computes a "voice fingerprint", a 256-number embedding produced by the neural model from that stretch of audio.</li>
+<li>Fingerprints that are close together belong to the same person. The utterances are grouped step by step (average-linkage clustering, cosine distance) until the closest remaining groups are clearly different voices. The cut-off, 0.55, was calibrated on test voices: same voice ≈ 0.26–0.42, different voices ≈ 0.69–1.06.</li>
+<li>Very short utterances (under 0.8 s) are too short to judge on their own. They are given the nearest known voice, or the previous speaker.</li>
+<li>Speakers are numbered in the order they first speak: Speaker 1, 2, 3…</li>
+<li>If the model cannot load, a simpler built-in voice fingerprint (MFCC) is used instead. If anything goes wrong, transcription still succeeds and only the labels are less precise.</li>
+</ol>
+<div class="label">Verified</div>
+<p>On a test recording of 4 different voices in the order A B C A B C, the result was <code>[1, 2, 3, 1, 2, 3]</code>, which is exactly right. Each utterance takes about 0.12 s on this PC's CPU, and less on a GPU.</p>
+<div class="label">Files</div>
+<p><code>speaker_diarization.py</code> (new) · <code>local_whisper_engine.py</code> (pause-flip removed, voice labelling added)</p>
+</div>
+
+<h2 id="f3">3. Speaker numbers are now consistent across chunks <span class="tag crit">Critical</span></h2>
+<div class="card">
+<div class="label">Problem</div>
+<p>Long recordings are split into chunks of about 10 minutes, and each chunk is transcribed separately (by Gemini or Whisper). Every chunk restarted the numbering at "Speaker 1", so Speaker 1 in chunk 2 could be a different person from Speaker 1 in chunk 1.</p>
+<div class="label">How it was fixed, step by step</div>
+<ol>
+<li>After all chunks are transcribed, each chunk's audio is decoded to 16 kHz WAV.</li>
+<li>For every chunk and local speaker (for example "chunk 2, Speaker 1"), up to 90 seconds of that person's speech is collected and turned into one voice fingerprint with the same local model.</li>
+<li>These fingerprints are grouped across chunks. One rule applies: two speakers that the chunk itself already said are different people can never be merged.</li>
+<li>Every line is relabelled with one consistent numbering for the whole meeting.</li>
+<li>If anything fails, the per-chunk labels are kept, and the transcript is never lost.</li>
+</ol>
+<div class="label">Verified</div>
+<p>Test: chunk A had voices X then Y; chunk B had Y then X, both numbered 1 and 2 locally. After the fix, chunk B reads "Speaker 2, Speaker 1", which correctly matches chunk A.</p>
+<div class="label">Files</div>
+<p><code>stt_pipeline.py</code> (<code>_unify_speakers_across_chunks</code>) · <code>speaker_diarization.py</code> (<code>unify_chunk_speakers</code>)</p>
+</div>
+
+<h2 id="f4">4. Timestamps no longer fall back to [00:00] <span class="tag crit">Critical</span></h2>
+<div class="card">
+<div class="label">Problem</div>
+<p>When Gemini returned an utterance without word timings, the line was stamped <code>[00:00]</code>, so lines in the middle of a meeting appeared at the very start.</p>
+<div class="label">Fix</div>
+<p>A line without its own timing now takes the time of the line before it. Time can never go backwards within a chunk, and the chunk's start offset is still added afterwards. Text that appears before the first timestamp correctly starts at the beginning of its chunk.</p>
+<div class="label">File</div><p><code>stt_pipeline.py</code> (<code>_lines_from_transcribe_response</code>)</p>
+</div>
+
+<h2 id="f5">5. Live recording: one timeline, the live model, and no freezing <span class="tag crit">Critical</span></h2>
+<div class="card">
+<div class="label">Problems</div>
+<ul>
+<li>Every 4.5 seconds the browser re-sent and re-transcribed the <b>whole</b> recording so far. Cost and delay grew with every minute, and the same text had to be filtered out again each time.</li>
+<li>Timestamps restarted from zero in every preview.</li>
+<li>The live code ignored the chosen model and always used <code>gemini-2.5-flash</code>.</li>
+<li>The WebSocket live endpoint called the slow transcription function directly, which froze the whole server (progress bars, other uploads) during every chunk.</li>
+</ul>
+<div class="label">How it was fixed, step by step</div>
+<ol>
+<li>The browser now also sends <code>offset_sec</code>, the number of seconds already previewed.</li>
+<li>The server converts the recording to WAV, cuts off everything before <code>offset_sec</code>, and transcribes only the new audio.</li>
+<li>The returned lines are shifted onto the recording's own clock, for example <code>[03:12] Speaker 1: …</code>, and the server returns <code>end_sec</code>. The browser stores this and sends it as the next offset.</li>
+<li>The live preview uses <code>gemini-3.5-transcribe-live</code>, or your chosen Whisper model, with the same Gemini → fallback-model → local-Whisper safety chain as batch transcription.</li>
+<li>Both live endpoints now run the work in a background thread, so the server stays responsive.</li>
+<li>When you press Stop, the full take is still transcribed again with the batch model. That final pass gives the definitive voice-matched speaker labels.</li>
+</ol>
+<div class="label">Verified</div>
+<p>A 7-second test file sent with <code>offset_sec=3</code> returned only <code>[00:03] Speaker 1: Today we discuss the budget and strategic review.</code> with <code>end_sec=7.25</code>.</p>
+<div class="label">Files</div>
+<p><code>ai_providers.py</code> (<code>live_transcribe_audio_chunk</code> rewritten) · <code>app.py</code> · <code>frontend/src/components/LiveRecordStudio.jsx</code></p>
+</div>
+
+<h2 id="f6">6. Template fill now reports failures <span class="tag high">High</span></h2>
+<div class="card">
+<p><b>Problem:</b> <code>/api/summarize_transcript</code> always answered "success", even when the AI step had returned an error, so the screen claimed the template was filled when it was not.</p>
+<p><b>Fix:</b> the endpoint now checks the result. On failure it returns <code>status: "error"</code> with the reason, and the UI shows a red message. The upload endpoint already did this; the two now behave the same.</p>
+<p><b>File:</b> <code>app.py</code>. Covered by the new test <code>test_summarize_reports_error_status</code>.</p>
+</div>
+
+<h2 id="f7">7. No more shared transcript file on disk <span class="tag high">High</span></h2>
+<div class="card">
+<p><b>Problem:</b> every local transcription wrote <code>raw_transcript.txt</code> into the app folder. Two jobs running together overwrote each other, and confidential meeting text stayed on disk.</p>
+<p><b>Fix:</b> the file is no longer written. For troubleshooting, set <code>EASD_DEBUG_SAVE_TRANSCRIPT=1</code>. A separate copy per job is then saved in the system temp folder.</p>
+<p><b>File:</b> <code>local_whisper_engine.py</code>. You may delete the old <code>raw_transcript.txt</code> in the app folder; it is not used any more.</p>
+</div>
+
+<h2 id="f8">8. Template wiring: checked, no change needed <span class="tag med">Correction</span></h2>
+<div class="card">
+<p>My first bug report said the meeting-minutes template had no section keys. <b>That was my mistake:</b> sections use the field <code>id</code>, not <code>key</code>, and I read the wrong field. On re-checking, <code>easd_default_minutes</code> correctly maps <code>agendas</code>, <code>decisions</code>, the <code>discussions</code> table (4 fixed rows) and the <code>attendance</code> table to the EASD <code>.docx</code>. No change was made.</p>
+</div>
+
+<h2 id="f9">9. Attendance: false "present" marks <span class="tag high">High</span></h2>
+<div class="card">
+<p><b>Problem, corrected:</b> the original report said attendance was always "Yes". In fact the app does detect attendance, but its matching was too loose. Any single word of four or more letters from a member's name counted, so one mention of "Hossain" or "Islam" marked several different members present.</p>
+<p><b>Fix, step by step:</b> a member is now marked present only if the transcript contains, as whole words, one of the following:</p>
+<ul>
+<li>their full name;</li>
+<li>at least two parts of their name;</li>
+<li>one part of their name that no other member shares. Common surnames such as Hossain, Islam, Begum, Akter, Hasan and Kumar never count on their own.</li>
+</ul>
+<p>Names the AI explicitly lists as present still count as before.</p>
+<p><b>Verified:</b> the text "Saddam Hossain presented… Kartik said ok… Mr Islam was absent" now marks exactly Md. Saddam Hossain and Kartik Bala.</p>
+<p><b>File:</b> <code>ai_providers.py</code> (<code>match_attendance_list</code>)</p>
+</div>
+
+<h2 id="f10">10. API keys were readable by any website <span class="tag high">High</span></h2>
+<div class="card">
+<p><b>Problem, clarified:</b> the server already listens only on this computer (127.0.0.1). However, its CORS rule allowed <i>every</i> website origin with credentials. Any web page open in the same browser could therefore call <code>localhost:8000/api/settings</code> and read the saved API keys.</p>
+<p><b>Fix:</b> only the app's own pages (<code>localhost</code>, <code>127.0.0.1</code>, any port) are allowed. To use the app from another device, add its address with <code>EASD_ALLOWED_ORIGINS=https://192.168.1.20:8000</code>.</p>
+<p><b>Verified:</b> a request from <code>https://evil.example</code> gets no permission header, so the browser blocks it. <code>http://localhost:8000</code> is still allowed. <b>File:</b> <code>app.py</code></p>
+</div>
+
+<h2 id="f11">11. Broken tests <span class="tag med">Medium</span></h2>
+<div class="card">
+<ul>
+<li><code>test_ocr_pipeline.py</code> imported <code>daily_audit</code>, which had been moved to <code>useless/</code> and was not used by any test. The import was removed.</li>
+<li><code>whisper_hallucination_fixtures</code> could not be imported. <code>tests/conftest.py</code> now adds the tests folder to the import path.</li>
+<li>A new file, <code>tests/test_v89_fixes.py</code>, adds 8 tests covering fixes 1, 3, 4, 6, 9 and 10.</li>
+</ul>
+</div>
+
+<h2 id="f12">12. Smaller fixes <span class="tag med">Medium</span></h2>
+<div class="card">
+<ul>
+<li><b>Gemini retry:</b> the "retryable" decision is reset for each fallback model, instead of carrying over from the previous model (<code>stt_pipeline.py</code>).</li>
+<li><b>Deprecated startup hook:</b> <code>@app.on_event("startup")</code> was replaced with FastAPI's lifespan handler (<code>app.py</code>).</li>
+<li><b>Not changed:</b> <code>default_whisper_transcribe.py</code> and the standalone "default Whisper" helper at the bottom of <code>local_whisper_engine.py</code> still use the old pause-flip. They are standalone scripts that the app does not call. The separate <code>Transcription Module/</code> folder was also left as it was.</li>
+</ul>
+</div>
+
+<h2 id="gpu">GPU acceleration: NVIDIA, AMD and Intel Iris Xe / Arc / Core Ultra <span class="tag new">New</span></h2>
+<div class="card">
+<p>Every local model now picks the fastest hardware it finds and falls back to the CPU automatically. Nothing needs to be configured.</p>
+<table>
+<tr><th>Local model</th><th>NVIDIA</th><th>Intel iGPU (Iris Xe, Arc, Core Ultra)</th><th>AMD / other</th><th>Fallback</th></tr>
+<tr><td>Whisper (speech→text)</td><td>faster-whisper on CUDA, float16. <b>New:</b> automatically uses <code>large-v3-turbo</code> (much better Bangla)</td><td><b>New:</b> OpenVINO GenAI on the iGPU with <code>whisper-large-v3-turbo-int8-ov</code> (downloaded once, ~0.9 GB)</td><td>CPU (faster-whisper int8)</td><td>CPU</td></tr>
+<tr><td>Speaker model (new)</td><td>onnxruntime CUDA / TensorRT</td><td>OpenVINO on the GPU (automatic when OpenVINO sees one)</td><td>DirectML (Windows), ROCm, CoreML (Mac)</td><td>CPU</td></tr>
+<tr><td>Local LLM (template fill / translation)</td><td colspan="3">llama.cpp Vulkan backend. This already existed; Intel Iris/Arc/Xe are recognised, provided the installed llama-cpp-python was built with Vulkan.</td><td>CPU</td></tr>
+</table>
+<p><b>Installed for this:</b> <code>openvino-genai</code> (added to <code>requirements.txt</code>, together with <code>onnxruntime</code> and <code>numpy</code>).</p>
+<p><b>Tested here:</b> the OpenVINO Whisper path ran correctly end to end on OpenVINO-CPU (the <code>tiny</code> model, with speaker labels). <span class="warn">Not tested on a real Intel GPU:</span> this PC has a 4th-generation (Haswell) Intel GPU, which OpenVINO no longer supports, and no NVIDIA card. Please try it on an Iris Xe or Core Ultra laptop. The log line <code>OpenVINO Whisper ready: … device=GPU</code> confirms it is using the GPU.</p>
+</div>
+
+<h2 id="tq">TurboQuant: Tom's fork <span class="tag new">Optional</span></h2>
+<div class="card">
+<p><b>What it is:</b> TheTom's llama.cpp fork (<code>github.com/TheTom/llama-cpp-turboquant</code>, branch <code>feature/turboquant-kv-cache</code>) adds TurboQuant KV-cache types (<code>turbo3</code>, <code>turbo4</code>). They compress the local LLM's working memory roughly 4–5× with very small quality loss.</p>
+<p><b>Important:</b> TurboQuant applies <i>only</i> to the local LLM (template fill and translation). It does not speed up Whisper or speaker identification. Its main benefit is lower memory use, which helps on iGPUs that share system RAM, rather than raw speed.</p>
+<p><b>What was done:</b></p>
+<ol>
+<li><code>local_llm_engine.py</code> accepts <code>EASD_LOCAL_LLM_KV_CACHE=q8_0 | turbo3 | turbo4</code>. The type IDs (turbo3 = 44, turbo4 = 47) were taken from the fork's own <code>ggml.h</code>.</li>
+<li>TurboQuant is <b>opt-in only</b>, because a normal llama.cpp build may crash on an unknown cache type. <code>q8_0</code> works on every build and already halves memory.</li>
+<li>Build scripts that compile llama-cpp-python against the fork with GPU support: <code>scripts/build_llama_turboquant.sh [vulkan|cuda|metal|cpu]</code> and <code>scripts\build_llama_turboquant.bat</code> for Windows.</li>
+</ol>
+<p><span class="warn">Not yet run:</span> the fork build itself (it takes a long time and needs build tools and the Vulkan SDK). If the fork's code has moved ahead of llama-cpp-python, the build can fail. In that case, restore with <code>.venv/bin/pip install --force-reinstall llama-cpp-python</code>.</p>
+</div>
+
+<h2 id="ui">UI clean-up for non-technical users <span class="tag new">New</span></h2>
+<div class="card">
+<ul>
+<li>Plain-language tabs above the transcript: <b>As spoken · English only · বাংলা only</b>, with a "Convert" hint and "Convert again".</li>
+<li>Friendlier wording: "Add a speaker line", "Tidy into speaker lines", and a one-sentence explanation of what the transcript box contains.</li>
+<li>All buttons and inputs are at least 44 px tall (comfortable for fingers), with clear keyboard focus outlines and a visibly disabled look while busy.</li>
+<li><b>Phone:</b> the transcript box is taller with larger text; the bottom toolbars wrap into rows instead of scrolling sideways off-screen; the language tabs sit in one row.</li>
+<li><b>Tablet:</b> tighter spacing in the speaker toolbar.</li>
+<li>Animations are turned off for people whose system setting asks for reduced motion.</li>
+</ul>
+<p>Files: <code>frontend/src/index.css</code>, <code>Transcripts.jsx</code>. The frontend was rebuilt into <code>frontend/dist</code>.</p>
+<p><span class="warn">Not done in this pass:</span> a full redesign of the other sections (Settings, Templates). Those still use their existing look.</p>
+</div>
+
+<h2 id="tests">Test results</h2>
+<div class="card">
+<p>Full suite: <span class="ok">35 passed</span>, <span class="bad">5 failed</span>, 4 errors. All 8 new v8.9 tests pass. I checked every failure: <b>none is caused by these changes</b>.</p>
+<table>
+<tr><th>Test</th><th>Why it fails</th></tr>
+<tr><td>test_generate_flow</td><td>Expects a server already running on port 8000 ("connection refused").</td></tr>
+<tr><td>test_seamless_whisper_fallback</td><td>The Gemini key used by the tests is rejected by Google (401), and Whisper finds no speech in that test clip.</td></tr>
+<tr><td>test_system_audit_endpoint</td><td>Out of date: expects a "security" field that the audit no longer returns.</td></tr>
+<tr><td>test_write_extracted_data_to_report_docx</td><td>Needs <code>tests/EASD Meeting minutes - Template-DDMonthYY.docx</code>, which is missing.</td></tr>
+<tr><td>test_frontend_progress_invariants</td><td>Looks for a spinner file at a path that does not exist.</td></tr>
+<tr><td>test_whisper_language_and_vad (4)</td><td>Written as scripts: they ask for a <code>tmp</code> fixture that pytest does not provide.</td></tr>
+</table>
+<p><b>Live checks on the running app</b> (started headless, then stopped): the page loads (HTTP 200); Bangla→English and English→Bangla conversion through Gemini both worked with prefixes intact; the live chunk offset worked; CORS blocks foreign sites.</p>
+</div>
+
+<h2 id="files">Files changed</h2>
+<div class="card">
+<table>
+<tr><th>File</th><th>Change</th></tr>
+<tr><td><code>transcript_translator.py</code></td><td>New: English-only / Bangla-only conversion</td></tr>
+<tr><td><code>speaker_diarization.py</code></td><td>New: local neural speaker identification, cross-chunk matching, GPU selection</td></tr>
+<tr><td><code>openvino_whisper_engine.py</code></td><td>New: Whisper on Intel GPUs</td></tr>
+<tr><td><code>scripts/build_llama_turboquant.sh</code>, <code>.bat</code></td><td>New: TurboQuant fork build</td></tr>
+<tr><td><code>tests/test_v89_fixes.py</code></td><td>New: 8 regression tests</td></tr>
+<tr><td><code>models/wespeaker_resnet34_LM.onnx</code>, <code>models/whisper-tiny-int8-ov/</code></td><td>Downloaded models (the <code>models/</code> folder is git-ignored)</td></tr>
+<tr><td><code>app.py</code></td><td>Translate endpoint, live offset, background threads, summarize status, CORS, lifespan</td></tr>
+<tr><td><code>ai_providers.py</code></td><td>Live chunk rewrite, attendance matching</td></tr>
+<tr><td><code>stt_pipeline.py</code></td><td>Cross-chunk speakers, timestamp fallback, retry reset</td></tr>
+<tr><td><code>local_whisper_engine.py</code></td><td>Voice-based labels, OpenVINO path, large-v3-turbo on CUDA, no shared transcript file</td></tr>
+<tr><td><code>local_llm_engine.py</code></td><td>KV-cache / TurboQuant option</td></tr>
+<tr><td><code>frontend/src/App.jsx</code>, <code>Transcripts.jsx</code>, <code>LiveRecordStudio.jsx</code>, <code>index.css</code></td><td>Language tabs, live offset and model, comfort styles</td></tr>
+<tr><td><code>requirements.txt</code>, <code>tests/conftest.py</code>, <code>tests/test_ocr_pipeline.py</code></td><td>Dependencies, test import fixes</td></tr>
+</table>
+<p>Note: git also lists other modified files (<code>diag_logging.py</code>, <code>template_engine.py</code>, <code>Launch_App.bat</code>, …). Those changes were already there before this session (mostly line endings) and were left untouched.</p>
+</div>
+
+<h2 id="settings">Settings / switches (all optional)</h2>
+<div class="card">
+<table>
+<tr><th>Variable</th><th>Default</th><th>Purpose</th></tr>
+<tr><td><code>EASD_DIARIZATION</code></td><td>on</td><td><code>off</code> disables voice-based speaker labels</td></tr>
+<tr><td><code>EASD_DIARIZATION_THRESHOLD</code></td><td>0.55 (neural)</td><td>Lower = splits voices more readily; higher = merges more</td></tr>
+<tr><td><code>EASD_DIARIZATION_MAX_SPEAKERS</code></td><td>10</td><td>Upper limit on speakers</td></tr>
+<tr><td><code>EASD_DIARIZATION_DEVICE</code></td><td>auto</td><td><code>cpu</code> forces CPU for the speaker model</td></tr>
+<tr><td><code>EASD_WHISPER_BACKEND</code></td><td>auto</td><td><code>openvino</code> or <code>ctranslate2</code> forces a Whisper engine</td></tr>
+<tr><td><code>EASD_OV_WHISPER_MODEL</code></td><td>OpenVINO/whisper-large-v3-turbo-int8-ov</td><td>Lighter option for older iGPUs: <code>OpenVINO/whisper-small-int8-ov</code></td></tr>
+<tr><td><code>EASD_OV_DEVICE</code></td><td>GPU</td><td>GPU, NPU, CPU or AUTO for OpenVINO</td></tr>
+<tr><td><code>EASD_WHISPER_GPU_TURBO</code></td><td>1</td><td><code>0</code> stops the automatic large-v3-turbo choice on NVIDIA</td></tr>
+<tr><td><code>EASD_LOCAL_LLM_KV_CACHE</code></td><td>(off)</td><td><code>q8_0</code>, or <code>turbo3</code> / <code>turbo4</code> with the fork build</td></tr>
+<tr><td><code>EASD_ALLOWED_ORIGINS</code></td><td>(none)</td><td>Extra browser origins allowed to use the API</td></tr>
+<tr><td><code>EASD_DEBUG_SAVE_TRANSCRIPT</code></td><td>(off)</td><td><code>1</code> saves a per-job transcript copy in the temp folder</td></tr>
+</table>
+</div>
+
+<h2 id="next">Open items and next steps</h2>
+<div class="card">
+<ol>
+<li><b>Try it with a real meeting recording.</b> Speaker identification was calibrated on short test voices. Real rooms with crosstalk may need the threshold adjusted (see the settings above).</li>
+<li><b>Check the model names.</b> <code>gemini-3.5-transcribe</code> and <code>gemini-3.5-transcribe-live</code> are the app's defaults. They are newer than my knowledge, so please confirm both appear in your Google AI Studio model list. (The text model <code>gemini-3.8-flash</code> did work in today's test.)</li>
+<li><b>The Gemini key used by the tests</b> is rejected by Google (401). Update it if the tests should use Gemini.</li>
+<li><b>Intel GPU and TurboQuant</b> still need a run on suitable hardware (see above).</li>
+<li><b>Commit</b> once you are happy. Nothing has been committed.</li>
+</ol>
+</div>
+
+</div>
+</body>
+</html>

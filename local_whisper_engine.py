@@ -4,7 +4,9 @@ Powered by faster-whisper (CTranslate2) with INT8 quantization on CPU.
 Optimized for EASD Meeting Minutes (Bangla and English bilingual speech).
 """
 
+import functools
 import os
+import re
 import sys
 import io
 import time
@@ -50,13 +52,13 @@ if not logger.handlers and not logger.name.startswith("easd."):
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _TURBO_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-large-v3-turbo")
-_MEDIUM_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-medium")
-_SMALL_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-small")
-_BASE_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-base")
-_TINY_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-tiny")
+# Default local model: BengaliAI's Whisper-medium fine-tuned on Bangla speech (regional dialects),
+# CTranslate2 format. Writes Bengali script. Best open Bangla result in arXiv 2602.21741.
+_BENGALIAI_MODEL_DIR = os.path.join(_BASE_DIR, "models", "whisper-bengaliai")
+_BENGALIAI_REPO = "IamSanjid/tugstugi_bengaliai-regional-asr_whisper-medium-ct2"
+_TURBO_REPO = "deepdml/faster-whisper-large-v3-turbo"
 
-_DEFAULT_MODEL_DIR = _SMALL_MODEL_DIR
-_FALLBACK_MODEL_DIR = _BASE_MODEL_DIR
+_DEFAULT_MODEL_DIR = _BENGALIAI_MODEL_DIR
 
 _LOCAL_MODELS: Dict[str, Any] = {}
 _LOCAL_MODEL = None
@@ -67,20 +69,31 @@ _MODEL_STATUS = "unloaded"  # unloaded | loading | ready | error
 _MODEL_LOAD_ERROR = None
 _MODEL_LOAD_TIME = 0.0
 
+# Bilingual initial_prompt for Whisper's decoder to steer code-switched
+# Bangla-English output.  Contains real Bengali script mixed with English
+# terminology so Whisper learns to keep each language in its native script.
+# This text is NEVER shown in the transcript — it only conditions the
+# decoder's first 224 tokens via faster-whisper's `initial_prompt` arg.
 DEFAULT_BILINGUAL_PROMPT = (
-    "Ajker meeting er alochna ebong karjobiboroni. "
-    "Verbatim meeting transcript: agenda, budget, review, decisions, action items, participants."
+    "আজকের meeting এর agenda এবং আলোচনা। "
+    "Budget review তে participants সবাই present ছিলেন। "
+    "Action items ঠিক করা হয়েছে, decisions finalize হয়েছে। "
+    "Proceedings verbatim transcription with speaker tags."
 )
 
 
 # Languages Whisper's detector routinely confuses with Bengali on South-Asian speech.
 # Bengali is only preferred over one of these when the two are genuinely close.
 _BN_CONFUSABLE_LANGS = ("hi", "ne", "ur", "as")
-# Bengali must reach at least this share of the top candidate's probability to win.
-_BN_AMBIGUITY_RATIO = 0.6
-# A chunk is treated as code-switched (let Whisper decide per 30s window) when the
-# runner-up language has at least this share of the top candidate's probability.
-_CODE_SWITCH_RATIO = 0.5
+def _max_compression(lang: Optional[str]) -> float:
+    """Repetition-loop cut-off. Normal Bengali text already compresses to ~2.4 (3-byte UTF-8
+    characters sharing lead bytes), so 2.4 dropped real Bangla speech; loops score far higher."""
+    return 3.0 if lang == "bn" else 2.4
+
+
+# A slice is decoded as English only when the detector gives "en" at least this probability;
+# otherwise it is Bangla (env EASD_WHISPER_EN_CONFIDENCE).
+_EN_CONFIDENT = float(os.environ.get("EASD_WHISPER_EN_CONFIDENCE", "0.5"))
 # Silero VAD settings used for both language detection and transcription.
 # Validated in test_whisper_language_and_vad.py against real recordings with long silences.
 WHISPER_VAD_PARAMETERS = {
@@ -146,30 +159,19 @@ def detect_audio_language_detail(
             return result
 
         ranked = sorted(probs.items(), key=lambda kv: kv[1], reverse=True)
-        top_lang, top_prob = ranked[0]
-        second_lang, second_prob = ranked[1] if len(ranked) > 1 else ("", 0.0)
-        language, confidence, reason = top_lang, top_prob, "top-ranked language"
-
-        # Bengali / Hindi / Nepali / Urdu / Assamese confusion: only switch to Bengali
-        # when Bengali is genuinely close to the winner, never off a fixed low floor.
-        prob_bn = probs.get("bn", 0.0)
-        if top_lang in _BN_CONFUSABLE_LANGS and prob_bn >= _BN_AMBIGUITY_RATIO * top_prob:
-            language, confidence = "bn", prob_bn
-            reason = f"bn within {_BN_AMBIGUITY_RATIO:.0%} of confusable top '{top_lang}'"
-
-        # Runner-up = best language other than the chosen one, ignoring Bengali's confusables
-        # when Bengali was chosen (a bn/hi split is misdetection, not code-switching).
-        bn_family = ("bn",) + _BN_CONFUSABLE_LANGS
-        runner_up, runner_up_prob = "", 0.0
-        for k, v in ranked:
-            if k == language or (language == "bn" and k in bn_family):
-                continue
-            runner_up, runner_up_prob = k, v
-            break
-        ambiguous = bool(runner_up and runner_up_prob >= 0.15 and runner_up_prob >= _CODE_SWITCH_RATIO * confidence)
+        # EASD meetings are only ever Bangla or English. On Bangla speech Whisper's detector
+        # often ranks ko/ja/jw/pt/... first, and decoding as those writes Bangla in Latin
+        # letters. So the choice is bn vs en: English only when the detector is confident.
+        prob_en = probs.get("en", 0.0)
+        if prob_en >= _EN_CONFIDENT:
+            language, confidence, reason = "en", prob_en, f"en p>={_EN_CONFIDENT}"
+        else:
+            language, confidence = "bn", probs.get("bn", 0.0) + sum(probs.get(c, 0.0) for c in _BN_CONFUSABLE_LANGS)
+            reason = f"bn (meeting languages are bn/en; en p={prob_en:.2f} < {_EN_CONFIDENT})"
+        ambiguous = 0.15 <= prob_en < _EN_CONFIDENT  # mixed slice: decode per window as bn or en
         result.update(language=language, confidence=float(confidence), ambiguous=ambiguous,
                       reason=reason, ranked=[(k, round(float(v), 4)) for k, v in ranked],
-                      candidates=[language, runner_up] if ambiguous else [language])
+                      candidates=["bn", "en"] if ambiguous else [language])
 
         dist = ", ".join(f"{k}={v:.3f}" for k, v in ranked if v >= 0.001)
         logger.info(f"{ctx} language -> {language} (p={confidence:.3f}, ambiguous={ambiguous}, reason={reason}) "
@@ -361,74 +363,34 @@ _LAST_AUTO_CHOICE: Dict[str, str] = {}
 
 def select_optimal_model_name() -> str:
     """
-    Dynamically select between whisper-medium, whisper-small, whisper-base and whisper-tiny
-    based on host RAM and which model weights are present on disk.
-    whisper-medium int8 needs ~1.5-2GB of RAM, so an 8GB machine with >=2.5GB free
-    can run it; the decision and its reason are logged every time.
+    'large-v3-turbo' on an NVIDIA GPU (disable with EASD_WHISPER_GPU_TURBO=0), else 'bengaliai'.
+    The small multilingual models (tiny/base/small) were removed in v8.9: on Bangla meeting audio
+    they produced only repetition loops or Latin-script text.
     """
-    specs = get_system_ram_specs()
-    total_gb = specs.get("total_ram_gb", 8.0)
-    avail_gb = specs.get("available_ram_gb", 2.0)
-
-    def _pick(name: str, why: str) -> str:
-        msg = (f"select_optimal_model_name -> '{name}' ({why}; total_ram={total_gb}GB "
-               f"available_ram={avail_gb}GB)")
-        # INFO when the decision changes, DEBUG on repeats (this runs several times per request)
-        if _LAST_AUTO_CHOICE.get("name") != name:
-            logger.info(msg)
-            _LAST_AUTO_CHOICE["name"] = name
-        else:
-            logger.debug(msg)
-        return name
-
-    # Medium: needs weights on disk, >= ~8GB total (7.5 allows for OS-reported rounding) and 2.5GB free
-    if _model_has_weights(_MEDIUM_MODEL_DIR):
-        if total_gb >= 7.5 and avail_gb >= 2.5:
-            return _pick("medium", "weights present and enough RAM")
-        logger.warning(f"select_optimal_model_name: whisper-medium weights present but skipped - "
-                       f"needs total>=7.5GB and available>=2.5GB (have total={total_gb}GB, available={avail_gb}GB)")
-
-    # Severely constrained RAM (< 3.0GB total or < 0.4GB available)
-    if total_gb < 3.0 or avail_gb < 0.4:
-        if _model_has_weights(_TINY_MODEL_DIR):
-            return _pick("tiny", "severely constrained RAM")
-        if _model_has_weights(_BASE_MODEL_DIR):
-            return _pick("base", "severely constrained RAM")
-
-    # Standard systems (>= 6GB RAM) prefer whisper-small if present for accurate bilingual speech
-    if total_gb >= 6.0 and _model_has_weights(_SMALL_MODEL_DIR):
-        return _pick("small", "standard RAM, small weights present")
-
-    # Base model is the fast lightweight fallback (145MB)
-    if _model_has_weights(_BASE_MODEL_DIR):
-        return _pick("base", "fallback to base weights")
-    if _model_has_weights(_SMALL_MODEL_DIR):
-        return _pick("small", "fallback to small weights")
-    if _model_has_weights(_TINY_MODEL_DIR):
-        return _pick("tiny", "fallback to tiny weights")
-    return _pick("base", "no weights on disk - base will be downloaded on first use")
+    if os.environ.get("EASD_WHISPER_GPU_TURBO", "1") != "0" and _select_compute_device()[0] == "cuda":
+        name, why = "large-v3-turbo", "CUDA GPU detected"
+    else:
+        name, why = "bengaliai", "default Bangla model"
+    if _LAST_AUTO_CHOICE.get("name") != name:
+        logger.info(f"select_optimal_model_name -> '{name}' ({why})")
+        _LAST_AUTO_CHOICE["name"] = name
+    return name
 
 
-_KNOWN_MODEL_SIZES = ("tiny", "base", "small", "medium", "turbo", "large-v3-turbo")
+_KNOWN_MODEL_SIZES = ("bengaliai", "large-v3-turbo")
 
 
 def resolve_whisper_model_choice(requested: Optional[str] = None) -> Tuple[str, str]:
     """
-    Resolves which Whisper model a request should use.
-    An explicit size ('tiny'/'base'/'small'/'medium'/'turbo'/'large-v3-turbo') is always respected; only
-    None/''/'auto' (or an unknown value) falls through to select_optimal_model_name().
+    'turbo' in the request -> large-v3-turbo; anything else (including the removed tiny/base/small/
+    medium/banglish choices saved in old settings) -> automatic selection.
     Returns: (model_name, source) where source is 'explicit' or 'auto'.
     """
     req = (requested or "").strip().lower()
     if "turbo" in req:
-        logger.info(f"resolve_whisper_model_choice: using explicitly requested model 'large-v3-turbo' (requested={requested!r})")
         return "large-v3-turbo", "explicit"
-    for size in _KNOWN_MODEL_SIZES:
-        if req == size or req == f"whisper-{size}" or req.endswith(f"/{size}"):
-            logger.info(f"resolve_whisper_model_choice: using explicitly requested model '{size}' (requested={requested!r})")
-            return size, "explicit"
-    if req and req not in ("auto", "default", "local", "local_whisper"):
-        logger.warning(f"resolve_whisper_model_choice: unknown model {requested!r} - using automatic selection")
+    if "bengaliai" in req:
+        return "bengaliai", "explicit"
     return select_optimal_model_name(), "auto"
 
 
@@ -443,66 +405,9 @@ def _model_has_weights(directory: str) -> bool:
 
 
 def get_model_path(preferred_name: Optional[str] = None) -> str:
-    """Resolve the local model path on disk, gracefully falling back to available weights."""
-    if preferred_name:
-        pref_clean = preferred_name.strip().lower()
-        if "turbo" in pref_clean:
-            if _model_has_weights(_TURBO_MODEL_DIR):
-                return _TURBO_MODEL_DIR
-            if _model_has_weights(_SMALL_MODEL_DIR):
-                return _SMALL_MODEL_DIR
-            if _model_has_weights(_BASE_MODEL_DIR):
-                return _BASE_MODEL_DIR
-            return _TURBO_MODEL_DIR
-        elif "medium" in pref_clean:
-            if _model_has_weights(_MEDIUM_MODEL_DIR):
-                return _MEDIUM_MODEL_DIR
-            if _model_has_weights(_SMALL_MODEL_DIR):
-                return _SMALL_MODEL_DIR
-            if _model_has_weights(_BASE_MODEL_DIR):
-                return _BASE_MODEL_DIR
-            return _MEDIUM_MODEL_DIR
-        elif "tiny" in pref_clean:
-            if _model_has_weights(_TINY_MODEL_DIR):
-                return _TINY_MODEL_DIR
-            if _model_has_weights(_BASE_MODEL_DIR):
-                return _BASE_MODEL_DIR
-            if _model_has_weights(_SMALL_MODEL_DIR):
-                return _SMALL_MODEL_DIR
-            return _TINY_MODEL_DIR
-        elif "base" in pref_clean:
-            if _model_has_weights(_BASE_MODEL_DIR):
-                return _BASE_MODEL_DIR
-            if _model_has_weights(_SMALL_MODEL_DIR):
-                return _SMALL_MODEL_DIR
-            return _BASE_MODEL_DIR
-        elif "small" in pref_clean:
-            if _model_has_weights(_SMALL_MODEL_DIR):
-                return _SMALL_MODEL_DIR
-            if _model_has_weights(_BASE_MODEL_DIR):
-                return _BASE_MODEL_DIR
-            return _SMALL_MODEL_DIR
-
-    # Automatic spec-based resolution
-    optimal = select_optimal_model_name()
-    if optimal == "medium" and _model_has_weights(_MEDIUM_MODEL_DIR):
-        return _MEDIUM_MODEL_DIR
-    if optimal == "small" and _model_has_weights(_SMALL_MODEL_DIR):
-        return _SMALL_MODEL_DIR
-    if optimal == "base" and _model_has_weights(_BASE_MODEL_DIR):
-        return _BASE_MODEL_DIR
-    if optimal == "tiny" and _model_has_weights(_TINY_MODEL_DIR):
-        return _TINY_MODEL_DIR
-
-    # Fallback to any model that has weights
-    if _model_has_weights(_SMALL_MODEL_DIR):
-        return _SMALL_MODEL_DIR
-    if _model_has_weights(_BASE_MODEL_DIR):
-        return _BASE_MODEL_DIR
-    if _model_has_weights(_TINY_MODEL_DIR):
-        return _TINY_MODEL_DIR
-
-    return _SMALL_MODEL_DIR
+    """Directory of the model to load (weights are downloaded on first use)."""
+    name = resolve_whisper_model_choice(preferred_name)[0]
+    return _TURBO_MODEL_DIR if name == "large-v3-turbo" else _BENGALIAI_MODEL_DIR
 
 
 def _select_compute_device() -> Tuple[str, List[str]]:
@@ -516,12 +421,7 @@ def _select_compute_device() -> Tuple[str, List[str]]:
     cpu_types = ["int8", "int8_float32", "float32"]
     if forced == "cpu":
         return "cpu", cpu_types
-    try:
-        import ctranslate2
-        n_gpu = ctranslate2.get_cuda_device_count()
-    except Exception as e:
-        logger.info(f"CUDA probe unavailable ({type(e).__name__}: {e}) - using CPU")
-        n_gpu = 0
+    n_gpu = _cuda_device_count()
     if n_gpu > 0 or forced == "cuda":
         logger.info(f"CUDA devices detected: {n_gpu} (EASD_WHISPER_DEVICE={forced}) - trying GPU first")
         return "cuda", ["float16", "int8_float16", "int8"]
@@ -558,32 +458,17 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             _LOCAL_MODEL = _LOCAL_MODELS[resolved_path]
             return _LOCAL_MODEL
 
-        # If resolved path does not have weights, fallback to another local model or auto-download
         if not _model_has_weights(resolved_path):
-            fallback_found = False
-            for cand in [_SMALL_MODEL_DIR, _BASE_MODEL_DIR, _TINY_MODEL_DIR, _MEDIUM_MODEL_DIR]:
-                if _model_has_weights(cand):
-                    logger.info(f"Target '{resolved_path}' missing weights, using local '{os.path.basename(cand)}'")
-                    resolved_path = cand
-                    fallback_found = True
-                    break
-
-            if not fallback_found:
-                base_name = os.path.basename(resolved_path)
-                if "turbo" in base_name:
-                    target_size = "deepdml/faster-whisper-large-v3-turbo"
-                else:
-                    target_size = next((sz for sz in _KNOWN_MODEL_SIZES if sz in base_name), "base")
-                logger.info(f"Downloading local Whisper model '{target_size}' to '{resolved_path}'...")
-                try:
-                    from faster_whisper import download_model
-                    os.makedirs(resolved_path, exist_ok=True)
-                    download_model(target_size, output_dir=resolved_path)
-                except Exception as dl_err:
-                    _MODEL_STATUS = "error"
-                    _MODEL_LOAD_ERROR = f"Model directory missing and download failed: {dl_err}"
-                    logger.error(_MODEL_LOAD_ERROR)
-                    raise FileNotFoundError(_MODEL_LOAD_ERROR)
+            repo = _TURBO_REPO if resolved_path == _TURBO_MODEL_DIR else _BENGALIAI_REPO
+            logger.info(f"Downloading local Whisper model {repo} (one time) to '{resolved_path}'...")
+            try:
+                from huggingface_hub import snapshot_download
+                snapshot_download(repo, local_dir=resolved_path)
+            except Exception as dl_err:
+                _MODEL_STATUS = "error"
+                _MODEL_LOAD_ERROR = f"Model download failed: {dl_err}"
+                logger.error(_MODEL_LOAD_ERROR)
+                raise FileNotFoundError(_MODEL_LOAD_ERROR)
 
         _MODEL_STATUS = "loading"
         t0 = time.time()
@@ -598,9 +483,6 @@ def get_local_whisper_model(model_name_or_path: Optional[str] = None):
             last_err = None
 
             paths_to_try = [resolved_path]
-            for cand_dir in [_SMALL_MODEL_DIR, _BASE_MODEL_DIR, _TINY_MODEL_DIR]:
-                if cand_dir != resolved_path and _model_has_weights(cand_dir):
-                    paths_to_try.append(cand_dir)
 
             attempts = [(device, c) for c in device_compute_types]
             if device != "cpu":
@@ -674,8 +556,9 @@ def warm_up_local_whisper_in_background():
     logger.info("Initiated background pre-warming of local Whisper model.")
 
 
+@functools.lru_cache(maxsize=1)
 def _cuda_device_count() -> int:
-    """Number of CUDA devices CTranslate2 can see (0 when none or when the probe fails)."""
+    """Number of CUDA devices CTranslate2 can see (0 when none or when the probe fails). Probed once."""
     try:
         import ctranslate2
         return int(ctranslate2.get_cuda_device_count())
@@ -926,6 +809,111 @@ def _vad_is_reliable_for(audio_path: str, ctx: str = "") -> bool:
         return False
 
 
+def _mime_to_hint(mime_type: Optional[str]) -> str:
+    """Container hint for FFmpeg from a MIME type (webm when unknown)."""
+    mime = (mime_type or "").replace("mpeg", "mp3")
+    return next((h for h in ("mp3", "wav", "mp4", "ogg") if h in mime), "webm")
+
+
+def _finalize_result(segments_data: List[Dict[str, Any]], raw_text_parts: List[str], wav_path: str,
+                     lang_hint: Optional[str], model_label: str, slice_languages: List[str],
+                     duration_sec: float, elapsed: float) -> Dict[str, Any]:
+    """Shared tail of every local Whisper backend: voice-based speaker labels, the
+    "[MM:SS] Speaker N: text" transcript, language detection and the result dict."""
+    import speaker_diarization
+    if segments_data:
+        labels = speaker_diarization.diarize_wav_segments(wav_path, segments_data) or [1] * len(segments_data)
+        for seg, spk in zip(segments_data, labels):
+            seg["speaker"] = f"Speaker {spk}"
+    transcript = "\n".join(f"{seg['timestamp']} {seg['speaker']}: {seg['text']}" for seg in segments_data)
+    clean_text = " ".join(raw_text_parts)
+
+    # Debug copy only on request (EASD_DEBUG_SAVE_TRANSCRIPT=1), per job, in the temp folder -
+    # never a shared file in the app folder.
+    if transcript and os.environ.get("EASD_DEBUG_SAVE_TRANSCRIPT") == "1":
+        try:
+            dbg = os.path.join(tempfile.gettempdir(), f"easd_transcript_{int(time.time() * 1000)}.txt")
+            with open(dbg, "w", encoding="utf-8") as f:
+                f.write(transcript)
+            logger.info(f"Debug transcript copy saved to {dbg}")
+        except Exception as io_err:
+            logger.warning(f"Could not save debug transcript copy: {io_err}")
+
+    detected_lang = lang_hint or "auto"
+    bengali_chars = len(re.findall(r'[\u0980-\u09FF]', clean_text))
+    latin_chars = len(re.findall(r'[a-zA-Z]', clean_text))
+    if bengali_chars > 0 and bengali_chars >= latin_chars * 0.15:
+        detected_lang = "bn"
+    elif detected_lang != "bn" and latin_chars > 0 and bengali_chars == 0:
+        detected_lang = "en"
+    return {
+        "status": "success", "provider": "local_whisper", "model": model_label,
+        "slice_languages": slice_languages, "text": transcript, "raw_transcript": transcript,
+        "transcript": transcript, "soak_transcript": transcript, "speaker_transcript": transcript,
+        "clean_text": clean_text, "language": detected_lang, "detected_language": detected_lang,
+        "duration": round(float(duration_sec or 0.0), 2), "segments": segments_data,
+        "segments_count": len(segments_data), "processing_time_sec": elapsed,
+    }
+
+
+def _transcribe_local_audio_openvino(media_input, language: Optional[str], prompt: Optional[str],
+                                     mime_type: str) -> Optional[Dict[str, Any]]:
+    """
+    Intel-GPU path (Iris Xe / Arc / Core Ultra) via OpenVINO GenAI. Produces the same result
+    shape as the faster-whisper path, including sanitising and voice-based speaker labels.
+    Returns None if nothing usable came out, so the caller falls back to faster-whisper.
+    """
+    import math
+    import openvino_whisper_engine
+    import speaker_diarization
+
+    t0 = time.time()
+    wav_path = convert_to_wav_pcm16k(media_input, input_hint=_mime_to_hint(mime_type))
+    try:
+        audio = speaker_diarization.read_wav_pcm16k(wav_path)
+        total = len(audio) / 16000.0
+        # OpenVINO exposes no language probabilities, and free auto-detection writes Bangla
+        # speech in Latin letters (ko/jw/pt guesses), so unspecified means Bangla.
+        lang = normalize_language_code(language) or "bn"
+        segments_data: List[Dict[str, Any]] = []
+        raw_parts: List[str] = []
+        last_text = ""
+        model_used = device_used = None
+        slice_sec = 180.0
+        for k in range(max(1, math.ceil(total / slice_sec))):
+            off = k * slice_sec
+            piece = audio[int(off * 16000):int(min(total, off + slice_sec) * 16000)]
+            if len(piece) < 16000 * 0.5:
+                continue
+            out = openvino_whisper_engine.transcribe_samples(piece, language=lang, prompt=prompt or "")
+            model_used, device_used = out["model"], out["device"]
+            for seg in out["segments"]:
+                text = sanitize_whisper_text(seg["text"], language=lang)
+                if not text or text == last_text:
+                    continue
+                last_text = text
+                start, end = off + seg["start"], off + seg["end"]
+                segments_data.append({"start": round(start, 2), "end": round(end, 2), "text": text,
+                                      "speaker": "Speaker 1", "timestamp": f"[{format_seconds_to_min_sec(start)}]",
+                                      "language": lang})
+                raw_parts.append(text)
+        if not segments_data:
+            logger.info("OpenVINO Whisper produced no speech - falling back to faster-whisper")
+            return None
+
+        elapsed = round(time.time() - t0, 2)
+        logger.info(f"OpenVINO Whisper END model={model_used} device={device_used} audio={total:.1f}s "
+                    f"segments={len(segments_data)} in {elapsed}s (RTF={elapsed / total if total else 0:.2f})")
+        return _finalize_result(segments_data, raw_parts, wav_path, lang, f"openvino:{model_used}@{device_used}",
+                                [lang or "auto"], total, elapsed)
+    finally:
+        if wav_path and os.path.exists(wav_path) and wav_path != media_input:
+            try:
+                os.remove(wav_path)
+            except Exception:
+                pass
+
+
 def transcribe_local_audio(
     media_input: Union[bytes, bytearray, io.BytesIO, str],
     language: Optional[str] = None,
@@ -951,6 +939,13 @@ def transcribe_local_audio(
     Returns:
         Dict with 'status', 'text', 'raw_transcript', 'clean_text', 'language', 'duration', etc.
     """
+    # Free RAM for Whisper: stop an idle preloaded llama-server when memory is low (restarts on demand).
+    try:
+        import local_llm_engine
+        local_llm_engine.release_for_transcription()
+    except Exception:
+        pass
+
     if not media_input:
         return {
             "status": "success",
@@ -972,6 +967,15 @@ def transcribe_local_audio(
         }
 
     t_start = time.time()
+    try:
+        import openvino_whisper_engine
+        # The Bangla model only exists for faster-whisper; OpenVINO (Intel GPU) is used for large-v3-turbo only.
+        if openvino_whisper_engine.should_use() and resolve_whisper_model_choice(model_name)[0] == "large-v3-turbo":
+            ov_res = _transcribe_local_audio_openvino(media_input, language, prompt, mime_type)
+            if ov_res is not None:
+                return ov_res
+    except Exception as _ov_err:
+        logger.warning(f"OpenVINO Whisper unavailable ({type(_ov_err).__name__}: {_ov_err}) - using faster-whisper")
     effective_model, _model_source = resolve_whisper_model_choice(model_name)
     _in_desc = (f"file={os.path.basename(media_input)}" if isinstance(media_input, str)
                 else f"bytes={len(media_input.getvalue() if isinstance(media_input, io.BytesIO) else media_input) / 1048576:.2f}MB")
@@ -985,20 +989,9 @@ def transcribe_local_audio(
                      f"{type(_load_err).__name__}: {_load_err}")
         raise
 
-    # Determine input extension hint
-    hint = "webm"
-    if "mp3" in (mime_type or ""):
-        hint = "mp3"
-    elif "wav" in (mime_type or ""):
-        hint = "wav"
-    elif "mp4" in (mime_type or ""):
-        hint = "mp4"
-    elif "ogg" in (mime_type or ""):
-        hint = "ogg"
-
     # Convert audio to clean 16kHz mono WAV file
     _cv0 = time.time()
-    temp_audio_file = convert_to_wav_pcm16k(media_input, input_hint=hint)
+    temp_audio_file = convert_to_wav_pcm16k(media_input, input_hint=_mime_to_hint(mime_type))
     try:
         _wav_sz = os.path.getsize(temp_audio_file)
     except Exception:
@@ -1007,6 +1000,11 @@ def transcribe_local_audio(
 
     # Check if a specific language was explicitly requested
     explicit_lang = normalize_language_code(language)
+    is_banglish = effective_model == "bengaliai"
+    if is_banglish:
+        # Fine-tuned on Bangla only: decode with the Bangla token and no prompt (tested v8.9 on a
+        # real EASD meeting; it writes Bengali script).
+        explicit_lang, prompt = "bn", None
 
     # Whole-file detection is only a PRIOR (it picks the initial_prompt). Each slice below
     # gets its own detection so one early guess can't force the whole file into one language.
@@ -1018,12 +1016,15 @@ def transcribe_local_audio(
         target_language = explicit_lang
         logger.info(f"Language forced by caller: '{explicit_lang}' (per-slice detection disabled)")
 
-    if prompt:
+    if is_banglish:
+        init_prompt = None
+    elif prompt:
         init_prompt = prompt
     elif prior.get("ambiguous") and set(prior.get("candidates", [])) >= {"bn", "en"}:
         init_prompt = DEFAULT_BILINGUAL_PROMPT
     elif target_language == "bn":
-        init_prompt = "Ajker meeting er alochna ebong karjobiboroni. Agenda, budget, review, decisions."
+        # Bengali script: a romanized prompt makes Whisper write Bangla in Latin letters.
+        init_prompt = "আজকের মিটিংয়ের আলোচনা এবং কার্যবিবরণী। এজেন্ডা, বাজেট, পর্যালোচনা, সিদ্ধান্ত।"
     elif target_language == "en":
         init_prompt = "Meeting discussion and proceedings in English verbatim. Agenda, budget, review, action items."
     else:
@@ -1058,11 +1059,8 @@ def transcribe_local_audio(
                 f"vad=on(cross-checked per slice) params={WHISPER_VAD_PARAMETERS} beam={beam_size or 1}")
 
     try:
-        formatted_lines = []
         raw_text_parts = []
         segments_data = []
-        current_spk = 1
-        last_end = 0.0
         last_clean_text = ""
         detected_whisper_lang = target_language
         detected_whisper_prob = 1.0
@@ -1123,7 +1121,7 @@ def transcribe_local_audio(
                             vad_filter=use_vad,
                             vad_parameters=WHISPER_VAD_PARAMETERS if use_vad else None,
                             no_speech_threshold=0.6,
-                            compression_ratio_threshold=2.4
+                            compression_ratio_threshold=_max_compression(run_lang)
                         )
 
                     if detected_whisper_lang is None and hasattr(info, "language"):
@@ -1150,7 +1148,7 @@ def transcribe_local_audio(
                             _drop_lowconf += 1
                             logger.debug(f"{slice_ctx} drop low-confidence logprob={avg_logprob:.2f}: {raw_text[:60]!r}")
                             continue
-                        if comp_ratio > 2.4:
+                        if comp_ratio > _max_compression(seg_lang):
                             _drop_loop += 1
                             logger.debug(f"{slice_ctx} drop repetition loop compression={comp_ratio:.2f}: {raw_text[:60]!r}")
                             continue
@@ -1171,21 +1169,16 @@ def transcribe_local_audio(
                         abs_start = chunk_start_sec + run_off + segment.start
                         abs_end = chunk_start_sec + run_off + segment.end
 
-                        # Detect conversational turn shifts when speech pause > 1.6s
-                        if last_end > 0 and (abs_start - last_end) > 1.6:
-                            current_spk = 2 if current_spk == 1 else 1
-
+                        # Provisional label only - real voice-based labels are assigned after all
+                        # slices are done (speaker_diarization.diarize_wav_segments).
                         timestamp_str = format_seconds_to_min_sec(abs_start)
-                        line = f"[{timestamp_str}] Speaker {current_spk}: {text}"
-                        formatted_lines.append(line)
                         raw_text_parts.append(text)
-                        last_end = abs_end
                         last_clean_text = text
                         segments_data.append({
                             "start": round(abs_start, 2),
                             "end": round(abs_end, 2),
                             "text": text,
-                            "speaker": f"Speaker {current_spk}",
+                            "speaker": "Speaker 1",
                             "timestamp": f"[{timestamp_str}]",
                             "language": seg_lang
                         })
@@ -1206,7 +1199,7 @@ def transcribe_local_audio(
         # Dual-pass resilience: If a specific language was requested (e.g. 'bn') but produced
         # zero valid speech segments, automatically fall back to unforced auto-detection
         # so spoken dialogue in another language (English, bilingual code-switching) is never lost.
-        if not formatted_lines and not _is_fallback_retry and explicit_lang is not None:
+        if not segments_data and not _is_fallback_retry and explicit_lang is not None:
             logger.info(f"Forced language '{language}' yielded no speech output. Retrying with unforced automatic language detection...")
             return transcribe_local_audio(
                 media_input=media_input,
@@ -1220,52 +1213,11 @@ def transcribe_local_audio(
             )
 
         elapsed = round(time.time() - t_start, 2)
-        logger.info(f"transcribe_local_audio END in {elapsed}s: audio={total_duration_sec:.1f}s lines={len(formatted_lines)} "
+        logger.info(f"transcribe_local_audio END in {elapsed}s: audio={total_duration_sec:.1f}s lines={len(segments_data)} "
                     f"(RTF={elapsed / total_duration_sec if total_duration_sec else 0:.2f})")
-        speaker_transcript = "\n".join(formatted_lines)
-        clean_text = " ".join(raw_text_parts)
-
-        # Primary verbatim output in user's requested format: [MM:SS] Speaker X: <text>
-        raw_transcript_final = speaker_transcript.strip()
-        if not raw_transcript_final and clean_text:
-            raw_transcript_final = f"[00:00] Speaker 1: {clean_text}"
-
-        try:
-            if raw_transcript_final:
-                with open("raw_transcript.txt", "w", encoding="utf-8") as f:
-                    f.write(raw_transcript_final)
-        except Exception as io_err:
-            logger.warning(f"Could not save raw_transcript.txt: {io_err}")
-
-        detected_lang = target_language or explicit_lang or detected_whisper_lang or "auto"
-        if clean_text:
-            import re
-            bengali_chars = len(re.findall(r'[\u0980-\u09FF]', clean_text))
-            latin_chars = len(re.findall(r'[a-zA-Z]', clean_text))
-            if bengali_chars > 0 and bengali_chars >= latin_chars * 0.15:
-                detected_lang = "bn"
-            elif detected_lang != "bn" and latin_chars > 0 and bengali_chars == 0:
-                detected_lang = "en"
-        duration_sec = total_duration_sec or 0.0
-
-        return {
-            "status": "success",
-            "provider": "local_whisper",
-            "model": loaded_model_name,
-            "slice_languages": slice_languages,
-            "text": raw_transcript_final,
-            "raw_transcript": raw_transcript_final,
-            "transcript": raw_transcript_final,
-            "soak_transcript": raw_transcript_final,
-            "speaker_transcript": speaker_transcript,
-            "clean_text": clean_text,
-            "language": detected_lang,
-            "detected_language": detected_lang,
-            "duration": round(float(duration_sec), 2),
-            "segments": segments_data,
-            "segments_count": len(segments_data),
-            "processing_time_sec": elapsed
-        }
+        return _finalize_result(segments_data, raw_text_parts, temp_audio_file,
+                                target_language or explicit_lang or detected_whisper_lang,
+                                loaded_model_name, slice_languages, total_duration_sec, elapsed)
 
     except Exception as e:
         logger.error(f"Error during local whisper transcription after {time.time() - t_start:.1f}s: "

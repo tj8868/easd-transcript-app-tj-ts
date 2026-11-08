@@ -13,6 +13,36 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 
+// Single-line header inputs, rendered by one shared block (field = key in formData).
+const HEADER_FIELDS = [
+  { field: 'ministry', Icon: Building2, label: 'মন্ত্রণালয় / বিভাগ (Ministry / Division)',
+    fallback: 'স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়',
+    placeholder: 'e.g. স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয় / Ministry of Health' },
+  { field: 'department', Icon: Building2, label: 'অধিদপ্তর / সংস্থা (Department / Directorate)',
+    fallback: 'স্বাস্থ্য সেবা বিভাগ / DGHS', placeholder: 'e.g. Directorate General of Health Services' },
+  { field: 'memo_no', Icon: FileText, label: 'স্মারক নম্বর (Memo / Nothi Reference No)',
+    fallback: '৪৫.০০.০০০০.০০১.২৪.০০১.২৬-', placeholder: 'e.g. ৪৫.০০.০০০০.০০১.২৪.০০১.২৬-১২৪' },
+  { field: 'date', Icon: Calendar, label: 'তারিখ (Date - Bangla & Gregorian)',
+    fallback: '০২ সেপ্টেম্বর, ২০২৬ / 02 September 2026',
+    placeholder: 'e.g. ০২ সেপ্টেম্বর, ২০২৬ / 02 September 2026' }
+];
+
+// Numbered narrative sections, rendered by one shared block (field = key in formData).
+const NARRATIVE_SECTIONS = [
+  { field: 'background', badge: '১', minH: 'min-h-[100px]',
+    label: 'পটভূমি ও ভূমিকা (Background & Introduction)',
+    placeholder: 'প্রশাসনিক পটভূমি, পর্যালোচনা সভার প্রেক্ষাপট এবং আইনি ভিত্তি...' },
+  { field: 'observations', badge: '২', minH: 'min-h-[120px]',
+    label: 'বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত (Observations & Findings)',
+    placeholder: '• মাঠ পর্যায়ের মূল পর্যবেক্ষণ ও মূল্যায়িত উপাত্তসমূহ...' },
+  { field: 'decisions', badge: '৩', minH: 'min-h-[100px]',
+    label: 'সভায় গৃহীত সিদ্ধান্তসমূহ (Decisions Taken)',
+    placeholder: '• আনুষ্ঠানিকভাবে অনুমোদিত সিদ্ধান্ত এবং নির্দেশনা...' },
+  { field: 'recommendations', badge: '৪', minH: 'min-h-[110px]',
+    label: 'কৌশলগত সুপারিশমালা (Policy & Operational Recommendations)',
+    placeholder: '• ভবিষ্যৎ কর্মপরিকল্পনা ও মন্ত্রণালয় পর্যায়ের সুনির্দিষ্ট সুপারিশমালা...' }
+];
+
 export default function GovtReportForm({
   formData,
   onChange,
@@ -72,65 +102,22 @@ export default function GovtReportForm({
 
         {/* Form Fields Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-5">
-          {/* Ministry */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mb-1.5">
-              <Building2 size={14} className="text-emerald-400" />
-              মন্ত্রণালয় / বিভাগ (Ministry / Division)
-            </label>
-            <input
-              type="text"
-              value={formData.ministry || 'স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয়'}
-              onChange={(e) => handleChange('ministry', e.target.value)}
-              placeholder="e.g. স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয় / Ministry of Health"
-              className="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 font-sans"
-            />
-          </div>
-
-          {/* Department */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mb-1.5">
-              <Building2 size={14} className="text-emerald-400" />
-              অধিদপ্তর / সংস্থা (Department / Directorate)
-            </label>
-            <input
-              type="text"
-              value={formData.department || 'স্বাস্থ্য সেবা বিভাগ / DGHS'}
-              onChange={(e) => handleChange('department', e.target.value)}
-              placeholder="e.g. Directorate General of Health Services"
-              className="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 font-sans"
-            />
-          </div>
-
-          {/* Memo No */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mb-1.5">
-              <FileText size={14} className="text-emerald-400" />
-              স্মারক নম্বর (Memo / Nothi Reference No)
-            </label>
-            <input
-              type="text"
-              value={formData.memo_no || '৪৫.০০.০০০০.০০১.২৪.০০১.২৬-'}
-              onChange={(e) => handleChange('memo_no', e.target.value)}
-              placeholder="e.g. ৪৫.০০.০০০০.০০১.২৪.০০১.২৬-১২৪"
-              className="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 font-sans"
-            />
-          </div>
-
-          {/* Date */}
-          <div>
-            <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mb-1.5">
-              <Calendar size={14} className="text-emerald-400" />
-              তারিখ (Date - Bangla & Gregorian)
-            </label>
-            <input
-              type="text"
-              value={formData.date || '০২ সেপ্টেম্বর, ২০২৬ / 02 September 2026'}
-              onChange={(e) => handleChange('date', e.target.value)}
-              placeholder="e.g. ০২ সেপ্টেম্বর, ২০২৬ / 02 September 2026"
-              className="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 font-sans"
-            />
-          </div>
+          {/* Ministry, Department, Memo No, Date */}
+          {HEADER_FIELDS.map(({ field, Icon, label, fallback, placeholder }) => (
+            <div key={field}>
+              <label className="text-xs font-semibold text-slate-300 flex items-center gap-1.5 mb-1.5">
+                <Icon size={14} className="text-emerald-400" />
+                {label}
+              </label>
+              <input
+                type="text"
+                value={formData[field] || fallback}
+                onChange={(e) => handleChange(field, e.target.value)}
+                placeholder={placeholder}
+                className="w-full bg-slate-950/70 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 font-sans"
+              />
+            </div>
+          ))}
 
           {/* Subject */}
           <div className="md:col-span-2">
@@ -154,77 +141,25 @@ export default function GovtReportForm({
 
       {/* Sections Grid */}
       <div className="grid grid-cols-1 gap-6">
-        {/* 1. Background & Introduction */}
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
-                ১
-              </span>
-              ১. পটভূমি ও ভূমিকা (Background & Introduction)
-            </label>
+        {/* 1-4. Numbered narrative sections */}
+        {NARRATIVE_SECTIONS.map(({ field, badge, label, placeholder, minH }) => (
+          <div key={field} className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
+                  {badge}
+                </span>
+                {`${badge}. ${label}`}
+              </label>
+            </div>
+            <textarea
+              value={formData[field] || ''}
+              onChange={(e) => handleChange(field, e.target.value)}
+              placeholder={placeholder}
+              className={`w-full ${minH} bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y font-sans leading-relaxed`}
+            />
           </div>
-          <textarea
-            value={formData.background || ''}
-            onChange={(e) => handleChange('background', e.target.value)}
-            placeholder="প্রশাসনিক পটভূমি, পর্যালোচনা সভার প্রেক্ষাপট এবং আইনি ভিত্তি..."
-            className="w-full min-h-[100px] bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y font-sans leading-relaxed"
-          />
-        </div>
-
-        {/* 2. Detailed Observations */}
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
-                ২
-              </span>
-              ২. বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত (Observations & Findings)
-            </label>
-          </div>
-          <textarea
-            value={formData.observations || ''}
-            onChange={(e) => handleChange('observations', e.target.value)}
-            placeholder="• মাঠ পর্যায়ের মূল পর্যবেক্ষণ ও মূল্যায়িত উপাত্তসমূহ..."
-            className="w-full min-h-[120px] bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y font-sans leading-relaxed"
-          />
-        </div>
-
-        {/* 3. Decisions Taken */}
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
-                ৩
-              </span>
-              ৩. সভায় গৃহীত সিদ্ধান্তসমূহ (Decisions Taken)
-            </label>
-          </div>
-          <textarea
-            value={formData.decisions || ''}
-            onChange={(e) => handleChange('decisions', e.target.value)}
-            placeholder="• আনুষ্ঠানিকভাবে অনুমোদিত সিদ্ধান্ত এবং নির্দেশনা..."
-            className="w-full min-h-[100px] bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y font-sans leading-relaxed"
-          />
-        </div>
-
-        {/* 4. Strategic Recommendations */}
-        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-2">
-          <div className="flex items-center justify-between">
-            <label className="text-sm font-bold text-slate-200 flex items-center gap-2">
-              <span className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center text-xs font-bold">
-                ৪
-              </span>
-              ৪. কৌশলগত সুপারিশমালা (Policy & Operational Recommendations)
-            </label>
-          </div>
-          <textarea
-            value={formData.recommendations || ''}
-            onChange={(e) => handleChange('recommendations', e.target.value)}
-            placeholder="• ভবিষ্যৎ কর্মপরিকল্পনা ও মন্ত্রণালয় পর্যায়ের সুনির্দিষ্ট সুপারিশমালা..."
-            className="w-full min-h-[110px] bg-slate-950/70 border border-slate-800 rounded-xl p-3 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 resize-y font-sans leading-relaxed"
-          />
-        </div>
+        ))}
 
         {/* 5. Implementation Action Matrix Table */}
         <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-4">

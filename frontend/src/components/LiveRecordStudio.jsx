@@ -53,6 +53,80 @@ const ModelSectionHeader = ({ icon, label, activeModel }) => (
   </div>
 );
 
+// "Test STT" / "Test LLM" button: turns green and shows latency after a successful test.
+const EngineTestButton = ({ id, kind, onClick, testing, result, fallbackMs, rgb, icon, title }) => (
+  <button
+    id={id}
+    type="button"
+    className="btn btn-secondary btn-sm"
+    onClick={onClick}
+    disabled={testing}
+    style={{
+      display: 'flex',
+      alignItems: 'center',
+      gap: '5px',
+      fontWeight: 700,
+      fontSize: '0.78rem',
+      padding: '6px 12px',
+      background: result?.success ? 'rgba(16, 185, 129, 0.15)' : `rgba(${rgb}, 0.12)`,
+      borderColor: result?.success ? 'rgba(16, 185, 129, 0.4)' : `rgba(${rgb}, 0.3)`
+    }}
+    title={title}
+  >
+    {icon}
+    {testing ? `Testing ${kind}...` : result?.success ? `${kind} OK (${result.latency_ms || fallbackMs}ms)` : `Test ${kind}`}
+  </button>
+);
+
+// One model-picker row: quick buttons for common models plus a dropdown for the rest.
+const QuickModelRow = ({ icon, label, value, quickModels, onQuickSelect, onSelect, moreValue, moreLabel, options, accent }) => (
+  <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
+    <ModelSectionHeader icon={icon} label={label} activeModel={value} />
+    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+      {quickModels.map((item) => {
+        const isSelected = value === item.id;
+        return (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => onQuickSelect(item)}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '6px 13px',
+              borderRadius: '8px',
+              fontSize: '0.78rem',
+              fontWeight: isSelected ? 800 : 600,
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+              background: isSelected ? `rgba(${accent.rgb}, 0.22)` : 'rgba(255, 255, 255, 0.04)',
+              color: isSelected ? accent.text : 'var(--text-secondary)',
+              border: isSelected ? `1.5px solid ${accent.border}` : '1px solid var(--border-color)',
+              boxShadow: isSelected ? `0 0 12px rgba(${accent.rgb}, 0.35)` : 'none'
+            }}
+          >
+            <span>{item.icon}</span>
+            <span>{item.shortLabel}</span>
+            {isSelected && <Check size={13} color={accent.text} />}
+          </button>
+        );
+      })}
+      <select
+        className="form-control"
+        style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
+        value={value}
+        onChange={(e) => onSelect(e.target.value)}
+      >
+        <option value={moreValue}>{moreLabel}</option>
+        {options.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+    </div>
+  </div>
+);
+
 const cleanTranscriptText = (text, lang) => {
   if (!text) return '';
   // 1. Remove replacement character and zero-width artifacts
@@ -360,11 +434,31 @@ export default function LiveRecordStudio({
   const autoChunkTimerRef = useRef(null);
   const isStreamingChunkRef = useRef(false);
   const currentTakeSecondsRef = useRef(0);
+  const liveOffsetSecRef = useRef(0); // seconds of the current take already sent for live preview
   const isRecordingRef = useRef(false);
   const isPausedRef = useRef(false);
   const isStartingRecognitionRef = useRef(false);
   const languageRef = useRef('auto');
   const restartTimerRef = useRef(null);
+
+  // Shared clean-up used by pause, stop, restart and unmount.
+  const clearRestartTimer = () => {
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+  };
+  const abortRecognition = () => {
+    const rec = recognitionRef.current;
+    if (!rec) return;
+    try {
+      rec.onend = null;
+      rec.onerror = null;
+      rec.onresult = null;
+      rec.abort();
+    } catch (e) {}
+    recognitionRef.current = null;
+  };
   const lastSpeechTimestampRef = useRef(Date.now());
   const fileInputRef = useRef(null);
   const liveTranscriptForTakeRef = useRef('');
@@ -397,10 +491,7 @@ export default function LiveRecordStudio({
   useEffect(() => {
     return () => {
       stopLiveInternal();
-      if (restartTimerRef.current) {
-        clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
+      clearRestartTimer();
       recordingsQueue.forEach((item) => {
         if (item.url) URL.revokeObjectURL(item.url);
       });
@@ -451,33 +542,33 @@ export default function LiveRecordStudio({
     }
   };
 
-  const handleTestSTT = async () => {
-    setTestingSTT(true);
-    setSttTestResult(null);
+  // Runs one engine test through testAiEngine and shows the result for 8 s (kind: 'stt' | 'llm').
+  const runQuickEngineTest = async (kind, params, setTesting, setResult) => {
+    const label = kind.toUpperCase();
+    setTesting(true);
+    setResult(null);
     try {
-      const prov = aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'local_whisper'
-        : (aiConfig?.provider === 'openai_compatible' ? 'gemini' : (aiConfig?.provider || 'gemini')));
-      const res = await testAiEngine({
-        test_type: 'stt',
-        stt_provider: prov,
-        stt_model: aiConfig?.transcriptionModel || 'gemini-3.5-transcribe',
-        stt_api_key: aiConfig?.transcriptionApiKey || (aiConfig?.provider === 'openai_compatible' ? '' : aiConfig?.apiKey) || '',
-        base_url: aiConfig?.baseUrl || ''
+      const res = await testAiEngine({ test_type: kind, base_url: aiConfig?.baseUrl || '', ...params });
+      const part = res[kind] || {};
+      setResult({
+        success: Boolean(part.success),
+        message: (part.message || (part.success ? `${label} engine connected!` : `${label} error`)) + (part.latency_ms ? ` (${part.latency_ms}ms)` : ''),
+        latency_ms: part.latency_ms
       });
-      setTestingSTT(false);
-      const stt = res.stt || {};
-      setSttTestResult({
-        success: Boolean(stt.success),
-        message: (stt.message || (stt.success ? 'STT engine connected!' : 'STT error')) + (stt.latency_ms ? ` (${stt.latency_ms}ms)` : ''),
-        latency_ms: stt.latency_ms
-      });
-      setTimeout(() => setSttTestResult(null), 8000);
     } catch (e) {
-      setTestingSTT(false);
-      setSttTestResult({ success: false, message: e.message || 'STT test failed' });
-      setTimeout(() => setSttTestResult(null), 8000);
+      setResult({ success: false, message: e.message || `${label} test failed` });
+    } finally {
+      setTesting(false);
+      setTimeout(() => setResult(null), 8000);
     }
   };
+
+  const handleTestSTT = () => runQuickEngineTest('stt', {
+    stt_provider: aiConfig?.transcriptionProvider || (aiConfig?.transcriptionModel?.includes('whisper') ? 'local_whisper'
+      : (aiConfig?.provider === 'openai_compatible' ? 'gemini' : (aiConfig?.provider || 'gemini'))),
+    stt_model: aiConfig?.transcriptionModel || 'gemini-3.5-transcribe',
+    stt_api_key: aiConfig?.transcriptionApiKey || (aiConfig?.provider === 'openai_compatible' ? '' : aiConfig?.apiKey) || ''
+  }, setTestingSTT, setSttTestResult);
 
   const applyTranscribedTakeResult = (targetId, aiTranscript, labelText) => {
     setLiveTranscript((prev) => (prev ? `${prev}\n\n${aiTranscript}` : aiTranscript));
@@ -626,32 +717,11 @@ export default function LiveRecordStudio({
     }
   };
 
-  const handleTestLLM = async () => {
-    setTestingLLM(true);
-    setLlmTestResult(null);
-    try {
-      const prov = aiConfig?.summarizationProvider || (aiConfig?.summarizationModel?.includes('gemini') ? 'gemini' : (aiConfig?.provider || 'gemini'));
-      const res = await testAiEngine({
-        test_type: 'llm',
-        llm_provider: prov,
-        llm_model: aiConfig?.summarizationModel || 'gemini-3.8-flash',
-        llm_api_key: aiConfig?.summarizationApiKey || aiConfig?.apiKey || '',
-        base_url: aiConfig?.baseUrl || ''
-      });
-      setTestingLLM(false);
-      const llm = res.llm || {};
-      setLlmTestResult({
-        success: Boolean(llm.success),
-        message: (llm.message || (llm.success ? 'LLM engine connected!' : 'LLM error')) + (llm.latency_ms ? ` (${llm.latency_ms}ms)` : ''),
-        latency_ms: llm.latency_ms
-      });
-      setTimeout(() => setLlmTestResult(null), 8000);
-    } catch (e) {
-      setTestingLLM(false);
-      setLlmTestResult({ success: false, message: e.message || 'LLM test failed' });
-      setTimeout(() => setLlmTestResult(null), 8000);
-    }
-  };
+  const handleTestLLM = () => runQuickEngineTest('llm', {
+    llm_provider: aiConfig?.summarizationProvider || (aiConfig?.summarizationModel?.includes('gemini') ? 'gemini' : (aiConfig?.provider || 'gemini')),
+    llm_model: aiConfig?.summarizationModel || 'gemini-3.8-flash',
+    llm_api_key: aiConfig?.summarizationApiKey || aiConfig?.apiKey || ''
+  }, setTestingLLM, setLlmTestResult);
 
   const handleSelectSTTModel = (model) => {
     if (!setAiConfig) return;
@@ -713,22 +783,11 @@ export default function LiveRecordStudio({
 
   // --- Robust Continuous webkitSpeechRecognition Engine ---
   const restartSpeechRecognition = (delay = 150, langOverride = null) => {
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
+    clearRestartTimer();
     restartTimerRef.current = setTimeout(() => {
       if (!isRecordingRef.current || isPausedRef.current) return;
       try {
-        if (recognitionRef.current) {
-          try {
-            recognitionRef.current.onend = null;
-            recognitionRef.current.onerror = null;
-            recognitionRef.current.onresult = null;
-            recognitionRef.current.abort();
-          } catch (e) {}
-          recognitionRef.current = null;
-        }
+        abortRecognition();
         const rec = initSpeechRecognition(langOverride || languageRef.current);
         if (rec) {
           recognitionRef.current = rec;
@@ -876,17 +935,8 @@ export default function LiveRecordStudio({
     setLanguage(newLang);
     languageRef.current = newLang;
     if (isRecordingRef.current) {
-      if (restartTimerRef.current) {
-        clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.onend = null;
-          recognitionRef.current.abort();
-        } catch (e) {}
-        recognitionRef.current = null;
-      }
+      clearRestartTimer();
+      abortRecognition();
       restartSpeechRecognition(100);
     }
   };
@@ -933,6 +983,7 @@ export default function LiveRecordStudio({
 
       currentChunksRef.current = [];
       currentTakeSecondsRef.current = 0;
+      liveOffsetSecRef.current = 0;
       lastSpeechTimestampRef.current = Date.now();
       setRecordingSeconds(0);
       setLiveTranscript('');
@@ -971,9 +1022,17 @@ export default function LiveRecordStudio({
             formData.append('chunk', chunkBlob, `live_stream.${ext}`);
             formData.append('language', languageRef.current || 'auto');
             formData.append('provider', aiConfig?.transcriptionProvider || 'gemini');
-            formData.append('model_name', aiConfig?.transcriptionModel || 'gemini-3.5-transcribe');
+            // Live preview uses the low-latency live model; the final pass over the take uses the batch model.
+            const sttModel = aiConfig?.transcriptionModel || '';
+            formData.append('model_name', aiConfig?.liveTranscriptionModel
+              || (!sttModel || sttModel.startsWith('gemini') ? 'gemini-3.5-transcribe-live' : sttModel));
+            // Only audio after this point is transcribed; returned lines are on the recording's own timeline.
+            formData.append('offset_sec', String(liveOffsetSecRef.current || 0));
 
             const res = await axios.post('/api/live_transcribe_chunk', formData);
+            if (res.data && typeof res.data.end_sec === 'number' && res.data.end_sec > liveOffsetSecRef.current) {
+              liveOffsetSecRef.current = res.data.end_sec;
+            }
             if (res.data && res.data.language) {
               const backendLang = res.data.language === 'en' ? 'en' : 'bn';
               if (backendLang !== detectedLiveLangRef.current) {
@@ -992,10 +1051,8 @@ export default function LiveRecordStudio({
                   speaker = `Speaker ${autoSpeakerIndexRef.current || 1}`;
                 }
                 const formatted = cleanChunk.startsWith('[') ? cleanChunk : `[${formatTime(currentTakeSecondsRef.current || 0)}] ${speaker}: ${cleanChunk}`;
-                setLiveTranscript((prev) => {
-                  if (prev && prev.includes(cleanChunk)) return prev;
-                  return prev ? `${prev}\n${formatted}` : formatted;
-                });
+                // Each response now covers only new audio, so no de-duplication guesswork is needed.
+                setLiveTranscript((prev) => (prev ? `${prev}\n${formatted}` : formatted));
                 liveTranscriptForTakeRef.current = formatted;
                 setEngineStatus('Gemini AI Live Stream (Auto-Preview)');
                 if (onLiveTranscriptSync) onLiveTranscriptSync(formatted);
@@ -1110,21 +1167,11 @@ export default function LiveRecordStudio({
       restartSpeechRecognition(100);
       setStatusText('● Recording & live transcribing resumed');
     } else {
-      if (restartTimerRef.current) {
-        clearTimeout(restartTimerRef.current);
-        restartTimerRef.current = null;
-      }
+      clearRestartTimer();
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
         mediaRecorderRef.current.pause();
       }
-      if (recognitionRef.current) {
-        try {
-          recognitionRef.current.onend = null;
-          recognitionRef.current.onerror = null;
-          recognitionRef.current.abort();
-        } catch (e) {}
-        recognitionRef.current = null;
-      }
+      abortRecognition();
       setIsPaused(true);
       isPausedRef.current = true;
       if (onRecordingStateChange) onRecordingStateChange(false);
@@ -1142,10 +1189,7 @@ export default function LiveRecordStudio({
   };
 
   const stopLiveInternal = () => {
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current);
-      restartTimerRef.current = null;
-    }
+    clearRestartTimer();
     if (timerIntervalRef.current) {
       clearInterval(timerIntervalRef.current);
       timerIntervalRef.current = null;
@@ -1158,14 +1202,7 @@ export default function LiveRecordStudio({
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
     }
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.onend = null;
-        recognitionRef.current.onerror = null;
-        recognitionRef.current.abort();
-      } catch (e) {}
-      recognitionRef.current = null;
-    }
+    abortRecognition();
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       try {
         if (mediaRecorderRef.current.state === 'recording') {
@@ -1941,51 +1978,13 @@ export default function LiveRecordStudio({
                 </div>
 
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  {/* Direct STT Engine Test Button */}
-                  <button
-                    id="frontPageTestSttBtn"
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleTestSTT}
-                    disabled={testingSTT}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      fontWeight: 700,
-                      fontSize: '0.78rem',
-                      padding: '6px 12px',
-                      background: sttTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(139, 92, 246, 0.12)',
-                      borderColor: sttTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(139, 92, 246, 0.3)'
-                    }}
-                    title="Actively send synthetic audio to test transcription model"
-                  >
-                    <Mic size={13} color="#8b5cf6" />
-                    {testingSTT ? 'Testing STT...' : sttTestResult?.success ? `STT OK (${sttTestResult.latency_ms || 280}ms)` : 'Test STT'}
-                  </button>
+                  <EngineTestButton id="frontPageTestSttBtn" kind="STT" onClick={handleTestSTT} testing={testingSTT}
+                    result={sttTestResult} fallbackMs={280} rgb="139, 92, 246" icon={<Mic size={13} color="#8b5cf6" />}
+                    title="Actively send synthetic audio to test transcription model" />
 
-                  {/* Direct LLM Engine Test Button */}
-                  <button
-                    id="frontPageTestLlmBtn"
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    onClick={handleTestLLM}
-                    disabled={testingLLM}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      fontWeight: 700,
-                      fontSize: '0.78rem',
-                      padding: '6px 12px',
-                      background: llmTestResult?.success ? 'rgba(16, 185, 129, 0.15)' : 'rgba(2, 132, 199, 0.12)',
-                      borderColor: llmTestResult?.success ? 'rgba(16, 185, 129, 0.4)' : 'rgba(2, 132, 199, 0.3)'
-                    }}
-                    title="Actively send test prompt to verify summary model"
-                  >
-                    <Cpu size={13} color="var(--accent-color)" />
-                    {testingLLM ? 'Testing LLM...' : llmTestResult?.success ? `LLM OK (${llmTestResult.latency_ms || 320}ms)` : 'Test LLM'}
-                  </button>
+                  <EngineTestButton id="frontPageTestLlmBtn" kind="LLM" onClick={handleTestLLM} testing={testingLLM}
+                    result={llmTestResult} fallbackMs={320} rgb="2, 132, 199" icon={<Cpu size={13} color="var(--accent-color)" />}
+                    title="Actively send test prompt to verify summary model" />
 
                   {onOpenSettings && (
                     <button
@@ -2063,115 +2062,33 @@ export default function LiveRecordStudio({
                 </div>
               )}
 
-              {/* Row 2: Interactive STT Model Selection Buttons */}
-              <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
-                <ModelSectionHeader
-                  icon={<Mic size={14} color="#8b5cf6" />}
-                  label="🎙️ Transcription STT Model:"
-                  activeModel={aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'}
-                />
+              {/* Row 2: STT model picker */}
+              <QuickModelRow
+                icon={<Mic size={14} color="#8b5cf6" />}
+                label="🎙️ Transcription STT Model:"
+                value={aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'}
+                quickModels={QUICK_STT_MODELS}
+                onQuickSelect={handleSelectSTTModel}
+                onSelect={(v) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: v })}
+                moreValue="gemini-3.5-transcribe"
+                moreLabel="More STT options..."
+                options={(MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.gemini).stt || []}
+                accent={{ border: '#8b5cf6', text: '#a78bfa', rgb: '139, 92, 246' }}
+              />
 
-                {/* Quick Segmented Buttons for STT */}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                  {QUICK_STT_MODELS.map((item) => {
-                    const isSelected = (aiConfig?.transcriptionModel || 'gemini-3.5-transcribe') === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => handleSelectSTTModel(item)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '6px 13px',
-                          borderRadius: '8px',
-                          fontSize: '0.78rem',
-                          fontWeight: isSelected ? 800 : 600,
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease',
-                          background: isSelected ? 'rgba(139, 92, 246, 0.22)' : 'rgba(255, 255, 255, 0.04)',
-                          color: isSelected ? '#a78bfa' : 'var(--text-secondary)',
-                          border: isSelected ? '1.5px solid #8b5cf6' : '1px solid var(--border-color)',
-                          boxShadow: isSelected ? '0 0 12px rgba(139, 92, 246, 0.35)' : 'none'
-                        }}
-                      >
-                        <span>{item.icon}</span>
-                        <span>{item.shortLabel}</span>
-                        {isSelected && <Check size={13} color="#a78bfa" />}
-                      </button>
-                    );
-                  })}
-
-                  {/* STT Dropdown for other/custom models */}
-                  <select
-                    className="form-control"
-                    style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-                    value={aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'}
-                    onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, transcriptionModel: e.target.value })}
-                  >
-                    <option value="gemini-3.5-transcribe">More STT options...</option>
-                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.gemini).stt || []).map((opt) => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* Row 3: Interactive Summary LLM Model Selection Buttons */}
-              <div style={{ background: 'rgba(0, 0, 0, 0.12)', borderRadius: '12px', padding: '12px', border: '1px solid var(--border-color)' }}>
-                <ModelSectionHeader
-                  icon={<Cpu size={14} color="var(--accent-color)" />}
-                  label="Summary LLM Model:"
-                  activeModel={aiConfig?.summarizationModel || 'gemini-3.8-flash'}
-                />
-
-                {/* Quick Segmented Buttons for LLM */}
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-                  {QUICK_LLM_MODELS.map((item) => {
-                    const isSelected = (aiConfig?.summarizationModel || 'gemini-3.8-flash') === item.id;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => handleSelectLLMModel(item)}
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: '6px',
-                          padding: '6px 13px',
-                          borderRadius: '8px',
-                          fontSize: '0.78rem',
-                          fontWeight: isSelected ? 800 : 600,
-                          cursor: 'pointer',
-                          transition: 'all 0.2s ease',
-                          background: isSelected ? 'rgba(2, 132, 199, 0.22)' : 'rgba(255, 255, 255, 0.04)',
-                          color: isSelected ? 'var(--accent-color)' : 'var(--text-secondary)',
-                          border: isSelected ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
-                          boxShadow: isSelected ? '0 0 12px rgba(2, 132, 199, 0.35)' : 'none'
-                        }}
-                      >
-                        <span>{item.icon}</span>
-                        <span>{item.shortLabel}</span>
-                        {isSelected && <Check size={13} color="var(--accent-color)" />}
-                      </button>
-                    );
-                  })}
-
-                  {/* LLM Dropdown for other/custom models */}
-                  <select
-                    className="form-control"
-                    style={{ fontSize: '0.76rem', padding: '5px 8px', fontWeight: 600, maxWidth: '170px', height: '32px' }}
-                    value={aiConfig?.summarizationModel || 'gemini-3.8-flash'}
-                    onChange={(e) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: e.target.value, modelName: e.target.value })}
-                  >
-                    <option value="gemini-3.8-flash">More LLM options...</option>
-                    {((MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.gemini).llm || []).map((opt) => (
-                      <option key={opt.value} value={opt.value}>{opt.label}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              {/* Row 3: summary LLM model picker */}
+              <QuickModelRow
+                icon={<Cpu size={14} color="var(--accent-color)" />}
+                label="Summary LLM Model:"
+                value={aiConfig?.summarizationModel || 'gemini-3.8-flash'}
+                quickModels={QUICK_LLM_MODELS}
+                onQuickSelect={handleSelectLLMModel}
+                onSelect={(v) => setAiConfig && setAiConfig({ ...aiConfig, summarizationModel: v, modelName: v })}
+                moreValue="gemini-3.8-flash"
+                moreLabel="More LLM options..."
+                options={(MODEL_OPTIONS_BY_PROVIDER[aiConfig?.provider || 'gemini'] || MODEL_OPTIONS_BY_PROVIDER.gemini).llm || []}
+                accent={{ border: 'var(--accent-color)', text: 'var(--accent-color)', rgb: '2, 132, 199' }}
+              />
             </div>
           </div>
         )}

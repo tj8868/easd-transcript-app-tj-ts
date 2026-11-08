@@ -46,11 +46,10 @@ For full step-by-step instructions on building, compiling, and deploying across 
 
 ## 🚀 Quick Start Guide (Windows)
 
-### Option 1: Instant Zero-Install Launch (Recommended)
-Simply double-click:
-```
-Launch_App.bat
-```
+### Option 1: One-Click Launch (Windows, Linux, macOS)
+Double-click `run_app.pyw` on Windows, or run `python3 run_app.pyw` on Linux/macOS.
+- `run_app.pyw console` keeps a terminal open with the log (troubleshooting).
+- `run_app.pyw shortcut` puts an eCommunicator shortcut on the desktop.
 - Starts the secure local server.
 - Opens your default web browser automatically at `http://127.0.0.1:8000/`.
 
@@ -137,13 +136,28 @@ Click the **`⚙️ Settings`** button in the top header to configure:
 
 ---
 
+## ⚡ GPU acceleration on Intel laptops (e.g. Core i3-1315U, Iris Xe, Core Ultra)
+
+The app uses Intel's OpenVINO on the integrated GPU automatically for speech-to-text, speaker
+identification and the local AI model (template filling and English only / বাংলা only). No compiling is needed.
+
+1. Install the app's requirements once: `pip install -r requirements.txt` (includes `openvino-genai`).
+2. Graphics driver:
+   - **Windows:** the normal Intel graphics driver is enough (update it from Intel's site if it is old).
+   - **Linux (Ubuntu):** `sudo apt install intel-opencl-icd` (Intel's GPU compute runtime) and log out/in.
+3. Start the app (`run_app.pyw`). The log (`app_service.log`) shows `... ready ... on GPU` for each engine.
+   First use downloads the Intel-optimised models once (Whisper ~0.9 GB, local AI 1-2.5 GB).
+
+Local AI model on OpenVINO: Qwen2.5-1.5B (8 GB RAM laptops) or Gemma-3-4B (12 GB+, better Bangla).
+Override with `EASD_OV_LLM_MODEL`, force/disable with `EASD_LLM_BACKEND=openvino|llamacpp`.
+
 ## 📦 Cross-Platform Distribution & Packaging
 
 This single codebase packages natively across all platforms:
 
 | Platform | Setup / Build File | Instructions |
 | :--- | :--- | :--- |
-| **Windows** | `Launch_App.bat` / `build_windows_exe.py` | Double-click `Launch_App.bat` for instant launch, or run `python build_windows_exe.py` to create a standalone `dist/EASD_Meeting_Minutes.exe`. |
+| **Windows** | `run_app.pyw` / `build_windows_exe.py` | Double-click `run_app.pyw` for instant launch, or run `python build_windows_exe.py` to create a standalone `dist/EASD_Meeting_Minutes.exe`. |
 | **Linux** | `launch_linux.sh` / `easd-ai.service` | Run `./launch_linux.sh` or install `easd-ai.service` into `/etc/systemd/system/`. |
 | **macOS** | `launch_mac.command` | Double-click `launch_mac.command` to run on macOS. |
 | **Android** | `Build_Android_APK.bat` | Run `Build_Android_APK.bat` to build an installable Android APK using Capacitor or Bubblewrap CLI. |

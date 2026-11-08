@@ -57,3 +57,13 @@ app_service.log
 diag_run_*.log
 raw_transcript.txt
 models/
+
+# llama-server built by scripts/build_llama_server.* (platform-specific)
+bin/
+llama_server.log
+
+# v8.9 runtime / local-only files
+.llama_server.pid
+Transcription Module/custom_api_config.json
+Transcription Module/temp_uploads/
+models/.ov_cache/

@@ -5,47 +5,8 @@ import io
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 1. Automatic Virtual Environment Hand-off:
-# If app.py is clicked or executed directly using system Python rather than .venv,
-# automatically re-execute inside the project's dedicated virtual environment (.venv)
-venv_py = os.path.join(BASE_DIR, ".venv", "Scripts", "python.exe")
-venv_pyw = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
-
-current_exe = os.path.abspath(sys.executable).lower()
-is_in_venv = False
-for vp in [venv_py, venv_pyw]:
-    if os.path.isfile(vp) and current_exe == os.path.abspath(vp).lower():
-        is_in_venv = True
-        break
-
-if not is_in_venv:
-    has_console = sys.stdout is not None and hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
-    if has_console and os.path.isfile(venv_py):
-        cmd = [venv_py, os.path.abspath(__file__)] + sys.argv[1:]
-        try:
-            sys.exit(subprocess.call(cmd, cwd=BASE_DIR))
-        except Exception:
-            pass
-    target_py = venv_pyw if os.path.isfile(venv_pyw) else (venv_py if os.path.isfile(venv_py) else None)
-    if target_py:
-        cmd = [target_py, os.path.abspath(__file__)] + sys.argv[1:]
-        subprocess.Popen(cmd, cwd=BASE_DIR)
-        sys.exit(0)
-
-# Ensure sys.stdout and sys.stderr are valid streams under pythonw (GUI mode)
-# When pythonw runs without a console, sys.stdout and sys.stderr are None, which causes uvicorn logging to crash on isatty()
-if sys.stdout is None:
-    try:
-        sys.stdout = open(os.path.join(BASE_DIR, "app_service.log"), "a", encoding="utf-8", buffering=1)
-    except Exception:
-        sys.stdout = open(os.devnull, "w", encoding="utf-8")
-
-if sys.stderr is None:
-    try:
-        sys.stderr = open(os.path.join(BASE_DIR, "app_service.log"), "a", encoding="utf-8", buffering=1)
-    except Exception:
-        sys.stderr = open(os.devnull, "w", encoding="utf-8")
-
+# Starting, venv hand-off and pythonw output redirection live in run_app.pyw (the only launcher).
+# Run directly with the project interpreter for development: .venv/bin/python app.py
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -143,7 +104,23 @@ def _save_upload_limited(uploaded: "UploadFile", suffix: str) -> str:
     return tmp.name
 
 
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    # Replaces the deprecated @app.on_event("startup"); app_startup_warmup is defined below.
+    await app_startup_warmup()
+    yield
+    try:
+        import local_llm_engine
+        local_llm_engine.stop_server()
+    except Exception as e:
+        print(f"[llama-server shutdown] {e}")
+
+
 app = FastAPI(
+    lifespan=_lifespan,
     title="EASD Meeting Minutes AI Security Hub",
     description="High-Speed & Secure Cross-Platform Meeting Assistant",
     version="2.0.0"
@@ -184,21 +161,99 @@ async def add_security_headers(request: Request, call_next):
         response.headers["Expires"] = "0"
     return response
 
+# Only the app's own pages may call the API from a browser. With "*" + credentials, any website
+# open in the same browser could read /api/settings (saved API keys) from localhost.
+# Extra origins (e.g. a LAN/phone URL) can be added with EASD_ALLOWED_ORIGINS="https://a,https://b".
+_extra_origins = [o.strip() for o in os.getenv("EASD_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_extra_origins,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
     allow_credentials=True,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
+# DNS-rebinding and cross-site WebSocket guard. CORS alone does not stop a page whose domain was
+# re-pointed at 127.0.0.1 (it becomes "same-origin" and could read /api/settings), and CORS never
+# applies to WebSockets. Rebinding always needs an attacker *domain name* in the Host header, so:
+#   - Host must be localhost / *.localhost, a raw IP address (keeps LAN access by IP working), a
+#     host from EASD_ALLOWED_ORIGINS / EASD_ALLOWED_HOSTS, or a Codespaces forwarding domain;
+#   - a browser WebSocket's Origin must be loopback, the same host:port it connected to, or listed
+#     in EASD_ALLOWED_ORIGINS.
+import ipaddress as _ipaddress
+from urllib.parse import urlsplit as _urlsplit
+from diag_logging import get_logger
+
+_LOOPBACK_ORIGIN_RE = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", re.I)
+_extra_hosts = {h.strip().lower() for h in os.getenv("EASD_ALLOWED_HOSTS", "").split(",") if h.strip()}
+_extra_hosts |= {(_urlsplit(o).hostname or "").lower() for o in _extra_origins} - {""}
+
+
+def _host_only(host_header: str) -> str:
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):  # [::1]:8000
+        return host[1:host.find("]")] if "]" in host else host
+    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+
+
+def _host_allowed(host_header: str) -> bool:
+    host = _host_only(host_header)
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost") or host in _extra_hosts:
+        return True
+    try:
+        _ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    return os.getenv("CODESPACES") == "true" and host.endswith((".app.github.dev", ".github.dev"))
+
+
+def _ws_origin_allowed(origin: str, host_header: str) -> bool:
+    if not origin:  # non-browser client (no Origin header)
+        return True
+    if _LOOPBACK_ORIGIN_RE.match(origin) or origin in _extra_origins:
+        return True
+    return (_urlsplit(origin).netloc or "").lower() == (host_header or "").strip().lower()
+
+
+class _HostOriginGuard:
+    def __init__(self, app_):
+        self.app = app_
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+            host = headers.get("host", "")
+            ok = _host_allowed(host) and (scope["type"] != "websocket"
+                                          or _ws_origin_allowed(headers.get("origin", ""), host))
+            if not ok:
+                get_logger("security").warning("blocked %s request: host=%r origin=%r path=%s", scope["type"],
+                                               host, headers.get("origin", ""), scope.get("path"))
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await JSONResponse({"detail": "Host not allowed"}, status_code=403)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(_HostOriginGuard)  # added last = runs first
+
 async def app_startup_warmup():
     try:
         import local_whisper_engine
         local_whisper_engine.warm_up_local_whisper_in_background()
     except Exception as e:
         print(f"[Whisper Startup Event] {e}")
+    # Start the local llama-server hidden in the background so "Local" Generate is ready when needed.
+    try:
+        import local_llm_engine
+        local_llm_engine.start_server_in_background()
+    except Exception as e:
+        print(f"[llama-server Startup Event] {e}")
 
 class DiscussionItem(BaseModel):
     sn: Optional[str] = "1"
@@ -735,16 +790,19 @@ async def summarize_transcript_endpoint(
             template_schema=template_schema
         )
         res["log_id"] = job
+        if res.get("status") == "error":
+            _slog.error("FAILED after %.1fs: %s", time.time() - t0, res.get("error"))
+            return JSONResponse(content={"status": "error", "detail": res.get("error") or "Could not fill the template.",
+                                         "data": res, "log_id": job})
         _slog.info("DONE in %.1fs source=%s model=%s warning=%s", time.time() - t0, res.get("summary_source"),
                    res.get("model"), bool(res.get("warning")))
         return JSONResponse(content={"status": "success", "data": res, "log_id": job})
     except Exception as e:
         _slog.exception("summarize_transcript failed after %.1fs: %s", time.time() - t0, e)
         try:
-            fallback = deep_semantic_synthesis(transcript, custom_skills, org_context, template_schema)
-            fallback["warning"] = (f"The AI model could not fill the template because of an unexpected error. Fields "
-                                   f"were filled offline only with text found in the transcript - please review before "
-                                   f"exporting. (reference {job})")
+            from ai_providers import fill_template_locally
+            fallback = fill_template_locally(transcript, template_schema, org_context, custom_skills,
+                                             cloud_reason=f"The AI model hit an unexpected error (reference {job})")
             fallback["log_id"] = job
             return JSONResponse(content={"status": "success", "data": fallback, "log_id": job})
         except Exception:
@@ -943,19 +1001,24 @@ async def websocket_live_transcribe(websocket: WebSocket):
                     audio_bytes = base64.b64decode(audio_b64)
                     mime = data.get("mime_type", "audio/webm")
                     
-                    res = live_transcribe_audio_chunk(
+                    # Runs in a worker thread: a blocking call here froze the whole server
+                    # (progress polling, other uploads) for every live chunk.
+                    res = await asyncio.to_thread(
+                        live_transcribe_audio_chunk,
                         media_bytes=audio_bytes,
                         api_key=session_config["api_key"],
                         provider=session_config["provider"],
                         model_name=session_config["model_name"],
                         mime_type=mime,
-                        language=session_config["language"]
+                        language=session_config["language"],
+                        offset_sec=float(data.get("offset_sec") or 0.0)
                     )
                     
                     if res.get("text"):
                         await websocket.send_json({
                             "type": "transcript",
                             "text": res["text"],
+                            "end_sec": res.get("end_sec"),
                             "language": res.get("language", "bn"),
                             "is_final": data.get("is_final", False)
                         })
@@ -982,7 +1045,8 @@ async def live_transcribe_chunk_endpoint(
     provider: str = Form("gemini"),
     api_key: str = Form(""),
     model_name: str = Form("gemini-3.5-transcribe-live"),
-    language: str = Form("auto")
+    language: str = Form("auto"),
+    offset_sec: float = Form(0.0)
 ):
     """
     HTTP streaming endpoint for live audio slices during recording.
@@ -1010,18 +1074,19 @@ async def live_transcribe_chunk_endpoint(
                 if clean_key.startswith(("hf_", "gsk_")):
                     clean_key = get_default_api_key_from_disk().get("api_key", "")
 
-        res = live_transcribe_audio_chunk(
+        res = await asyncio.to_thread(
+            live_transcribe_audio_chunk,
             media_bytes=content,
             api_key=clean_key,
             provider=chosen_prov,
             model_name=model_name or "gemini-3.5-transcribe-live",
             mime_type=mime,
-            language=language or "auto"
+            language=language or "auto",
+            offset_sec=offset_sec or 0.0
         )
-        import local_whisper_engine
-        cleaned_chunk = local_whisper_engine.sanitize_whisper_text(res.get("text", ""))
-        return JSONResponse(content={"status": "success", "text": cleaned_chunk, "language": res.get("language", "auto"),
-                                     "log_id": log_id})
+        return JSONResponse(content={"status": "success", "text": res.get("text", ""),
+                                     "language": res.get("language", "auto"),
+                                     "end_sec": res.get("end_sec", offset_sec), "log_id": log_id})
     except Exception as e:
         get_logger("api.live_transcribe_chunk").error("live chunk failed: %s", e, exc_info=True)
         return JSONResponse(content={"status": "error", "text": "", "log_id": log_id,
@@ -1247,6 +1312,43 @@ async def transcribe_take_endpoint(
                 os.remove(uploaded_tmp_path)
             except Exception:
                 pass
+
+class TranslatePayload(BaseModel):
+    transcript: str = ""
+    target: str = "en"                 # "en" = English only, "bn" = Bangla only
+    provider: Optional[str] = "gemini"  # gemini | openai_compatible | local
+    api_key: Optional[str] = ""
+    model_name: Optional[str] = ""
+    base_url: Optional[str] = ""
+    model_config = ConfigDict(extra="ignore")
+
+
+@app.post("/api/translate_transcript")
+async def translate_transcript_endpoint(payload: TranslatePayload):
+    """Converts the verbatim transcript to English-only or Bangla-only, keeping every
+    [MM:SS] Speaker N: prefix unchanged."""
+    from diag_logging import bind_job_id
+    import transcript_translator
+    job = bind_job_id()
+    cfg = load_api_settings_from_disk()
+    prov = (payload.provider or cfg.get("summarization_provider") or "gemini").lower()
+    if prov in ("local", "local_whisper", "offline"):
+        key, model, base = "", "", ""  # on-device model: no key, and never a cloud model id
+    elif prov in ("openai_compatible", "custom", "openai", "openrouter"):
+        key = (payload.api_key or cfg.get("custom_api_key") or "").strip()
+        model = (payload.model_name or cfg.get("custom_api_model") or "").strip()
+        base = (payload.base_url or cfg.get("custom_api_base_url") or "").strip()
+    else:
+        key = (payload.api_key or cfg.get("gemini_api_key") or get_default_api_key_from_disk().get("api_key") or "").strip()
+        model = (payload.model_name or cfg.get("summarization_model") or "").strip()
+        base = ""
+    res = await asyncio.to_thread(transcript_translator.translate_transcript, payload.transcript, payload.target,
+                                  prov, key, model, base)
+    res["log_id"] = job
+    if res.get("status") == "error":
+        return JSONResponse(content={"status": "error", "detail": res.get("error"), "data": res, "log_id": job})
+    return JSONResponse(content={"status": "success", "data": res, "log_id": job})
+
 
 @app.post("/api/generate_docx")
 async def generate_docx(payload: MeetingDocPayload):

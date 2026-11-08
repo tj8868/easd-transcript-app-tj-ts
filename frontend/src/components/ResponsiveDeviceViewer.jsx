@@ -23,6 +23,62 @@ function WindowControlDots() {
   );
 }
 
+const MODE_TABS = [
+  { id: 'all', Icon: LayoutGrid, label: '3-Device View' },
+  { id: 'mobile', Icon: Smartphone, label: 'Mobile (375px)' },
+  { id: 'tablet', Icon: Tablet, label: 'Tablet (768px)' },
+  { id: 'desktop', Icon: Monitor, label: 'Desktop (1200px)' }
+];
+
+const TOOL_BUTTON_STYLE = {
+  background: '#1e293b', border: '1px solid #334155', color: '#cbd5e1', padding: '6px 10px',
+  borderRadius: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '0.78rem'
+};
+
+// Title row above each device in the 3-device view.
+function DeviceLabel({ Icon, color, label, size }) {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 6px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color, fontWeight: 700, fontSize: '0.88rem' }}>
+        <Icon size={16} /> {label}
+      </div>
+      <span style={{ fontSize: '0.72rem', background: '#334155', color: '#94a3b8', padding: '2px 8px', borderRadius: '12px' }}>
+        {size}
+      </span>
+    </div>
+  );
+}
+
+// One device in the 3-device view: label row + device frame (notch / camera / browser bar) + iframe.
+function SideBySideDevice({ Icon, color, label, width, height, iframeHeight, frameStyle, chrome, iframeKey, src, title }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <DeviceLabel Icon={Icon} color={color} label={label} size={`${width} × ${height} px`} />
+      <div style={{ width: `${width}px`, height: `${height}px`, overflow: 'hidden', display: 'flex', flexDirection: 'column', ...frameStyle }}>
+        {chrome}
+        <iframe key={iframeKey} src={src} title={title}
+          style={{ width: `${width}px`, height: `${iframeHeight}px`, border: 'none', background: '#ffffff' }} />
+      </div>
+    </div>
+  );
+}
+
+// Single focused device: caption + frame + iframe (mobile / tablet / desktop).
+function FocusedDevice({ caption, width, height, frameStyle, chrome, iframeKey, src, title }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+      <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
+        {caption} ({width} × {height} px)
+      </span>
+      <div style={{ width: `${width}px`, height: `${height}px`, overflow: 'hidden', ...frameStyle }}>
+        {chrome}
+        <iframe key={iframeKey} src={src} title={title}
+          style={chrome ? { width: '100%', flex: 1, border: 'none' } : { width: '100%', height: '100%', border: 'none' }} />
+      </div>
+    </div>
+  );
+}
+
 export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' }) {
   const [deviceMode, setDeviceMode] = useState(initialMode); // 'all', 'mobile', 'tablet', 'desktop'
   const [zoomScale, setZoomScale] = useState(0.75); // Scale for 3-device side-by-side mode
@@ -119,89 +175,32 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
             border: '1px solid #334155'
           }}
         >
-          <button
-            onClick={() => setDeviceMode('all')}
-            style={{
-              padding: '6px 14px',
-              fontSize: '0.8rem',
-              fontWeight: 700,
-              borderRadius: '7px',
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.15s ease',
-              background: deviceMode === 'all' ? '#0ea5e9' : 'transparent',
-              color: deviceMode === 'all' ? '#ffffff' : '#94a3b8'
-            }}
-          >
-            <LayoutGrid size={14} />
-            <span>3-Device View</span>
-          </button>
-
-          <button
-            onClick={() => setDeviceMode('mobile')}
-            style={{
-              padding: '6px 12px',
-              fontSize: '0.8rem',
-              fontWeight: deviceMode === 'mobile' ? 700 : 500,
-              borderRadius: '7px',
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.15s ease',
-              background: deviceMode === 'mobile' ? '#0ea5e9' : 'transparent',
-              color: deviceMode === 'mobile' ? '#ffffff' : '#94a3b8'
-            }}
-          >
-            <Smartphone size={14} />
-            <span>Mobile (375px)</span>
-          </button>
-
-          <button
-            onClick={() => setDeviceMode('tablet')}
-            style={{
-              padding: '6px 12px',
-              fontSize: '0.8rem',
-              fontWeight: deviceMode === 'tablet' ? 700 : 500,
-              borderRadius: '7px',
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.15s ease',
-              background: deviceMode === 'tablet' ? '#0ea5e9' : 'transparent',
-              color: deviceMode === 'tablet' ? '#ffffff' : '#94a3b8'
-            }}
-          >
-            <Tablet size={14} />
-            <span>Tablet (768px)</span>
-          </button>
-
-          <button
-            onClick={() => setDeviceMode('desktop')}
-            style={{
-              padding: '6px 12px',
-              fontSize: '0.8rem',
-              fontWeight: deviceMode === 'desktop' ? 700 : 500,
-              borderRadius: '7px',
-              border: 'none',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              transition: 'all 0.15s ease',
-              background: deviceMode === 'desktop' ? '#0ea5e9' : 'transparent',
-              color: deviceMode === 'desktop' ? '#ffffff' : '#94a3b8'
-            }}
-          >
-            <Monitor size={14} />
-            <span>Desktop (1200px)</span>
-          </button>
+          {MODE_TABS.map(({ id, Icon, label }) => {
+            const active = deviceMode === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setDeviceMode(id)}
+                style={{
+                  padding: id === 'all' ? '6px 14px' : '6px 12px',
+                  fontSize: '0.8rem',
+                  fontWeight: active || id === 'all' ? 700 : 500,
+                  borderRadius: '7px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  transition: 'all 0.15s ease',
+                  background: active ? '#0ea5e9' : 'transparent',
+                  color: active ? '#ffffff' : '#94a3b8'
+                }}
+              >
+                <Icon size={14} />
+                <span>{label}</span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Right Tools: Scale, Rotate, Refresh, Close */}
@@ -251,18 +250,7 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
           {deviceMode !== 'desktop' && deviceMode !== 'all' && (
             <button
               onClick={toggleOrientation}
-              style={{
-                background: '#1e293b',
-                border: '1px solid #334155',
-                color: '#cbd5e1',
-                padding: '6px 10px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px',
-                fontSize: '0.78rem'
-              }}
+              style={TOOL_BUTTON_STYLE}
               title="Rotate Device"
             >
               <RotateCw size={13} />
@@ -272,18 +260,7 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
 
           <button
             onClick={handleRefresh}
-            style={{
-              background: '#1e293b',
-              border: '1px solid #334155',
-              color: '#cbd5e1',
-              padding: '6px 10px',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '5px',
-              fontSize: '0.78rem'
-            }}
+            style={TOOL_BUTTON_STYLE}
             title="Reload App Frames"
           >
             <RefreshCw size={13} />
@@ -340,171 +317,39 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
               transition: 'transform 0.15s ease'
             }}
           >
-            {/* 1. MOBILE DEVICE COMPONENT */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 6px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#0ea5e9', fontWeight: 700, fontSize: '0.88rem' }}>
-                  <Smartphone size={16} /> 1. Mobile View
-                </div>
-                <span style={{ fontSize: '0.72rem', background: '#334155', color: '#94a3b8', padding: '2px 8px', borderRadius: '12px' }}>
-                  375 × 812 px
-                </span>
-              </div>
-
-              {/* Realistic Mobile Frame */}
-              <div
-                style={{
-                  width: '375px',
-                  height: '812px',
-                  background: '#000000',
-                  borderRadius: '40px',
-                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 10px #1e293b, 0 0 0 12px #334155',
-                  overflow: 'hidden',
-                  position: 'relative',
-                  display: 'flex',
-                  flexDirection: 'column'
-                }}
-              >
-                {/* Mobile Speaker / Camera Notch */}
-                <div
-                  style={{
-                    height: '24px',
-                    background: '#0f172a',
-                    display: 'flex',
-                    justifyContent: 'center',
-                    alignItems: 'center',
-                    zIndex: 20
-                  }}
-                >
+            <SideBySideDevice Icon={Smartphone} color="#0ea5e9" label="1. Mobile View" width={375} height={812}
+              iframeHeight={788} iframeKey={`mobile-${refreshKey}`} src={frameUrl} title="Mobile Preview (375px)"
+              frameStyle={{ background: '#000000', borderRadius: '40px', position: 'relative',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 10px #1e293b, 0 0 0 12px #334155' }}
+              chrome={
+                <div style={{ height: '24px', background: '#0f172a', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 20 }}>
                   <div style={{ width: '80px', height: '14px', background: '#000', borderRadius: '0 0 10px 10px' }}></div>
                 </div>
+              } />
 
-                <iframe
-                  key={`mobile-${refreshKey}`}
-                  src={frameUrl}
-                  title="Mobile Preview (375px)"
-                  style={{
-                    width: '375px',
-                    height: '788px',
-                    border: 'none',
-                    background: '#ffffff'
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* 2. TABLET DEVICE COMPONENT */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 6px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#38bdf8', fontWeight: 700, fontSize: '0.88rem' }}>
-                  <Tablet size={16} /> 2. Tablet View
-                </div>
-                <span style={{ fontSize: '0.72rem', background: '#334155', color: '#94a3b8', padding: '2px 8px', borderRadius: '12px' }}>
-                  768 × 1024 px
-                </span>
-              </div>
-
-              {/* Realistic Tablet Frame */}
-              <div
-                style={{
-                  width: '768px',
-                  height: '1024px',
-                  background: '#000000',
-                  borderRadius: '28px',
-                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 12px #1e293b, 0 0 0 14px #334155',
-                  overflow: 'hidden',
-                  position: 'relative',
-                  display: 'flex',
-                  flexDirection: 'column'
-                }}
-              >
-                {/* Camera dot */}
+            <SideBySideDevice Icon={Tablet} color="#38bdf8" label="2. Tablet View" width={768} height={1024}
+              iframeHeight={1008} iframeKey={`tablet-${refreshKey}`} src={frameUrl} title="Tablet Preview (768px)"
+              frameStyle={{ background: '#000000', borderRadius: '28px', position: 'relative',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 12px #1e293b, 0 0 0 14px #334155' }}
+              chrome={
                 <div style={{ height: '16px', background: '#0f172a', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
                   <div style={{ width: '6px', height: '6px', background: '#334155', borderRadius: '50%' }}></div>
                 </div>
+              } />
 
-                <iframe
-                  key={`tablet-${refreshKey}`}
-                  src={frameUrl}
-                  title="Tablet Preview (768px)"
-                  style={{
-                    width: '768px',
-                    height: '1008px',
-                    border: 'none',
-                    background: '#ffffff'
-                  }}
-                />
-              </div>
-            </div>
-
-            {/* 3. DESKTOP DEVICE COMPONENT */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 6px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#60a5fa', fontWeight: 700, fontSize: '0.88rem' }}>
-                  <Monitor size={16} /> 3. Desktop View
-                </div>
-                <span style={{ fontSize: '0.72rem', background: '#334155', color: '#94a3b8', padding: '2px 8px', borderRadius: '12px' }}>
-                  1200 × 820 px
-                </span>
-              </div>
-
-              {/* Browser Window Chrome */}
-              <div
-                style={{
-                  width: '1200px',
-                  height: '820px',
-                  background: '#0f172a',
-                  borderRadius: '14px',
-                  boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px #334155',
-                  overflow: 'hidden',
-                  display: 'flex',
-                  flexDirection: 'column'
-                }}
-              >
-                {/* Browser Title Bar */}
-                <div
-                  style={{
-                    height: '36px',
-                    background: '#1e293b',
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: '0 12px',
-                    gap: '12px',
-                    borderBottom: '1px solid #334155'
-                  }}
-                >
+            <SideBySideDevice Icon={Monitor} color="#60a5fa" label="3. Desktop View" width={1200} height={820}
+              iframeHeight={784} iframeKey={`desktop-${refreshKey}`} src={frameUrl} title="Desktop Preview (1200px)"
+              frameStyle={{ background: '#0f172a', borderRadius: '14px',
+                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px #334155' }}
+              chrome={
+                <div style={{ height: '36px', background: '#1e293b', display: 'flex', alignItems: 'center', padding: '0 12px', gap: '12px', borderBottom: '1px solid #334155' }}>
                   <WindowControlDots />
-                  <div
-                    style={{
-                      flex: 1,
-                      maxWidth: '500px',
-                      margin: '0 auto',
-                      background: '#0f172a',
-                      borderRadius: '6px',
-                      padding: '3px 12px',
-                      fontSize: '0.72rem',
-                      color: '#94a3b8',
-                      textAlign: 'center',
-                      border: '1px solid #334155'
-                    }}
-                  >
+                  <div style={{ flex: 1, maxWidth: '500px', margin: '0 auto', background: '#0f172a', borderRadius: '6px', padding: '3px 12px',
+                    fontSize: '0.72rem', color: '#94a3b8', textAlign: 'center', border: '1px solid #334155' }}>
                     https://codespaces.github.dev/easd-minutes/
                   </div>
                 </div>
-
-                <iframe
-                  key={`desktop-${refreshKey}`}
-                  src={frameUrl}
-                  title="Desktop Preview (1200px)"
-                  style={{
-                    width: '1200px',
-                    height: '784px',
-                    border: 'none',
-                    background: '#ffffff'
-                  }}
-                />
-              </div>
-            </div>
+              } />
           </div>
         )}
 
@@ -512,92 +357,29 @@ export default function ResponsiveDeviceViewer({ onClose, initialMode = 'all' })
         {/* VIEW 2: SINGLE DEVICE FOCUSED (MOBILE / TABLET / DESKTOP)                  */}
         {/* ========================================================================= */}
         {deviceMode === 'mobile' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-              Focused Mobile Device View ({mobileWidth} × {mobileHeight} px)
-            </span>
-            <div
-              style={{
-                width: `${mobileWidth}px`,
-                height: `${mobileHeight}px`,
-                background: '#000',
-                borderRadius: isLandscape ? '24px' : '40px',
-                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 10px #1e293b',
-                overflow: 'hidden'
-              }}
-            >
-              <iframe
-                key={`mobile-focus-${refreshKey}-${orientation}`}
-                src={frameUrl}
-                title="Focused Mobile View"
-                style={{ width: '100%', height: '100%', border: 'none' }}
-              />
-            </div>
-          </div>
+          <FocusedDevice caption="Focused Mobile Device View" width={mobileWidth} height={mobileHeight}
+            iframeKey={`mobile-focus-${refreshKey}-${orientation}`} src={frameUrl} title="Focused Mobile View"
+            frameStyle={{ background: '#000', borderRadius: isLandscape ? '24px' : '40px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 10px #1e293b' }} />
         )}
 
         {deviceMode === 'tablet' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-              Focused Tablet View ({tabletWidth} × {tabletHeight} px)
-            </span>
-            <div
-              style={{
-                width: `${tabletWidth}px`,
-                height: `${tabletHeight}px`,
-                background: '#000',
-                borderRadius: '24px',
-                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 12px #1e293b',
-                overflow: 'hidden'
-              }}
-            >
-              <iframe
-                key={`tablet-focus-${refreshKey}-${orientation}`}
-                src={frameUrl}
-                title="Focused Tablet View"
-                style={{ width: '100%', height: '100%', border: 'none' }}
-              />
-            </div>
-          </div>
+          <FocusedDevice caption="Focused Tablet View" width={tabletWidth} height={tabletHeight}
+            iframeKey={`tablet-focus-${refreshKey}-${orientation}`} src={frameUrl} title="Focused Tablet View"
+            frameStyle={{ background: '#000', borderRadius: '24px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 12px #1e293b' }} />
         )}
 
         {deviceMode === 'desktop' && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-            <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
-              Focused Desktop View ({desktopWidth} × {desktopHeight} px)
-            </span>
-            <div
-              style={{
-                width: `${desktopWidth}px`,
-                height: `${desktopHeight}px`,
-                background: '#0f172a',
-                borderRadius: '12px',
-                boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px #334155',
-                overflow: 'hidden',
-                display: 'flex',
-                flexDirection: 'column'
-              }}
-            >
-              <div
-                style={{
-                  height: '34px',
-                  background: '#1e293b',
-                  display: 'flex',
-                  alignItems: 'center',
-                  padding: '0 12px',
-                  gap: '8px'
-                }}
-              >
+          <FocusedDevice caption="Focused Desktop View" width={desktopWidth} height={desktopHeight}
+            iframeKey={`desktop-focus-${refreshKey}`} src={frameUrl} title="Focused Desktop View"
+            frameStyle={{ background: '#0f172a', borderRadius: '12px', display: 'flex', flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px #334155' }}
+            chrome={
+              <div style={{ height: '34px', background: '#1e293b', display: 'flex', alignItems: 'center', padding: '0 12px', gap: '8px' }}>
                 <WindowControlDots />
               </div>
-              <iframe
-                key={`desktop-focus-${refreshKey}`}
-                src={frameUrl}
-                title="Focused Desktop View"
-                style={{ width: '100%', flex: 1, border: 'none' }}
-              />
-            </div>
-          </div>
+            } />
         )}
       </div>
     </div>

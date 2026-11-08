@@ -185,47 +185,32 @@ export default function TemplateGenerator({
     }
   };
 
-  // Section manipulation in editor
-  const handleAddSection = () => {
+  // Add / remove entries in an editor list ('sections' or 'fields'); makeItem gets the new 1-based number.
+  const addEditorItem = (listKey, makeItem) => {
     if (!editingTemplate) return;
-    const newSec = {
-      id: `section_${(editingTemplate.sections || []).length + 1}`,
-      title: `New Section ${(editingTemplate.sections || []).length + 1}`,
-      type: 'bullets',
-      prompt: 'Synthesize relevant points into crisp formal bullet points.'
-    };
-    setEditingTemplate({
-      ...editingTemplate,
-      sections: [...(editingTemplate.sections || []), newSec]
-    });
+    const list = editingTemplate[listKey] || [];
+    setEditingTemplate({ ...editingTemplate, [listKey]: [...list, makeItem(list.length + 1)] });
+  };
+  const removeEditorItem = (listKey, idx) => {
+    if (!editingTemplate) return;
+    setEditingTemplate({ ...editingTemplate, [listKey]: (editingTemplate[listKey] || []).filter((_, i) => i !== idx) });
   };
 
-  const handleRemoveSection = (idx) => {
-    if (!editingTemplate) return;
-    const updated = (editingTemplate.sections || []).filter((_, i) => i !== idx);
-    setEditingTemplate({ ...editingTemplate, sections: updated });
-  };
+  const handleAddSection = () => addEditorItem('sections', (n) => ({
+    id: `section_${n}`,
+    title: `New Section ${n}`,
+    type: 'bullets',
+    prompt: 'Synthesize relevant points into crisp formal bullet points.'
+  }));
+  const handleRemoveSection = (idx) => removeEditorItem('sections', idx);
 
-  // Field manipulation in editor
-  const handleAddField = () => {
-    if (!editingTemplate) return;
-    const newField = {
-      key: `field_${(editingTemplate.fields || []).length + 1}`,
-      label: `Field ${(editingTemplate.fields || []).length + 1}`,
-      type: 'text',
-      default: ''
-    };
-    setEditingTemplate({
-      ...editingTemplate,
-      fields: [...(editingTemplate.fields || []), newField]
-    });
-  };
-
-  const handleRemoveField = (idx) => {
-    if (!editingTemplate) return;
-    const updated = (editingTemplate.fields || []).filter((_, i) => i !== idx);
-    setEditingTemplate({ ...editingTemplate, fields: updated });
-  };
+  const handleAddField = () => addEditorItem('fields', (n) => ({
+    key: `field_${n}`,
+    label: `Field ${n}`,
+    type: 'text',
+    default: ''
+  }));
+  const handleRemoveField = (idx) => removeEditorItem('fields', idx);
 
   return (
     <div className="card" id="section-templates" style={{ marginBottom: '24px' }}>

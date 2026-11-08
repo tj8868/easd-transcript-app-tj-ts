@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Transcription Module
+GenericName=Speech-to-Text Studio
+Comment=Universal Bangla & English Speech-to-Text Engine
+Exec="/home/eminence-t1/Desktop/ESAD -Taseen-Workspace-2026/EASD-TJ-Admin/EASD Meeting Minutes/easd-transcriptionapp-tj-ts/Transcription Module/Launch_App.sh"
+Path=/home/eminence-t1/Desktop/ESAD -Taseen-Workspace-2026/EASD-TJ-Admin/EASD Meeting Minutes/easd-transcriptionapp-tj-ts/Transcription Module
+Icon=audio-input-microphone
+Terminal=false
+StartupNotify=true
+Categories=AudioVideo;Audio;Utility;

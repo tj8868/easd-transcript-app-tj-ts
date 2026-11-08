@@ -40,6 +40,32 @@ const PROVIDERS = [
   }
 ];
 
+// Red error / green success message box; renders nothing when text is empty.
+function ImportNotice({ ok, text }) {
+  if (!text) return null;
+  const Icon = ok ? Check : AlertCircle;
+  const rgb = ok ? '16, 185, 129' : '239, 68, 68';
+  return (
+    <div
+      style={{
+        padding: '10px 14px',
+        borderRadius: '10px',
+        background: `rgba(${rgb}, 0.12)`,
+        border: `1px solid rgba(${rgb}, 0.3)`,
+        color: ok ? '#10b981' : '#ef4444',
+        fontSize: '0.82rem',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        marginBottom: '14px'
+      }}
+    >
+      <Icon size={16} style={{ flexShrink: 0 }} />
+      <span>{text}</span>
+    </div>
+  );
+}
+
 export default function CloudImportModal({
   isOpen,
   onClose,
@@ -297,45 +323,8 @@ export default function CloudImportModal({
         </div>
 
         {/* Status Messages */}
-        {error && (
-          <div
-            style={{
-              padding: '10px 14px',
-              borderRadius: '10px',
-              background: 'rgba(239, 68, 68, 0.12)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: '#ef4444',
-              fontSize: '0.82rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '14px'
-            }}
-          >
-            <AlertCircle size={16} style={{ flexShrink: 0 }} />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {successMsg && (
-          <div
-            style={{
-              padding: '10px 14px',
-              borderRadius: '10px',
-              background: 'rgba(16, 185, 129, 0.12)',
-              border: '1px solid rgba(16, 185, 129, 0.3)',
-              color: '#10b981',
-              fontSize: '0.82rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              marginBottom: '14px'
-            }}
-          >
-            <Check size={16} style={{ flexShrink: 0 }} />
-            <span>{successMsg}</span>
-          </div>
-        )}
+        <ImportNotice ok={false} text={error} />
+        <ImportNotice ok text={successMsg} />
 
         {/* Action Buttons */}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px' }}>

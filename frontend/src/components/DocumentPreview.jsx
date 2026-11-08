@@ -1,5 +1,18 @@
 import React from 'react';
 import DOMPurify from 'dompurify';
+import { downloadTextFile } from '../utils/download';
+
+// Black bold heading used by each block of the official minutes preview.
+const MinutesHeading = ({ children }) => (
+  <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>{children}</h3>
+);
+
+// Government report sections 2-4: rich-text bodies rendered by one shared block.
+const GOVT_HTML_SECTIONS = [
+  { field: 'observations', heading: '২. বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত:', gap: '20px' },
+  { field: 'decisions', heading: '৩. সভায় গৃহীত সিদ্ধান্তসমূহ:', gap: '20px' },
+  { field: 'recommendations', heading: '৪. কৌশলগত সুপারিশমালা:', gap: '22px' }
+];
 import { FileDown, Cloud, FileText, CheckCircle2, Table, Layers, Landmark, BookOpen, Newspaper, Feather, Check } from 'lucide-react';
 
 function TemplateSectionRenderer({
@@ -144,15 +157,7 @@ export default function DocumentPreview({
       `\n============================================================`
     ].join('\n');
 
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `Transcript_${title.replace(/[^a-zA-Z0-9_\-]/g, '_')}_${today}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    downloadTextFile(`Transcript_${title.replace(/[^a-zA-Z0-9_\-]/g, '_')}_${today}.txt`, content);
   };
 
   return (
@@ -247,50 +252,18 @@ export default function DocumentPreview({
               </div>
             )}
 
-            {/* Section 2: Observations */}
-            {meta.observations && (
-              <div style={{ marginBottom: '20px' }}>
+            {/* Sections 2-4: Observations, Decisions, Recommendations */}
+            {GOVT_HTML_SECTIONS.filter(({ field }) => meta[field]).map(({ field, heading, gap }) => (
+              <div key={field} style={{ marginBottom: gap }}>
                 <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                  ২. বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত:
+                  {heading}
                 </h4>
                 <div
                   style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
-                  dangerouslySetInnerHTML={{
-                    __html: cleanDetailsHtml(meta.observations)
-                  }}
+                  dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(meta[field]) }}
                 />
               </div>
-            )}
-
-            {/* Section 3: Decisions */}
-            {meta.decisions && (
-              <div style={{ marginBottom: '20px' }}>
-                <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                  ৩. সভায় গৃহীত সিদ্ধান্তসমূহ:
-                </h4>
-                <div
-                  style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
-                  dangerouslySetInnerHTML={{
-                    __html: cleanDetailsHtml(meta.decisions)
-                  }}
-                />
-              </div>
-            )}
-
-            {/* Section 4: Recommendations */}
-            {meta.recommendations && (
-              <div style={{ marginBottom: '22px' }}>
-                <h4 style={{ fontWeight: 'bold', fontSize: '1.05rem', color: '#047857', marginBottom: '6px' }}>
-                  ৪. কৌশলগত সুপারিশমালা:
-                </h4>
-                <div
-                  style={{ fontSize: '0.98rem', lineHeight: '1.7', color: '#334155' }}
-                  dangerouslySetInnerHTML={{
-                    __html: cleanDetailsHtml(meta.recommendations)
-                  }}
-                />
-              </div>
-            )}
+            ))}
 
             {/* Section 5: Action Matrix Table */}
             {meta.action_matrix && meta.action_matrix.length > 0 && (
@@ -367,9 +340,7 @@ export default function DocumentPreview({
             {/* Meeting Agenda */}
             {agendas && agendas.length > 0 && (
               <div style={{ marginBottom: '24px' }}>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
-                  Meeting Agenda:
-                </h3>
+                <MinutesHeading>Meeting Agenda:</MinutesHeading>
                 <ol style={{ paddingLeft: '22px', margin: 0, fontSize: '0.98rem', color: '#111827', lineHeight: '1.65' }}>
                   {agendas.map((ag, i) => (
                     <li key={i}>{cleanAgenda(ag)}</li>
@@ -381,9 +352,7 @@ export default function DocumentPreview({
             {/* 4-Topic Discussions Table with Exact Template Color #E36C0A */}
             {discussions && discussions.length > 0 && (
               <div style={{ marginBottom: '24px' }}>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
-                  Agenda-Wise Meeting Discussions
-                </h3>
+                <MinutesHeading>Agenda-Wise Meeting Discussions</MinutesHeading>
                 <div className="table-responsive">
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.94rem', border: '1px solid #000000' }}>
                     <thead>
@@ -410,9 +379,7 @@ export default function DocumentPreview({
             {/* Major Strategic Decisions */}
             {decisions && (
               <div style={{ marginBottom: '24px' }}>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
-                  Major Strategic Decisions:
-                </h3>
+                <MinutesHeading>Major Strategic Decisions:</MinutesHeading>
                 <div style={{ fontSize: '0.98rem', lineHeight: '1.65', color: '#111827' }} dangerouslySetInnerHTML={{ __html: cleanDetailsHtml(decisions) }} />
               </div>
             )}
@@ -420,9 +387,7 @@ export default function DocumentPreview({
             {/* Attendance Checklist (21 Members) with Exact Template Color #E36C0A */}
             {attendance && attendance.length > 0 && (
               <div style={{ marginBottom: '24px' }}>
-                <h3 style={{ fontSize: '1.15rem', fontWeight: 'bold', color: '#000000', marginBottom: '8px' }}>
-                  Attendance Checklist (21 Members):
-                </h3>
+                <MinutesHeading>Attendance Checklist (21 Members):</MinutesHeading>
                 <div className="table-responsive">
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.88rem', border: '1px solid #000000' }}>
                     <thead>

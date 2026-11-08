@@ -82,6 +82,15 @@ def find_ffmpeg_binary() -> Optional[str]:
     if ffmpeg_path:
         return ffmpeg_path
     
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()
+        ffmpeg_path = shutil.which("ffmpeg")
+        if ffmpeg_path:
+            return ffmpeg_path
+    except Exception:
+        pass
+    
     # Check common Windows paths
     candidates = [
         r"C:\ffmpeg\bin\ffmpeg.exe",

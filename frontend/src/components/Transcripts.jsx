@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FileText, Copy, Check, Download, Trash2, Mic, Radio, Sparkles, User, Users, Clock, Wand2 } from 'lucide-react';
 import CircularProgressSpinner from './CircularProgressSpinner';
+import { downloadTextFile } from '../utils/download';
 
 export default function Transcripts({
   transcript = '',
@@ -18,7 +19,14 @@ export default function Transcripts({
   setEnglishTranscript,
   isRecording = false,
   activeTakeCount = 0,
-  interimText = ''
+  interimText = '',
+  // v8.9: English-only / Bangla-only versions
+  translations = {},
+  setTranslations,
+  transcriptView = 'verbatim',
+  setTranscriptView,
+  onTranslate,
+  translatingTo = null
 }) {
   const [copied, setCopied] = useState(false);
   const [downloaded, setDownloaded] = useState(false);
@@ -45,7 +53,10 @@ export default function Transcripts({
   }, []);
 
   // Derive current active transcript value
-  const currentText = transcript || banglaTranscript || englishTranscript || '';
+  const verbatimText = transcript || banglaTranscript || englishTranscript || '';
+  const version = transcriptView === 'verbatim' ? null : translations[transcriptView];
+  const currentText = version ? version.text : (transcriptView === 'verbatim' ? verbatimText : '');
+  const isOutdated = Boolean(version && version.text && version.source !== verbatimText);
 
   // Auto-scroll textarea to bottom when new speech arrives while recording
   useEffect(() => {
@@ -55,6 +66,11 @@ export default function Transcripts({
   }, [currentText, isRecording]);
 
   const handleTextChange = (newVal) => {
+    if (transcriptView !== 'verbatim' && setTranslations) {
+      // Edits in the English / Bangla tab stay in that version; the verbatim record is untouched.
+      setTranslations((prev) => ({ ...prev, [transcriptView]: { ...prev[transcriptView], text: newVal } }));
+      return;
+    }
     if (setTranscript) {
       setTranscript(newVal);
     }
@@ -69,17 +85,6 @@ export default function Transcripts({
   const wordCount = currentText.trim() ? currentText.trim().split(/\s+/).length : 0;
   const charCount = currentText.length;
 
-  const downloadTextFile = (filename, content) => {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
 
   const handleCopy = () => {
     if (!currentText) {
@@ -253,10 +258,59 @@ export default function Transcripts({
             </div>
 
             <p className="transcript-desc" style={{ color: 'var(--text-secondary)', fontSize: '0.84rem', marginTop: '4px', marginBottom: 0 }}>
-              Live speech recognition stream and verbatim transcript with speaker labels and timestamps.
+              Everything said in the meeting, word for word, with who spoke and when. You can edit it, or switch to English only / বাংলা only.
             </p>
           </div>
         </div>
+
+        {/* v8.9: Verbatim / English-only / Bangla-only switcher */}
+        <div className="transcript-lang-bar" role="tablist" aria-label="Transcript language">
+          {[
+            { id: 'verbatim', label: 'As spoken', hint: 'Exact words, mixed Bangla & English' },
+            { id: 'en', label: 'English only', hint: 'Whole transcript in English' },
+            { id: 'bn', label: 'বাংলা only', hint: 'Whole transcript in Bangla' }
+          ].map((v) => {
+            const has = v.id === 'verbatim' ? Boolean(verbatimText) : Boolean(translations[v.id]?.text);
+            const busy = translatingTo === v.id;
+            return (
+              <button
+                key={v.id}
+                type="button"
+                role="tab"
+                aria-selected={transcriptView === v.id}
+                className={`lang-tab ${transcriptView === v.id ? 'active' : ''}`}
+                title={v.hint}
+                disabled={Boolean(translatingTo)}
+                onClick={() => {
+                  if (v.id === 'verbatim' || has) {
+                    setTranscriptView && setTranscriptView(v.id);
+                  } else if (onTranslate) {
+                    onTranslate(v.id, genMode);
+                  }
+                }}
+              >
+                {busy ? 'Converting…' : v.label}
+                {v.id !== 'verbatim' && !has && !busy && <span className="lang-tab-hint">Convert</span>}
+              </button>
+            );
+          })}
+          {transcriptView !== 'verbatim' && onTranslate && (
+            <button
+              type="button"
+              className="lang-tab lang-tab-redo"
+              disabled={Boolean(translatingTo) || !verbatimText.trim()}
+              onClick={() => onTranslate(transcriptView, genMode)}
+              title="Convert again from the current 'As spoken' transcript"
+            >
+              ↻ Convert again
+            </button>
+          )}
+        </div>
+        {isOutdated && (
+          <div className="lang-outdated-note">
+            The "As spoken" transcript changed after this version was made. Press "Convert again" to update it.
+          </div>
+        )}
 
         {/* Speaker & Timestamp Quick Tags Toolstrip */}
         <div
@@ -275,7 +329,7 @@ export default function Transcripts({
           }}
         >
           <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <Users size={13} color="var(--accent-color)" /> Tag Utterance:
+            <Users size={13} color="var(--accent-color)" /> Add a speaker line:
           </span>
           <button
             type="button"
@@ -365,7 +419,7 @@ export default function Transcripts({
               marginLeft: 'auto'
             }}
           >
-            <Wand2 size={12} /> Auto-Tag Speakers & Time
+            <Wand2 size={12} /> Tidy into speaker lines
           </button>
         </div>
       </div>

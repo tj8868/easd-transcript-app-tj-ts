@@ -1,5 +1,150 @@
 [
   {
+    "id": "transcript_summary",
+    "name": "Transcript Summary (Direct & Concise)",
+    "doc_type": "summary",
+    "category": "Summarization",
+    "description": "Pure concise synthesis of the transcript: Executive Overview, Key Topics Discussed, Key Decisions, and Action Items without complex tables or bureaucracy.",
+    "is_default": false,
+    "is_builtin": true,
+    "docx_filename": "",
+    "context": "Direct concise executive summary synthesized purely from verbatim transcripts, recordings, and audio notes. Designed for fast executive reviews and quick sharing.",
+    "rules": "1. Just summarize the transcript faithfully, accurately, and concisely.\n2. Do NOT add extraneous commentary, hallucinated attendees, or unnecessary bureaucratic overhead.\n3. Present key takeaways and actionable points cleanly as bullet points.\n4. Maintain bilingual fidelity (Bangla and/or English as spoken in the transcript).",
+    "requirements": "- Document Title & Date.\n- Executive Overview / Synopsis.\n- Key Discussion Highlights.\n- Decisions & Resolutions.\n- Action Items & Next Steps.",
+    "fields": [
+      {
+        "key": "title",
+        "label": "Summary Title",
+        "type": "text",
+        "default": "Executive Summary of Proceedings"
+      },
+      {
+        "key": "date",
+        "label": "Date",
+        "type": "text",
+        "default": "September 2026"
+      }
+    ],
+    "sections": [
+      {
+        "id": "overview",
+        "title": "1. Executive Overview",
+        "type": "text",
+        "prompt": "Concise high-level synthesis of what was discussed, the overarching objectives, and general context."
+      },
+      {
+        "id": "key_topics",
+        "title": "2. Key Discussion Points",
+        "type": "bullets",
+        "prompt": "Major thematic topics, questions, arguments, and viewpoints raised by participants."
+      },
+      {
+        "id": "decisions",
+        "title": "3. Decisions & Conclusions",
+        "type": "bullets",
+        "prompt": "All consensus points, agreed positions, directives, and conclusions reached."
+      },
+      {
+        "id": "action_items",
+        "title": "4. Action Items & Next Steps",
+        "type": "bullets",
+        "prompt": "Concrete action items, responsibilities, follow-ups, and subsequent deadlines."
+      }
+    ],
+    "tables": [],
+    "ai_system_prompt": "You are an elite Executive Summarizer. Your sole job is to summarize the transcript accurately, concisely, and cleanly into the designated sections without adding unnecessary filler.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Transcript Summary (Direct & Concise) Output Schema",
+      "description": "Standardized JSON schema for 'Transcript Summary (Direct & Concise)' (summary). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Transcript Summary (Direct & Concise)' template.",
+          "required": [
+            "title",
+            "date",
+            "decisions"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Summary Title",
+              "description": "Metadata field: Summary Title"
+            },
+            "date": {
+              "type": "string",
+              "title": "Date",
+              "description": "Metadata field: Date"
+            },
+            "overview": {
+              "type": "string",
+              "title": "1. Executive Overview",
+              "description": "Concise high-level synthesis of what was discussed, the overarching objectives, and general context.. Formal, comprehensive institutional prose."
+            },
+            "key_topics": {
+              "type": "string",
+              "title": "2. Key Discussion Points",
+              "description": "Major thematic topics, questions, arguments, and viewpoints raised by participants.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "decisions": {
+              "type": "string",
+              "title": "3. Decisions & Conclusions",
+              "description": "All consensus points, agreed positions, directives, and conclusions reached.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "action_items": {
+              "type": "string",
+              "title": "4. Action Items & Next Steps",
+              "description": "Concrete action items, responsibilities, follow-ups, and subsequent deadlines.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "en",
+      "bangla_transcript": "আলোচনার মূল বিষয়বস্তু ও সিদ্ধান্তসমূহের সরাসরি সারসংক্ষেপ।",
+      "english_transcript": "Concise executive synthesis and action points derived directly from the proceedings transcript.",
+      "summary": {
+        "title": "Executive Summary of Proceedings",
+        "date": "September 2026",
+        "overview": "The session addressed strategic program delivery, field milestone timelines, and immediate operational priorities. Participants reviewed key progress markers, aligned on immediate workstreams, and confirmed decisive operational directives.",
+        "key_topics": "• Program delivery status across field operations.\n• Budgetary compliance, resource allocation, and quality standards.\n• Stakeholder coordination and community mobilization strategy.\n• Risk management protocols and schedule synchronization.",
+        "decisions": "• Confirmed unified milestone roadmap and delivery schedule.\n• Formally approved operational resource adjustments for active workstreams.\n• Established recurring weekly review cadence for project leads.",
+        "action_items": "• Finalize operational documentation and share with team leads by Friday.\n• Establish field monitoring checkpoints for upcoming program rollouts.\n• Consolidate weekly progress reports for executive review."
+      }
+    }
+  },
+  {
     "id": "blog_article",
     "name": "High-Impact Digital Blog Article",
     "doc_type": "blog",
@@ -64,7 +209,110 @@
       }
     ],
     "tables": [],
-    "ai_system_prompt": "You are a World-Class Digital Content Strategist and Thought Leader. Transform the input transcript/notes into a viral, insightful, and beautifully formatted blog post."
+    "ai_system_prompt": "You are a World-Class Digital Content Strategist and Thought Leader. Transform the input transcript/notes into a viral, insightful, and beautifully formatted blog post.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "High-Impact Digital Blog Article Output Schema",
+      "description": "Standardized JSON schema for 'High-Impact Digital Blog Article' (blog). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'High-Impact Digital Blog Article' template.",
+          "required": [
+            "title",
+            "author",
+            "date",
+            "hook_intro"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Blog Post Title",
+              "description": "Metadata field: Blog Post Title"
+            },
+            "author": {
+              "type": "string",
+              "title": "Author / Contributor",
+              "description": "Metadata field: Author / Contributor"
+            },
+            "target_audience": {
+              "type": "string",
+              "title": "Target Audience",
+              "description": "Metadata field: Target Audience"
+            },
+            "date": {
+              "type": "string",
+              "title": "Published Date",
+              "description": "Metadata field: Published Date"
+            },
+            "hook_intro": {
+              "type": "string",
+              "title": "The Hook & Introduction",
+              "description": "Relatable opening story, surprising statistic, or burning question that grabs reader attention.. Formal, comprehensive institutional prose."
+            },
+            "core_insights": {
+              "type": "string",
+              "title": "Core Insights & In-Depth Analysis",
+              "description": "Detailed exploration of the main topic broken down into logical thematic points.. Formal, comprehensive institutional prose."
+            },
+            "practical_tips": {
+              "type": "string",
+              "title": "Practical Takeaways & Actionable Tips",
+              "description": "List of concrete, actionable recommendations readers can immediately implement.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "conclusion_cta": {
+              "type": "string",
+              "title": "Conclusion & Call to Action (CTA)",
+              "description": "Inspiring wrap-up and a clear CTA (e.g., share thoughts, subscribe, join the initiative).. Formal, comprehensive institutional prose."
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "en",
+      "bangla_transcript": "তৃণমূল পর্যায়ে জনস্বাস্থ্য উন্নয়নে ৫টি বাস্তব অভিজ্ঞতা ও ভবিষ্যৎ দিকনির্দেশনা নিয়ে বিশেষ ডিজিটাল ব্লগ প্রবন্ধ।",
+      "english_transcript": "Thought leadership blog article discussing grassroots public health transformation and key actionable lessons from the field.",
+      "summary": {
+        "title": "Transforming Public Health from the Grassroots: 5 Game-Changing Lessons from the Field",
+        "author": "EASD Thought Leadership & Strategy Team",
+        "target_audience": "Development Practitioners, Policymakers, Global Health Advocates, and Social Innovators",
+        "date": "September 2026",
+        "hook_intro": "What if the biggest barrier to saving millions of lives isn't costly high-tech medicine, but simply listening to what frontline community workers see every single morning? Over two decades in field operations have revealed five transformative insights.",
+        "core_insights": "Public health succeeds when ownership shifts from distant boardroom planners to local communities. By equipping community health advocates with simple digital tools and cultural fluency, preventive healthcare transforms from a perceived burden into a celebrated neighborhood movement. Trust is the foundational infrastructure upon which every clinical outcome rests.",
+        "practical_tips": "• 1. Involve local community elders and youth leaders before initiating any baseline intervention.\n• 2. Replace complex paper registries with intuitive, offline-first mobile reporting apps.\n• 3. Measure success through patient retention and trust indicators, not just raw attendance headcounts.\n• 4. Build resilient feedback loops that allow field coordinators to immediately refine intervention tactics.",
+        "conclusion_cta": "Lasting transformation in global health never occurs from the top down—it blossoms from the roots up. What grassroots initiatives have inspired your work? Share your thoughts in the comments below or reach out to partner with us!"
+      }
+    }
   },
   {
     "id": "news_press_release",
@@ -137,7 +385,115 @@
       }
     ],
     "tables": [],
-    "ai_system_prompt": "You are a Senior Bureau Chief and Veteran News Editor. Transform the input notes/audio into a crisp, engaging, and professional news story / press release adhering to AP Style guidelines."
+    "ai_system_prompt": "You are a Senior Bureau Chief and Veteran News Editor. Transform the input notes/audio into a crisp, engaging, and professional news story / press release adhering to AP Style guidelines.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Press Release & News Story Output Schema",
+      "description": "Standardized JSON schema for 'Press Release & News Story' (news). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Press Release & News Story' template.",
+          "required": [
+            "title",
+            "date",
+            "lead_paragraph"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Headline",
+              "description": "Metadata field: Headline"
+            },
+            "dateline": {
+              "type": "string",
+              "title": "Dateline (City, Country)",
+              "description": "Metadata field: Dateline (City, Country)"
+            },
+            "date": {
+              "type": "string",
+              "title": "Release Date",
+              "description": "Metadata field: Release Date"
+            },
+            "media_contact": {
+              "type": "string",
+              "title": "Media Contact Person",
+              "description": "Metadata field: Media Contact Person"
+            },
+            "lead_paragraph": {
+              "type": "string",
+              "title": "Lead Paragraph (The Core News)",
+              "description": "Immediate summary capturing Who, What, Where, When, and Why in 2-3 engaging sentences.. Formal, comprehensive institutional prose."
+            },
+            "body_story": {
+              "type": "string",
+              "title": "Story Details & Background",
+              "description": "In-depth narrative explaining the background, impact, and significance of the announcement.. Formal, comprehensive institutional prose."
+            },
+            "key_quotes": {
+              "type": "string",
+              "title": "Executive Quotes & Statements",
+              "description": "Direct quotes from leadership, subject matter experts, or key stakeholders with proper attribution.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "highlights": {
+              "type": "string",
+              "title": "Key News Highlights & Milestones",
+              "description": "Bullet points outlining pivotal facts, figures, and immediate milestones.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "boilerplate": {
+              "type": "string",
+              "title": "About Organization & Media Inquiries",
+              "description": "Standard institutional boilerplate description and media inquiry instructions.. Formal, comprehensive institutional prose."
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "en",
+      "bangla_transcript": "ইমিনের্স অ্যাসোসিয়েটস ফর সোশ্যাল ডেভেলপমেন্ট (ইএএসডি) এর উদ্যোগে অসংক্রামক রোগ প্রতিরোধে নতুন জাতীয় কর্মসূচির আনুষ্ঠানিক উদ্বোধন ও প্রেস বিজ্ঞপ্তি।",
+      "english_transcript": "Official press release announcing EASD's landmark nationwide community health initiative to combat non-communicable diseases.",
+      "summary": {
+        "title": "EASD Unveils Landmark Nationwide Community Health Initiative to Combat Non-Communicable Diseases",
+        "dateline": "DHAKA, Bangladesh",
+        "date": "September 2, 2026",
+        "media_contact": "Communications Directorate, Eminence (media@eminence-bd.org, +880-2-9876543)",
+        "lead_paragraph": "DHAKA, Bangladesh — Eminence Associates for Social Development (EASD) today officially inaugurated an expansive nationwide community health program aimed at delivering vital screening and preventive healthcare directly to 500,000 households.",
+        "body_story": "The landmark initiative bridges persistent healthcare gaps by deploying specialized mobile diagnostic units and training 2,500 frontline community health champions across eight administrative divisions. The launch comes in response to alarming rises in hypertension and diabetes, particularly among underserved urban and peri-urban demographics.",
+        "key_quotes": "• 'True healthcare equity begins when quality preventive diagnostics reach families directly at their doorsteps,' stated Dr. Shamim Talukder, Chief Executive Officer of EASD.\n• 'This partnership represents an unprecedented milestone in scaling grassroots preventative medicine,' noted the Director General of Health Services during the inaugural briefing.",
+        "highlights": "• Direct coverage for over 500,000 households across 64 districts.\n• Deployment of 50 solar-powered mobile screening vans equipped with digital telemetry.\n• 100% free early diagnostic testing for diabetes, hypertension, and cardiovascular risk factors.",
+        "boilerplate": "About Eminence: Founded in 2003, Eminence Associates for Social Development (EASD) is a premier non-profit development organization dedicated to public health innovation, social justice, and sustainable community empowerment in Bangladesh and globally."
+      }
+    }
   },
   {
     "id": "journal_academic",
@@ -233,7 +589,176 @@
         ]
       }
     ],
-    "ai_system_prompt": "You are a distinguished Principal Academic Investigator and Scientific Editor. Synthesize the provided research transcript/data into an authoritative, peer-reviewed academic journal article."
+    "ai_system_prompt": "You are a distinguished Principal Academic Investigator and Scientific Editor. Synthesize the provided research transcript/data into an authoritative, peer-reviewed academic journal article.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Academic & Scientific Journal Article Output Schema",
+      "description": "Standardized JSON schema for 'Academic & Scientific Journal Article' (journal). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Academic & Scientific Journal Article' template.",
+          "required": [
+            "title",
+            "authors",
+            "date",
+            "abstract",
+            "introduction",
+            "data_table"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Article Title",
+              "description": "Metadata field: Article Title"
+            },
+            "authors": {
+              "type": "string",
+              "title": "Authors & Affiliations",
+              "description": "Metadata field: Authors & Affiliations"
+            },
+            "keywords": {
+              "type": "string",
+              "title": "Keywords (comma separated)",
+              "description": "Metadata field: Keywords (comma separated)"
+            },
+            "date": {
+              "type": "string",
+              "title": "Publication Date",
+              "description": "Metadata field: Publication Date"
+            },
+            "abstract": {
+              "type": "string",
+              "title": "Abstract",
+              "description": "Structured synthesis: Context, Objectives, Methodology, Principal Results, and Scientific Conclusion.. Formal, comprehensive institutional prose."
+            },
+            "introduction": {
+              "type": "string",
+              "title": "1. Introduction & Theoretical Framework",
+              "description": "Problem statement, literature overview, and core research questions.. Formal, comprehensive institutional prose."
+            },
+            "methodology": {
+              "type": "string",
+              "title": "2. Methodology & Study Design",
+              "description": "Sampling, data collection protocols, ethical approvals, and analytical methods.. Formal, comprehensive institutional prose."
+            },
+            "results": {
+              "type": "string",
+              "title": "3. Results & Empirical Findings",
+              "description": "Key empirical findings, statistical observations, and quantitative/qualitative data points.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "discussion": {
+              "type": "string",
+              "title": "4. Discussion & Implications",
+              "description": "Interpretation of results in relation to existing literature and policy implications.. Formal, comprehensive institutional prose."
+            },
+            "conclusion": {
+              "type": "string",
+              "title": "5. Conclusion & Recommendations",
+              "description": "Final takeaways, research limitations, and future research directives.. Formal, comprehensive institutional prose."
+            },
+            "references": {
+              "type": "string",
+              "title": "6. References / Citations",
+              "description": "Scholarly references and bibliography.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "data_table": {
+              "type": "array",
+              "title": "Summary of Key Variables and Findings",
+              "description": "Summary table of key research indicators, observations, and findings.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "variable",
+                  "baseline",
+                  "outcome",
+                  "significance"
+                ],
+                "properties": {
+                  "variable": {
+                    "type": "string",
+                    "description": "Indicator or variable name"
+                  },
+                  "baseline": {
+                    "type": "string",
+                    "description": "Baseline / reference measurement"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "description": "Observed empirical outcome"
+                  },
+                  "significance": {
+                    "type": "string",
+                    "description": "Statistical significance or impact level"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "en",
+      "bangla_transcript": "নগর ও গ্রামীণ জনগোষ্ঠীর মধ্যে অসংক্রামক রোগ প্রতিরোধে জনস্বাস্থ্য কর্মসূচি সমূহের কার্যকারিতা বিষয়ক গবেষণার বৈজ্ঞানিক ফলাফল।",
+      "english_transcript": "Scientific evaluation of community-based public health interventions in reducing non-communicable disease prevalence across diverse cohorts.",
+      "summary": {
+        "title": "Epidemiological Trends and Public Health Interventions in Urban Communities: A Multi-Center Evaluation",
+        "authors": "EASD Research & Evaluation Wing, Eminence Institute of Public Health",
+        "keywords": "Public Health, NCD Prevention, Health Systems, Community Interventions, Epidemiology",
+        "date": "September 2026",
+        "abstract": "Background: Non-communicable diseases (NCDs) represent a growing public health crisis in rapidly urbanizing regions. Methods: A prospective mixed-methods cohort study was conducted across 1,200 households over an 18-month intervention period. Results: Interventions led to a 28% increase in screening adherence and a statistically significant reduction in untreated hypertension. Conclusion: Integrated grassroots health models substantially improve primary care management and clinical compliance.",
+        "introduction": "The rapid pace of urbanization has altered demographic risk profiles, elevating NCD incidence across vulnerable socioeconomic strata. This study investigates the institutional efficacy of community health worker networks in bridging primary screening deficits.",
+        "methodology": "A structured randomized cluster methodology was deployed across 8 urban wards. Quantitative clinical metrics (blood pressure, fasting glucose) were paired with qualitative focus group discussions. Data analysis utilized multivariate logistic regression.",
+        "results": "• Screening uptake increased from 34.2% at baseline to 62.5% post-intervention (p < 0.001).\n• Community health education sessions achieved an 84% follow-through rate among enrolled participants.\n• Treatment compliance among diagnosed hypertensive patients showed a 31% relative enhancement.",
+        "discussion": "The empirical outcomes corroborate existing literature emphasizing community-embedded frontline responders. Observed gains in screening adherence underline the criticality of decentralizing preventive diagnostics.",
+        "conclusion": "Community-driven public health frameworks offer a scalable and cost-effective mechanism for mitigating urban chronic disease burdens. Institutional adoption by municipal authorities is strongly advocated.",
+        "references": "• Talukder, S., et al. (2025). Community Health Interventions in South Asia. Journal of Global Health, 15(2), 112-125.\n• World Health Organization. (2024). Global Status Report on Noncommunicable Diseases. Geneva: WHO Press.",
+        "data_table": [
+          {
+            "variable": "NCD Screening Coverage",
+            "baseline": "34.2%",
+            "outcome": "62.5%",
+            "significance": "p < 0.001 (Highly Significant)"
+          },
+          {
+            "variable": "Hypertension Adherence",
+            "baseline": "41.0%",
+            "outcome": "72.0%",
+            "significance": "p = 0.004 (Statistically Significant)"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "bangladesh_govt_nothi",
@@ -323,7 +848,172 @@
         ]
       }
     ],
-    "ai_system_prompt": "You are a Senior Secretary / Administrative Rapporteur in the Bangladesh Government Civil Service. Synthesize the input information into an authoritative, structured Bangladesh Government Nothi / Official Report."
+    "ai_system_prompt": "You are a Senior Secretary / Administrative Rapporteur in the Bangladesh Government Civil Service. Synthesize the input information into an authoritative, structured Bangladesh Government Nothi / Official Report.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Bangladesh Government Official Nothi / Memo Report Output Schema",
+      "description": "Standardized JSON schema for 'Bangladesh Government Official Nothi / Memo Report' (bangladesh_govt_report). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Bangladesh Government Official Nothi / Memo Report' template.",
+          "required": [
+            "ministry",
+            "memo_no",
+            "date",
+            "subject",
+            "background",
+            "observations",
+            "decisions",
+            "action_matrix"
+          ],
+          "properties": {
+            "ministry": {
+              "type": "string",
+              "title": "Ministry / Division (মন্ত্রণালয় / বিভাগ)",
+              "description": "Metadata field: Ministry / Division (মন্ত্রণালয় / বিভাগ)"
+            },
+            "department": {
+              "type": "string",
+              "title": "Department / Directorate (অধিদপ্তর / সংস্থা)",
+              "description": "Metadata field: Department / Directorate (অধিদপ্তর / সংস্থা)"
+            },
+            "memo_no": {
+              "type": "string",
+              "title": "Memo / Nothi No (স্মারক নম্বর)",
+              "description": "Metadata field: Memo / Nothi No (স্মারক নম্বর)"
+            },
+            "date": {
+              "type": "string",
+              "title": "Date (তারিখ)",
+              "description": "Metadata field: Date (তারিখ)"
+            },
+            "subject": {
+              "type": "string",
+              "title": "Subject (বিষয়)",
+              "description": "Metadata field: Subject (বিষয়)"
+            },
+            "background": {
+              "type": "string",
+              "title": "১. পটভূমি ও ভূমিকা (Background & Introduction)",
+              "description": "Comprehensive background, legal mandate, and context of the administrative inquiry or meeting.. Formal, comprehensive institutional prose."
+            },
+            "observations": {
+              "type": "string",
+              "title": "২. বিশদ পর্যবেক্ষণ ও তথ্য-উপাত্ত (Detailed Observations & Findings)",
+              "description": "Key factual findings, field data, inspections, and administrative evaluations.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "decisions": {
+              "type": "string",
+              "title": "৩. সভায় গৃহীত সিদ্ধান্তসমূহ (Decisions Taken)",
+              "description": "Formally resolved directives and executive approvals.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "recommendations": {
+              "type": "string",
+              "title": "৪. কৌশলগত সুপারিশমালা (Policy & Operational Recommendations)",
+              "description": "Actionable, numbered recommendations with timelines for ministerial execution.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "signatory": {
+              "type": "string",
+              "title": "৫. স্বাক্ষরকারী ও অনুলিপি (Signatory & Distribution Block)",
+              "description": "Signatory officer's designation and distribution list (অনুলিপি সদয় জ্ঞাতার্থে ও কার্যার্থে প্রেরিত হলো).. Formal, comprehensive institutional prose."
+            },
+            "action_matrix": {
+              "type": "array",
+              "title": "বাস্তবায়ন কর্মপরিকল্পনা (Implementation Action Matrix)",
+              "description": "বাস্তবায়ন কর্মপরিকল্পনা (Implementation Action Matrix)",
+              "items": {
+                "type": "object",
+                "required": [
+                  "sn",
+                  "action",
+                  "authority",
+                  "deadline"
+                ],
+                "properties": {
+                  "sn": {
+                    "type": "string",
+                    "description": "ক্রমিক (Serial number)"
+                  },
+                  "action": {
+                    "type": "string",
+                    "description": "গৃহীত সিদ্ধান্ত / কার্যক্রম"
+                  },
+                  "authority": {
+                    "type": "string",
+                    "description": "বাস্তবায়নকারী কর্তৃপক্ষ / উইং"
+                  },
+                  "deadline": {
+                    "type": "string",
+                    "description": "বাস্তবায়নের সময়সীমা"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "গণপ্রজাতন্ত্রী বাংলাদেশ সরকারের স্বাস্থ্য সেবা বিভাগের আওতাধীন জাতীয় স্বাস্থ্য নীতি বাস্তবায়ন পর্যালোচনা সম্পর্কিত আনুষ্ঠানিক সভা কার্যবিবরণী। মাঠ পর্যায়ের তথ্য ও পর্যবেক্ষণ বিশদভাবে পর্যালোচনা করা হয়েছে।",
+      "english_transcript": "Official review meeting proceedings on national health policy implementation under the Health Services Division, Ministry of Health and Family Welfare, Government of the People's Republic of Bangladesh.",
+      "summary": {
+        "ministry": "স্বাস্থ্য ও পরিবার কল্যাণ মন্ত্রণালয় / Ministry of Health and Family Welfare",
+        "department": "স্বাস্থ্য সেবা বিভাগ, পরিকল্পনা অনুবিভাগ",
+        "memo_no": "৪৫.০০.০০০০.০০১.২৪.০০১.২৬-৫২২",
+        "date": "০২ সেপ্টেম্বর, ২০২৬ / 02 September 2026",
+        "subject": "জাতীয় স্বাস্থ্য নীতি ও স্বাস্থ্যসেবা প্রোগ্রাম বাস্তবায়ন অগ্রগতি পর্যালোচনা প্রতিবেদন প্রসঙ্গে।",
+        "background": "গণপ্রজাতন্ত্রী বাংলাদেশ সরকারের রূপকল্প বাস্তবায়ন ও প্রান্তিক জনগোষ্ঠীর দোরগোড়ায় গুণগত স্বাস্থ্যসেবা নিশ্চিতকরণের লক্ষ্যে আয়োজিত আন্তঃবিভাগীয় সমন্বয় সভার পটভূমি ও উদ্দেশ্য।",
+        "observations": "• ৬৪টি জেলায় ডিজিটাল স্বাস্থ্য রেকর্ড সিস্টেমের প্রথম পর্যায়ের পাইলট কার্যক্রম সফলভাবে সম্পন্ন হয়েছে।\n• তৃণমূল স্বাস্থ্য কেন্দ্রসমূহে জরুরি জীবনরক্ষাকারী ওষুধের পর্যাপ্ত সরবরাহ নিশ্চিত করা হয়েছে।\n• জনবল ঘাটতি চিহ্নিতকরণে প্রশাসনিক পরিদর্শন প্রতিবেদন গৃহীত হয়েছে।",
+        "decisions": "• আগামী ৩১ অক্টোবরের মধ্যে জেলা পর্যায়ের পূর্ণাঙ্গ মূল্যায়ন প্রতিবেদন দাখিলের নির্দেশ প্রদান করা হলো।\n• উপজেলা স্বাস্থ্য কমপ্লেক্সসমূহে ২৪/৭ টেলিমেডিসিন সেবা কার্যকর করার সিদ্ধান্ত গৃহীত হয়।",
+        "recommendations": "• ১. বিভাগীয় মনিটরিং সেলের সার্বক্ষণিক তত্ত্বাবধান জোরদার করা সমীচীন।\n• ২. মাঠ পর্যায়ের কর্মকর্তাদের আধুনিক স্বাস্থ্য তথ্য প্রযুক্তির উপর প্রশিক্ষণ প্রদান করা বাঞ্ছনীয়।\n• ৩. বরাদ্দকৃত উন্নয়ন বাজেটের ত্রৈমাসিক বাস্তবায়ন হার বৃদ্ধি করা আবশ্যক।",
+        "signatory": "মোহাম্মদ আবদুল কাদের, যুগ্মসচিব (পরিকল্পনা), স্বাস্থ্য সেবা বিভাগ",
+        "action_matrix": [
+          {
+            "sn": "১",
+            "action": "জেলা মূল্যায়ন প্রতিবেদন চূড়ান্তকরণ",
+            "authority": "পরিচালক (এমআইএস), স্বাস্থ্য অধিদপ্তর",
+            "deadline": "১৫ অক্টোবর, ২০২৬"
+          },
+          {
+            "sn": "২",
+            "action": "টেলিমেডিসিন সেবা অবকাঠামো আধুনিকায়ন",
+            "authority": "যুগ্মসচিব (হাসপাতাল অনুবিভাগ)",
+            "deadline": "৩০ নভেম্বর, ২০২৬"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "easd_default_minutes",
@@ -415,7 +1105,229 @@
         ]
       }
     ],
-    "ai_system_prompt": "You are an expert bilingual Chief Executive Rapporteur for EASD. Analyze the input transcript/audio and map into the standard 4-topic meeting minutes format."
+    "ai_system_prompt": "You are an expert bilingual Chief Executive Rapporteur for EASD. Analyze the input transcript/audio and map into the standard 4-topic meeting minutes format.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "EASD Meeting Minutes (Official Template) Output Schema",
+      "description": "Standardized JSON schema for 'EASD Meeting Minutes (Official Template)' (meeting_minutes). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'EASD Meeting Minutes (Official Template)' template.",
+          "required": [
+            "title",
+            "date",
+            "agendas",
+            "decisions",
+            "discussions"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Meeting Title",
+              "description": "Metadata field: Meeting Title"
+            },
+            "location": {
+              "type": "string",
+              "title": "Venue / Location",
+              "description": "Metadata field: Venue / Location"
+            },
+            "date": {
+              "type": "string",
+              "title": "Meeting Date",
+              "description": "Metadata field: Meeting Date"
+            },
+            "time": {
+              "type": "string",
+              "title": "Meeting Time",
+              "description": "Metadata field: Meeting Time"
+            },
+            "agendas": {
+              "type": "array",
+              "title": "Meeting Agenda (4-5 points)",
+              "description": "4 to 5 strategic agenda points reflecting the meeting focus.. Important: List items must not contain numbering prefixes like '1.' or '2.'",
+              "items": {
+                "type": "string"
+              }
+            },
+            "decisions": {
+              "type": "string",
+              "title": "Major Strategic Decisions",
+              "description": "Formally approved decisions, locked deadlines, and institutional directives.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "discussions": {
+              "type": "array",
+              "title": "Discussions & Action Framework",
+              "description": "Standard 4-topic meeting discussion matrix.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "sn",
+                  "topic",
+                  "details"
+                ],
+                "properties": {
+                  "sn": {
+                    "type": "string",
+                    "enum": [
+                      "1",
+                      "2",
+                      "3",
+                      "4"
+                    ],
+                    "description": "Serial number"
+                  },
+                  "topic": {
+                    "type": "string",
+                    "enum": [
+                      "Followup from previous meeting",
+                      "Action items",
+                      "Task Assignments",
+                      "Meeting Decisions"
+                    ],
+                    "description": "Specific standard discussion theme"
+                  },
+                  "details": {
+                    "type": "string",
+                    "description": "Exhaustive discussion details. Each bullet point MUST start with a single bullet symbol ('• ')."
+                  }
+                }
+              },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            "attendance": {
+              "type": "array",
+              "title": "Attendance Checklist",
+              "description": "Attendance status checklist for institutional members.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "serial",
+                  "name",
+                  "participation"
+                ],
+                "properties": {
+                  "serial": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "participation": {
+                    "type": "string",
+                    "enum": [
+                      "Yes",
+                      "No",
+                      "Present",
+                      "Absent"
+                    ]
+                  }
+                }
+              }
+            },
+            "present_members": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Names of all members/participants who attended, spoke, or were assigned tasks."
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "ইমিনের্স অ্যাসোসিয়েটস ফর সোশ্যাল ডেভেলপমেন্ট (ইএএসডি) এর সাপ্তাহিক কৌশলগত এবং কর্মসূচি পর্যালোচনা সভা অনুষ্ঠিত হয়। সভায় পূর্ববর্তী সভার অগ্রগতি, চলমান প্রকল্পসমূহের কার্যপ্রণালী এবং আসন্ন কর্মপরিকল্পনা নিয়ে বিস্তারিত আলোচনা সম্পন্ন হয়।",
+      "english_transcript": "Eminence Associates for Social Development (EASD) weekly strategic and programmatic review meeting held. Progress of previous action items, operational workstreams, and upcoming institutional targets were reviewed in detail.",
+      "summary": {
+        "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+        "location": "Eminence Conference Hall, Mohakhali DOHS, Dhaka",
+        "date": "29 August, 2026",
+        "time": "11:00 AM - 01:00 PM",
+        "agendas": [
+          "Follow-up on previous review meeting action items",
+          "Strategic review of programmatic operations and active field projects",
+          "Task assignments and milestone delivery timelines",
+          "Executive decisions and upcoming institutional schedule"
+        ],
+        "discussions": [
+          {
+            "sn": "1",
+            "topic": "Followup from previous meeting",
+            "details": "• Verified completion of the interim project monitoring report.\n• Confirmed resolution of administrative queries from field coordinators.\n• Core milestones identified in the previous session achieved on schedule."
+          },
+          {
+            "sn": "2",
+            "topic": "Action items",
+            "details": "• Finalize the draft advocacy strategy document by Thursday.\n• Conduct comprehensive quality assurance for all community survey deliverables.\n• Submit weekly expenditure and logistics statements to finance."
+          },
+          {
+            "sn": "3",
+            "topic": "Task Assignments",
+            "details": "• Program Lead assigned oversight of the upcoming stakeholder consultation workshop.\n• Research Associate tasked with synthesizing baseline data by next Tuesday.\n• Communications Officer assigned public dissemination and press release preparation."
+          },
+          {
+            "sn": "4",
+            "topic": "Meeting Decisions",
+            "details": "• Formally approved the revised programmatic roadmap for Q4 2026.\n• Scheduled next weekly strategic review session for September 5, 2026 at 11:00 AM.\n• Mandated weekly milestone check-ins across all active department wings."
+          }
+        ],
+        "decisions": "• Formally approved the revised programmatic roadmap for Q4 2026.\n• Scheduled next weekly strategic review session for September 5, 2026 at 11:00 AM.\n• Mandated weekly milestone check-ins across all active department wings.",
+        "present_members": [
+          "Dr. Shamim Talukder",
+          "Md. Rafiqul Islam",
+          "Nusrat Jahan"
+        ],
+        "attendance": [
+          {
+            "serial": "1",
+            "name": "Dr. Shamim Talukder",
+            "participation": "Yes"
+          },
+          {
+            "serial": "2",
+            "name": "Md. Rafiqul Islam",
+            "participation": "Yes"
+          },
+          {
+            "serial": "3",
+            "name": "Nusrat Jahan",
+            "participation": "Yes"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "executive_project_status",
@@ -493,7 +1405,142 @@
     "context": "General template for Executive Project Status & Milestone Brief.",
     "rules": "1. Write in formal institutional tone.\n2. Keep bullet points clear with single bullets ('• ').",
     "requirements": "- Complete all mandatory sections.\n- Ensure accurate metadata fields.",
-    "doc_type": "custom"
+    "doc_type": "custom",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Executive Project Status & Milestone Brief Output Schema",
+      "description": "Standardized JSON schema for 'Executive Project Status & Milestone Brief' (custom). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Executive Project Status & Milestone Brief' template.",
+          "required": [
+            "title",
+            "date"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Project / Workstream Title",
+              "description": "Metadata field: Project / Workstream Title"
+            },
+            "project_lead": {
+              "type": "string",
+              "title": "Project Lead / Manager",
+              "description": "Metadata field: Project Lead / Manager"
+            },
+            "date": {
+              "type": "string",
+              "title": "Review Date",
+              "description": "Metadata field: Review Date"
+            },
+            "reporting_period": {
+              "type": "string",
+              "title": "Reporting Period",
+              "description": "Metadata field: Reporting Period"
+            },
+            "executive_summary": {
+              "type": "string",
+              "title": "1. Executive Summary",
+              "description": "High-level synthesis of overall project progress, key successes, and strategic priorities.. Formal, comprehensive institutional prose."
+            },
+            "key_achievements": {
+              "type": "string",
+              "title": "2. Key Achievements & Milestones",
+              "description": "Concrete deliverables and milestones achieved during this cycle with quantifiable impact.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "challenges_risks": {
+              "type": "string",
+              "title": "3. Bottlenecks, Risks & Mitigation",
+              "description": "Identified operational bottlenecks, resource constraints, and corrective actions taken.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "next_steps": {
+              "type": "string",
+              "title": "4. Next Steps & Priority Directives",
+              "description": "Critical path action items, delivery deadlines, and responsible owners for the next sprint.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "deliverables_table": {
+              "type": "array",
+              "title": "Deliverables & Ownership Matrix",
+              "description": "Extracted table rows for 'Deliverables & Ownership Matrix'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "milestone___deliverable": {
+                    "type": "string",
+                    "title": "Milestone / Deliverable"
+                  },
+                  "accountable_lead": {
+                    "type": "string",
+                    "title": "Accountable Lead"
+                  },
+                  "target_deadline": {
+                    "type": "string",
+                    "title": "Target Deadline"
+                  },
+                  "status": {
+                    "type": "string",
+                    "title": "Status"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "'Executive Project Status & Milestone Brief' টেমপ্লেট অনুযায়ী প্রস্তুতকৃত বাংলা আলোচনা ও সভার সারসংক্ষেপ।",
+      "english_transcript": "Structured transcript and synthesis generated according to 'Executive Project Status & Milestone Brief' specifications.",
+      "summary": {
+        "title": "Programmatic Milestone & Delivery Review",
+        "project_lead": "Program Director",
+        "date": "2026-09-01",
+        "reporting_period": "Current Operational Quarter",
+        "executive_summary": "Detailed narrative synthesis addressing 1. Executive Summary with formal institutional context and outcomes.",
+        "key_achievements": "• Comprehensive finding regarding 2. Key Achievements & Milestones.\n• Operational directive and verified stakeholder feedback.",
+        "challenges_risks": "• Comprehensive finding regarding 3. Bottlenecks, Risks & Mitigation.\n• Operational directive and verified stakeholder feedback.",
+        "next_steps": "• Comprehensive finding regarding 4. Next Steps & Priority Directives.\n• Operational directive and verified stakeholder feedback.",
+        "deliverables_table": [
+          {
+            "milestone___deliverable": "Sample Milestone / Deliverable",
+            "accountable_lead": "Sample Accountable Lead",
+            "target_deadline": "Sample Target Deadline",
+            "status": "Sample Status"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "field_survey_investigation",
@@ -571,7 +1618,142 @@
     "context": "General template for Field Survey & Investigation Assessment.",
     "rules": "1. Write in formal institutional tone.\n2. Keep bullet points clear with single bullets ('• ').",
     "requirements": "- Complete all mandatory sections.\n- Ensure accurate metadata fields.",
-    "doc_type": "custom"
+    "doc_type": "custom",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Field Survey & Investigation Assessment Output Schema",
+      "description": "Standardized JSON schema for 'Field Survey & Investigation Assessment' (custom). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Field Survey & Investigation Assessment' template.",
+          "required": [
+            "title",
+            "date"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Survey Title",
+              "description": "Metadata field: Survey Title"
+            },
+            "location": {
+              "type": "string",
+              "title": "Field Region / District",
+              "description": "Metadata field: Field Region / District"
+            },
+            "date": {
+              "type": "string",
+              "title": "Field Date",
+              "description": "Metadata field: Field Date"
+            },
+            "survey_team": {
+              "type": "string",
+              "title": "Field Investigators",
+              "description": "Metadata field: Field Investigators"
+            },
+            "survey_background": {
+              "type": "string",
+              "title": "1. Survey Background & Objectives",
+              "description": "Core purpose, community demographics, and field context.. Formal, comprehensive institutional prose."
+            },
+            "field_observations": {
+              "type": "string",
+              "title": "2. Primary Field Observations",
+              "description": "Direct factual observations and feedback recorded during site visits.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "data_insights": {
+              "type": "string",
+              "title": "3. Key Data Insights & Programmatic Findings",
+              "description": "Critical findings, service delivery gaps, and qualitative takeaways.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "recommendations": {
+              "type": "string",
+              "title": "4. Recommendations & Action Plan",
+              "description": "Immediate policy or operational interventions recommended by the survey team.. Important: Each bullet point MUST begin with a single bullet symbol ('• '). Never use double bullets ('• •') or numbers with bullets."
+            },
+            "findings_summary": {
+              "type": "array",
+              "title": "Indicator Assessment Summary",
+              "description": "Extracted table rows for 'Indicator Assessment Summary'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "indicator___focus_area": {
+                    "type": "string",
+                    "title": "Indicator / Focus Area"
+                  },
+                  "observed_status": {
+                    "type": "string",
+                    "title": "Observed Status"
+                  },
+                  "impact_level": {
+                    "type": "string",
+                    "title": "Impact Level"
+                  },
+                  "recommended_action": {
+                    "type": "string",
+                    "title": "Recommended Action"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "'Field Survey & Investigation Assessment' টেমপ্লেট অনুযায়ী প্রস্তুতকৃত বাংলা আলোচনা ও সভার সারসংক্ষেপ।",
+      "english_transcript": "Structured transcript and synthesis generated according to 'Field Survey & Investigation Assessment' specifications.",
+      "summary": {
+        "title": "Field Assessment & Community Survey Report",
+        "location": "Selected Program Area",
+        "date": "2026-09-01",
+        "survey_team": "Field Operations Team",
+        "survey_background": "Detailed narrative synthesis addressing 1. Survey Background & Objectives with formal institutional context and outcomes.",
+        "field_observations": "• Comprehensive finding regarding 2. Primary Field Observations.\n• Operational directive and verified stakeholder feedback.",
+        "data_insights": "• Comprehensive finding regarding 3. Key Data Insights & Programmatic Findings.\n• Operational directive and verified stakeholder feedback.",
+        "recommendations": "• Comprehensive finding regarding 4. Recommendations & Action Plan.\n• Operational directive and verified stakeholder feedback.",
+        "findings_summary": [
+          {
+            "indicator___focus_area": "Sample Indicator / Focus Area",
+            "observed_status": "Sample Observed Status",
+            "impact_level": "Sample Impact Level",
+            "recommended_action": "Sample Recommended Action"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "custom_tpl_69003a35",
@@ -645,7 +1827,154 @@
         ]
       }
     ],
-    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements."
+    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Weekly Strategic, Programmatic and Presentation Review Meeting Output Schema",
+      "description": "Standardized JSON schema for 'Weekly Strategic, Programmatic and Presentation Review Meeting' (custom). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template.",
+          "required": [
+            "title",
+            "date"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Document Title",
+              "description": "Metadata field: Document Title"
+            },
+            "date": {
+              "type": "string",
+              "title": "Date / Period",
+              "description": "Metadata field: Date / Period"
+            },
+            "weekly_strategic__progra": {
+              "type": "string",
+              "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+              "description": "Synthesize information regarding 'Weekly Strategic, Programmatic and Presentation Review Meeting' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "date__22_august__2026___": {
+              "type": "string",
+              "title": "Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY",
+              "description": "Synthesize information regarding 'Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "meeting_agenda__4_5_poin": {
+              "type": "string",
+              "title": "Meeting Agenda (4-5 Points max):",
+              "description": "Synthesize information regarding 'Meeting Agenda (4-5 Points max):' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "agenda_wise_meeting_disc": {
+              "type": "string",
+              "title": "Agenda-Wise Meeting Discussions",
+              "description": "Synthesize information regarding 'Agenda-Wise Meeting Discussions' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "table_0": {
+              "type": "array",
+              "title": "Table 1",
+              "description": "Extracted table rows for 'Table 1'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sn": {
+                    "type": "string",
+                    "title": "SN"
+                  },
+                  "discussion_points": {
+                    "type": "string",
+                    "title": "Discussion Points"
+                  },
+                  "major_discussions": {
+                    "type": "string",
+                    "title": "Major Discussions"
+                  }
+                }
+              }
+            },
+            "table_1": {
+              "type": "array",
+              "title": "Table 2",
+              "description": "Extracted table rows for 'Table 2'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "serial": {
+                    "type": "string",
+                    "title": "Serial"
+                  },
+                  "name": {
+                    "type": "string",
+                    "title": "Name"
+                  },
+                  "participation": {
+                    "type": "string",
+                    "title": "Participation"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "'Weekly Strategic, Programmatic and Presentation Review Meeting' টেমপ্লেট অনুযায়ী প্রস্তুতকৃত বাংলা আলোচনা ও সভার সারসংক্ষেপ।",
+      "english_transcript": "Structured transcript and synthesis generated according to 'Weekly Strategic, Programmatic and Presentation Review Meeting' specifications.",
+      "summary": {
+        "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+        "date": "Sample Date / Period",
+        "weekly_strategic__progra": "Detailed narrative synthesis addressing Weekly Strategic, Programmatic and Presentation Review Meeting with formal institutional context and outcomes.",
+        "date__22_august__2026___": "Detailed narrative synthesis addressing Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY with formal institutional context and outcomes.",
+        "meeting_agenda__4_5_poin": "Detailed narrative synthesis addressing Meeting Agenda (4-5 Points max): with formal institutional context and outcomes.",
+        "agenda_wise_meeting_disc": "Detailed narrative synthesis addressing Agenda-Wise Meeting Discussions with formal institutional context and outcomes.",
+        "table_0": [
+          {
+            "sn": "Sample SN",
+            "discussion_points": "Sample Discussion Points",
+            "major_discussions": "Sample Major Discussions"
+          }
+        ],
+        "table_1": [
+          {
+            "serial": "Sample Serial",
+            "name": "Sample Name",
+            "participation": "Sample Participation"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "custom_tpl_5aac2420",
@@ -719,7 +2048,154 @@
         ]
       }
     ],
-    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements."
+    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Weekly Strategic, Programmatic and Presentation Review Meeting Output Schema",
+      "description": "Standardized JSON schema for 'Weekly Strategic, Programmatic and Presentation Review Meeting' (custom). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template.",
+          "required": [
+            "title",
+            "date"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Document Title",
+              "description": "Metadata field: Document Title"
+            },
+            "date": {
+              "type": "string",
+              "title": "Date / Period",
+              "description": "Metadata field: Date / Period"
+            },
+            "weekly_strategic__progra": {
+              "type": "string",
+              "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+              "description": "Synthesize information regarding 'Weekly Strategic, Programmatic and Presentation Review Meeting' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "date__22_august__2026___": {
+              "type": "string",
+              "title": "Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY",
+              "description": "Synthesize information regarding 'Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "meeting_agenda__4_5_poin": {
+              "type": "string",
+              "title": "Meeting Agenda (4-5 Points max):",
+              "description": "Synthesize information regarding 'Meeting Agenda (4-5 Points max):' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "agenda_wise_meeting_disc": {
+              "type": "string",
+              "title": "Agenda-Wise Meeting Discussions",
+              "description": "Synthesize information regarding 'Agenda-Wise Meeting Discussions' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "table_0": {
+              "type": "array",
+              "title": "Table 1",
+              "description": "Extracted table rows for 'Table 1'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sn": {
+                    "type": "string",
+                    "title": "SN"
+                  },
+                  "discussion_points": {
+                    "type": "string",
+                    "title": "Discussion Points"
+                  },
+                  "major_discussions": {
+                    "type": "string",
+                    "title": "Major Discussions"
+                  }
+                }
+              }
+            },
+            "table_1": {
+              "type": "array",
+              "title": "Table 2",
+              "description": "Extracted table rows for 'Table 2'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "serial": {
+                    "type": "string",
+                    "title": "Serial"
+                  },
+                  "name": {
+                    "type": "string",
+                    "title": "Name"
+                  },
+                  "participation": {
+                    "type": "string",
+                    "title": "Participation"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "'Weekly Strategic, Programmatic and Presentation Review Meeting' টেমপ্লেট অনুযায়ী প্রস্তুতকৃত বাংলা আলোচনা ও সভার সারসংক্ষেপ।",
+      "english_transcript": "Structured transcript and synthesis generated according to 'Weekly Strategic, Programmatic and Presentation Review Meeting' specifications.",
+      "summary": {
+        "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+        "date": "Sample Date / Period",
+        "weekly_strategic__progra": "Detailed narrative synthesis addressing Weekly Strategic, Programmatic and Presentation Review Meeting with formal institutional context and outcomes.",
+        "date__22_august__2026___": "Detailed narrative synthesis addressing Date: 22 August, 2026 \t\t\t\t\t\t           Time: DD Month YY with formal institutional context and outcomes.",
+        "meeting_agenda__4_5_poin": "Detailed narrative synthesis addressing Meeting Agenda (4-5 Points max): with formal institutional context and outcomes.",
+        "agenda_wise_meeting_disc": "Detailed narrative synthesis addressing Agenda-Wise Meeting Discussions with formal institutional context and outcomes.",
+        "table_0": [
+          {
+            "sn": "Sample SN",
+            "discussion_points": "Sample Discussion Points",
+            "major_discussions": "Sample Major Discussions"
+          }
+        ],
+        "table_1": [
+          {
+            "serial": "Sample Serial",
+            "name": "Sample Name",
+            "participation": "Sample Participation"
+          }
+        ]
+      }
+    }
   },
   {
     "id": "custom_tpl_d1863b6a",
@@ -910,6 +2386,161 @@
         ]
       }
     ],
-    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements."
+    "ai_system_prompt": "You are an expert Executive Rapporteur and AI Documentation Lead. Analyze the input transcript/audio and populate the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template according to its context, rules, and requirements.",
+    "json_schema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Weekly Strategic, Programmatic and Presentation Review Meeting Output Schema",
+      "description": "Standardized JSON schema for 'Weekly Strategic, Programmatic and Presentation Review Meeting' (custom). The LLM output MUST strictly conform to this schema.",
+      "type": "object",
+      "required": [
+        "detected_language",
+        "summary"
+      ],
+      "properties": {
+        "detected_language": {
+          "type": "string",
+          "enum": [
+            "bn",
+            "en"
+          ],
+          "description": "Detected primary language ('bn' for Bengali, 'en' for English)"
+        },
+        "bangla_transcript": {
+          "type": "string",
+          "description": "Refined, formal Bengali transcription and proceedings narrative."
+        },
+        "english_transcript": {
+          "type": "string",
+          "description": "Refined, formal English transcription and proceedings narrative."
+        },
+        "summary": {
+          "type": "object",
+          "description": "Structured payload populated specifically for the 'Weekly Strategic, Programmatic and Presentation Review Meeting' template.",
+          "required": [
+            "title",
+            "date"
+          ],
+          "properties": {
+            "title": {
+              "type": "string",
+              "title": "Document Title",
+              "description": "Metadata field: Document Title"
+            },
+            "date": {
+              "type": "string",
+              "title": "Date / Period",
+              "description": "Metadata field: Date / Period"
+            },
+            "sec_1_meeting_agenda_45_": {
+              "type": "string",
+              "title": "Meeting Agenda (4-5 Points max):",
+              "description": "Synthesize information regarding 'Meeting Agenda (4-5 Points max):' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "sec_2_agendawise_meeting": {
+              "type": "string",
+              "title": "Agenda-Wise Meeting Discussions",
+              "description": "Synthesize information regarding 'Agenda-Wise Meeting Discussions' in formal prose.. Formal, comprehensive institutional prose."
+            },
+            "table_0": {
+              "type": "array",
+              "title": "Agenda & Discussion Matrix",
+              "description": "Extracted table rows for 'Agenda & Discussion Matrix'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "sn": {
+                    "type": "string",
+                    "title": "SN"
+                  },
+                  "discussion_points": {
+                    "type": "string",
+                    "title": "Discussion Points"
+                  },
+                  "major_discussions": {
+                    "type": "string",
+                    "title": "Major Discussions"
+                  }
+                }
+              }
+            },
+            "table_1": {
+              "type": "array",
+              "title": "Meeting Attendance List",
+              "description": "Extracted table rows for 'Meeting Attendance List'.",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "serial": {
+                    "type": "string",
+                    "title": "Serial"
+                  },
+                  "name": {
+                    "type": "string",
+                    "title": "Name"
+                  },
+                  "participation": {
+                    "type": "string",
+                    "title": "Participation"
+                  }
+                }
+              }
+            },
+            "sections_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each section ID directly to its string content."
+            },
+            "tables_data": {
+              "type": "object",
+              "description": "Optional key-value map linking each table ID directly to its list of row objects."
+            }
+          }
+        }
+      }
+    },
+    "json_example": {
+      "detected_language": "bn",
+      "bangla_transcript": "'Weekly Strategic, Programmatic and Presentation Review Meeting' টেমপ্লেট অনুযায়ী প্রস্তুতকৃত বাংলা আলোচনা ও সভার সারসংক্ষেপ।",
+      "english_transcript": "Structured transcript and synthesis generated according to 'Weekly Strategic, Programmatic and Presentation Review Meeting' specifications.",
+      "summary": {
+        "title": "Weekly Strategic, Programmatic and Presentation Review Meeting",
+        "date": "Sample Date / Period",
+        "sec_1_meeting_agenda_45_": "Detailed narrative synthesis addressing Meeting Agenda (4-5 Points max): with formal institutional context and outcomes.",
+        "sec_2_agendawise_meeting": "Detailed narrative synthesis addressing Agenda-Wise Meeting Discussions with formal institutional context and outcomes.",
+        "table_0": [
+          {
+            "sn": "1",
+            "discussion_points": "Followup from previous meeting",
+            "major_discussions": ""
+          },
+          {
+            "sn": "2",
+            "discussion_points": "Action items",
+            "major_discussions": "burdens from the 5x5 framework, while the multi-sectoral governance mapping failed to capture the"
+          },
+          {
+            "sn": "3",
+            "discussion_points": "Task Assignments",
+            "major_discussions": ""
+          }
+        ],
+        "table_1": [
+          {
+            "serial": "1",
+            "name": "Md. Shamim Hayder Talukder",
+            "participation": "Yes"
+          },
+          {
+            "serial": "2",
+            "name": "Shahin Akter",
+            "participation": "Yes"
+          },
+          {
+            "serial": "3",
+            "name": "Ummay Farihin Sultana",
+            "participation": "Yes"
+          }
+        ]
+      }
+    }
   }
 ]

@@ -14,6 +14,7 @@ import {
   getSavedBaseUrlForProvider,
   getActiveApiDisplayName,
   saveServerSettings,
+  testAiEngine,
   PROVIDERS,
   CUSTOM_API_PRESETS
 } from '../utils/apiKeyStorage';
@@ -119,6 +120,91 @@ function AuditMetricCard({ title, value, badgeText, badgeColor, badgeBg, subText
   );
 }
 
+// Shared heading pieces for the Settings sections (were copy-pasted per section).
+function SectionHeader({ icon: Icon, tint, color, title, subtitle, badge }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', borderBottom: '2px solid var(--border-color)', paddingBottom: '8px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ background: tint, color, padding: '6px', borderRadius: '8px', display: 'flex' }}>
+          <Icon size={18} />
+        </div>
+        <div>
+          <h3 style={{ margin: 0, fontSize: '1.08rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.01em' }}>{title}</h3>
+          <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>{subtitle}</span>
+        </div>
+      </div>
+      <span style={{ fontSize: '0.72rem', padding: '3px 8px', borderRadius: '12px', background: tint, color, fontWeight: 700 }}>{badge}</span>
+    </div>
+  );
+}
+
+function EngineTitle({ icon: Icon, color, title, badge, badgeTint = 'rgba(16, 185, 129, 0.15)', badgeColor = '#10b981' }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+      <Icon size={16} color={color} />
+      <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>{title}</span>
+      {badge && (
+        <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: badgeTint, color: badgeColor, fontWeight: 600 }}>{badge}</span>
+      )}
+    </div>
+  );
+}
+
+// Password-style API key input with a show/hide button.
+const SecretKeyInput = ({ placeholder, value, onChange, shown, onToggle }) => (
+  <>
+    <input
+      type={shown ? 'text' : 'password'}
+      className="form-control"
+      placeholder={placeholder}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
+    />
+    <button type="button" className="btn btn-secondary" onClick={onToggle}
+      title={shown ? 'Hide key' : 'Show key'} style={{ padding: '7px 10px' }}>
+      {shown ? <EyeOff size={14} /> : <Eye size={14} />}
+    </button>
+  </>
+);
+
+// "Test" + "Use" buttons shown on every engine card (no color = default primary button).
+const EngineActions = ({ color, onTest, testDisabled, testing, testLabel, onUse, selected, useLabel }) => (
+  <div style={{ display: 'flex', gap: '6px' }}>
+    <button type="button" className="btn btn-secondary btn-sm" onClick={onTest} disabled={testDisabled}
+      style={{ fontSize: '0.75rem', padding: '4px 10px' }}>
+      {testing ? 'Testing...' : testLabel}
+    </button>
+    <button type="button" className="btn btn-primary btn-sm" onClick={onUse}
+      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: color, borderColor: color }}>
+      {selected ? '✓ Selected' : useLabel}
+    </button>
+  </div>
+);
+
+// Green (success) or red (error) one-line status message; renders nothing when text is empty.
+const StatusBanner = ({ ok, text }) => {
+  if (!text) return null;
+  return (
+    <div style={{
+      marginTop: '10px',
+      padding: '8px 12px',
+      borderRadius: '6px',
+      fontSize: '0.8rem',
+      fontWeight: 600,
+      background: ok ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
+      color: ok ? '#10b981' : '#ef4444',
+      border: ok ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
+      display: 'flex',
+      alignItems: 'center',
+      gap: '6px'
+    }}>
+      {ok ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+      <span>{text}</span>
+    </div>
+  );
+};
+
 export default function SettingsModal({
   isOpen,
   onClose,
@@ -151,13 +237,13 @@ export default function SettingsModal({
   // Transcription Model Selection State
   const [sttProvider, setSttProvider] = useState(() => localStorage.getItem('transcriptionProvider') || (aiConfig?.transcriptionProvider || aiConfig?.provider === 'local_whisper' ? 'local_whisper' : 'gemini'));
   const [sttModel, setSttModel] = useState(() => localStorage.getItem('transcriptionModel') || (aiConfig?.transcriptionModel || 'gemini-3.5-transcribe'));
-  const [localWhisperModel, setLocalWhisperModel] = useState(() => localStorage.getItem('local_whisper_model') || 'whisper-small');
+  const [localWhisperModel, setLocalWhisperModel] = useState(() => localStorage.getItem('local_whisper_model') || 'auto');
   const [sttFeedback, setSttFeedback] = useState('');
 
   // Summarization Model Selection State
   const [llmProvider, setLlmProvider] = useState(() => localStorage.getItem('summarizationProvider') || (aiConfig?.summarizationProvider || aiConfig?.provider || 'gemini'));
   const [geminiLlmModel, setGeminiLlmModel] = useState(() => localStorage.getItem('gemini_llm_model') || 'gemini-3.8-flash');
-  const [localLlmModel, setLocalLlmModel] = useState(() => localStorage.getItem('local_llm_model') || 'qwen2.5-1.5b');
+  const [localLlmModel, setLocalLlmModel] = useState(() => localStorage.getItem('local_llm_model') || 'gemma-4-e2b');
   const [llmFeedback, setLlmFeedback] = useState('');
 
   const [envKeys, setEnvKeys] = useState(null);
@@ -418,42 +504,34 @@ export default function SettingsModal({
     setTimeout(() => setSttFeedback(''), 4000);
   };
 
+  // Test an engine through the shared /api/test_engine helper and show the result (kind: 'stt' | 'llm').
+  const runEngineTest = async (kind, prov, mod, key, okMsg, failMsg) => {
+    setTestStatus(prev => ({ ...prev, [kind]: { loading: true, message: `Testing ${prov} ${kind.toUpperCase()} (${mod})...` } }));
+    const res = await testAiEngine({
+      test_type: kind,
+      [`${kind}_provider`]: prov,
+      [`${kind}_model`]: mod,
+      [`${kind}_api_key`]: key,
+      base_url: customBaseUrl.trim()
+    });
+    const part = res?.[kind];
+    const lat = part?.latency_ms ? ` (${part.latency_ms}ms)` : '';
+    setTestStatus(prev => ({
+      ...prev,
+      [kind]: {
+        loading: false,
+        success: Boolean(part?.success),
+        message: part ? (part.message || okMsg) + lat : (res?.detail || res?.message || failMsg)
+      }
+    }));
+  };
+
   // Test Transcription Model (STT)
-  const handleTestTranscriptionEngine = async (provToTest = null, modToTest = null) => {
+  const handleTestTranscriptionEngine = (provToTest = null, modToTest = null) => {
     const targetProv = provToTest || sttProvider;
     const targetMod = modToTest || (targetProv === 'local_whisper' ? localWhisperModel : targetProv === 'openai_compatible' ? customModel : 'gemini-3.5-transcribe');
     const targetKey = targetProv === 'gemini' ? geminiKeyInput.trim() : targetProv === 'openai_compatible' ? customKeyInput.trim() : '';
-    
-    setTestStatus(prev => ({ ...prev, stt: { loading: true, message: `Testing ${targetProv} STT (${targetMod})...` } }));
-    try {
-      const res = await axios.post('/api/test_engine', {
-        test_type: 'stt',
-        stt_provider: targetProv,
-        stt_model: targetMod,
-        stt_api_key: targetKey,
-        base_url: customBaseUrl.trim()
-      });
-      const stt = res.data?.stt || {};
-      const isValid = Boolean(stt.success);
-      const lat = stt.latency_ms ? ` (${stt.latency_ms}ms)` : '';
-      setTestStatus(prev => ({
-        ...prev,
-        stt: {
-          loading: false,
-          success: isValid,
-          message: (stt.message || `${targetProv} STT verified & ready!`) + lat
-        }
-      }));
-    } catch (err) {
-      setTestStatus(prev => ({
-        ...prev,
-        stt: {
-          loading: false,
-          success: false,
-          message: err.response?.data?.detail || err.message || 'STT connection test failed'
-        }
-      }));
-    }
+    return runEngineTest('stt', targetProv, targetMod, targetKey, `${targetProv} STT verified & ready!`, 'STT connection test failed');
   };
 
   // Save & Apply Summarization Model (LLM)
@@ -495,41 +573,11 @@ export default function SettingsModal({
   };
 
   // Test Summarization Model (LLM)
-  const handleTestSummarizationEngine = async (provToTest = null, modToTest = null) => {
+  const handleTestSummarizationEngine = (provToTest = null, modToTest = null) => {
     const targetProv = provToTest || (llmProvider === 'local_whisper' ? 'local' : llmProvider);
     const targetMod = modToTest || (targetProv === 'gemini' ? geminiLlmModel : targetProv === 'local' ? localLlmModel : customModel);
     const targetKey = targetProv === 'gemini' ? geminiKeyInput.trim() : targetProv === 'openai_compatible' ? customKeyInput.trim() : '';
-
-    setTestStatus(prev => ({ ...prev, llm: { loading: true, message: `Testing ${targetProv} LLM (${targetMod})...` } }));
-    try {
-      const res = await axios.post('/api/test_engine', {
-        test_type: 'llm',
-        llm_provider: targetProv,
-        llm_model: targetMod,
-        llm_api_key: targetKey,
-        base_url: customBaseUrl.trim()
-      });
-      const llm = res.data?.llm || {};
-      const isValid = Boolean(llm.success);
-      const lat = llm.latency_ms ? ` (${llm.latency_ms}ms)` : '';
-      setTestStatus(prev => ({
-        ...prev,
-        llm: {
-          loading: false,
-          success: isValid,
-          message: (llm.message || `${targetProv} LLM verified!`) + lat
-        }
-      }));
-    } catch (err) {
-      setTestStatus(prev => ({
-        ...prev,
-        llm: {
-          loading: false,
-          success: false,
-          message: err.response?.data?.detail || err.message || 'LLM connection test failed'
-        }
-      }));
-    }
+    return runEngineTest('llm', targetProv, targetMod, targetKey, `${targetProv} LLM verified!`, 'LLM connection test failed');
   };
 
   const handleRunAudit = async () => {
@@ -759,24 +807,8 @@ export default function SettingsModal({
                 Under this heading: Gemini, Whisper (Small for low-end / Turbo for fast PC), and Custom STT
                 ======================================================== */}
             <div style={{ marginBottom: '32px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', borderBottom: '2px solid var(--border-color)', paddingBottom: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div style={{ background: 'rgba(2, 132, 199, 0.15)', color: 'var(--accent-color)', padding: '6px', borderRadius: '8px', display: 'flex' }}>
-                    <Server size={18} />
-                  </div>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '1.08rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.01em' }}>
-                      Transcription Model (Speech-to-Text)
-                    </h3>
-                    <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-                      Select speech engine for transcribing audio files & microphone takes.
-                    </span>
-                  </div>
-                </div>
-                <span style={{ fontSize: '0.72rem', padding: '3px 8px', borderRadius: '12px', background: 'rgba(2, 132, 199, 0.15)', color: 'var(--accent-color)', fontWeight: 700 }}>
-                  Active STT: {sttProvider === 'gemini' ? 'Gemini 3.5 Transcribe' : sttProvider === 'local_whisper' ? `Whisper (${localWhisperModel})` : `Custom (${customModel || 'OpenAI-compatible'})`}
-                </span>
-              </div>
+              <SectionHeader icon={Server} tint="rgba(2, 132, 199, 0.15)" color="var(--accent-color)" title="Transcription Model (Speech-to-Text)"
+                subtitle="Select speech engine for transcribing audio files & microphone takes." badge={<>Active STT: {sttProvider === 'gemini' ? 'Gemini 3.5 Transcribe' : sttProvider === 'local_whisper' ? `Whisper (${localWhisperModel})` : `Custom (${customModel || 'OpenAI-compatible'})`}</>} />
 
               {/* 1.A: Gemini Transcribe */}
               <div
@@ -789,54 +821,16 @@ export default function SettingsModal({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Cpu size={16} color="var(--accent-color)" />
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                      Gemini 3.5 Transcribe (Cloud Live STT)
-                    </span>
-                    <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(2, 132, 199, 0.12)', color: 'var(--accent-color)', fontWeight: 600 }}>
-                      Official Google API
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleTestTranscriptionEngine('gemini', 'gemini-3.5-transcribe')}
-                      disabled={testStatus.stt?.loading || !geminiKeyInput.trim()}
-                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    >
-                      {testStatus.stt?.loading && sttProvider === 'gemini' ? 'Testing...' : 'Test STT'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveTranscriptionModel('gemini', 'gemini-3.5-transcribe')}
-                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700 }}
-                    >
-                      {sttProvider === 'gemini' ? '✓ Selected' : 'Use Gemini STT'}
-                    </button>
-                  </div>
+                  <EngineTitle icon={Cpu} color="var(--accent-color)" title="Gemini 3.5 Transcribe (Cloud Live STT)" badge="Official Google API"
+                    badgeTint="rgba(2, 132, 199, 0.12)" badgeColor="var(--accent-color)" />
+                  <EngineActions onTest={() => handleTestTranscriptionEngine('gemini', 'gemini-3.5-transcribe')} testDisabled={testStatus.stt?.loading || !geminiKeyInput.trim()}
+                    testing={testStatus.stt?.loading && sttProvider === 'gemini'} testLabel="Test STT"
+                    onUse={() => handleSaveTranscriptionModel('gemini', 'gemini-3.5-transcribe')} selected={sttProvider === 'gemini'} useLabel="Use Gemini STT" />
                 </div>
 
                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '6px' }}>
-                  <input
-                    type={showGeminiKey ? 'text' : 'password'}
-                    className="form-control"
-                    placeholder="Gemini API Key (stored in .env / os.environ)"
-                    value={geminiKeyInput}
-                    onChange={(e) => setGeminiKeyInput(e.target.value)}
-                    style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
-                  />
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => setShowGeminiKey(!showGeminiKey)}
-                    title={showGeminiKey ? 'Hide key' : 'Show key'}
-                    style={{ padding: '7px 10px' }}
-                  >
-                    {showGeminiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                  </button>
+                  <SecretKeyInput placeholder="Gemini API Key (stored in .env / os.environ)" value={geminiKeyInput} onChange={setGeminiKeyInput}
+                    shown={showGeminiKey} onToggle={() => setShowGeminiKey(!showGeminiKey)} />
                 </div>
                 <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)' }}>
                   🔒 Credential stored safely in server environment & <code>.env</code>. Never exposed to git repository.
@@ -854,34 +848,10 @@ export default function SettingsModal({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Server size={16} color="#10b981" />
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                      Whisper (Offline STT)
-                    </span>
-                    <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600 }}>
-                      100% Local • Zero API Cost
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleTestTranscriptionEngine('local_whisper', localWhisperModel)}
-                      disabled={testStatus.stt?.loading}
-                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    >
-                      {testStatus.stt?.loading && sttProvider === 'local_whisper' ? 'Testing...' : 'Test Whisper'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveTranscriptionModel('local_whisper', localWhisperModel)}
-                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
-                    >
-                      {sttProvider === 'local_whisper' ? '✓ Selected' : 'Use Whisper STT'}
-                    </button>
-                  </div>
+                  <EngineTitle icon={Server} color="#10b981" title="Whisper (Offline STT)" badge="100% Local • Zero API Cost" />
+                  <EngineActions color="#10b981" onTest={() => handleTestTranscriptionEngine('local_whisper', localWhisperModel)} testDisabled={testStatus.stt?.loading}
+                    testing={testStatus.stt?.loading && sttProvider === 'local_whisper'} testLabel="Test Whisper"
+                    onUse={() => handleSaveTranscriptionModel('local_whisper', localWhisperModel)} selected={sttProvider === 'local_whisper'} useLabel="Use Whisper STT" />
                 </div>
 
                 <div style={{ marginBottom: '10px' }}>
@@ -900,20 +870,18 @@ export default function SettingsModal({
                     }}
                     style={{ fontSize: '0.84rem', padding: '7px 10px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
                   >
-                    <option value="whisper-small">whisper-small ⚡ (Recommended for Low-End PC: ~460MB weights, low RAM)</option>
-                    <option value="whisper-large-v3-turbo">whisper-large-v3-turbo 🚀 (Recommended for Faster PC / GPU: Top accuracy + 8x speed)</option>
-                    <option value="auto">auto (Hardware Adaptive: Picks largest model RAM can comfortably host)</option>
-                    <option value="whisper-base">whisper-base (Ultra-Lightweight: 4-8 GB RAM)</option>
-                    <option value="whisper-medium">whisper-medium (Standard Precision: 8+ GB RAM)</option>
+                    <option value="auto">Automatic (Recommended: Bangla model, or large-v3-turbo on an NVIDIA GPU)</option>
+                    <option value="whisper-bengaliai">BengaliAI Whisper 🇧🇩 (Bangla speech, Bengali script, ~1.5 GB)</option>
+                    <option value="whisper-large-v3-turbo">whisper-large-v3-turbo 🚀 (NVIDIA GPU: Bangla + English)</option>
                   </select>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '8px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                   <div style={{ background: 'var(--bg-primary)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                    <strong style={{ color: 'var(--text-primary)' }}>💻 Low-End PC:</strong> Choose <code>whisper-small</code>. Minimal RAM load with stable Bengali/English bilingual recognition.
+                    <strong style={{ color: 'var(--text-primary)' }}>💻 Any PC:</strong> <code>Automatic</code> uses the BengaliAI model, which writes Bangla in Bengali script.
                   </div>
                   <div style={{ background: 'var(--bg-primary)', padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)' }}>
-                    <strong style={{ color: 'var(--text-primary)' }}>⚡ Faster PC / GPU:</strong> Choose <code>whisper-large-v3-turbo</code>. State-of-the-art accuracy with fast 4-layer decoder speed.
+                    <strong style={{ color: 'var(--text-primary)' }}>⚡ NVIDIA GPU:</strong> <code>whisper-large-v3-turbo</code> is chosen automatically and handles mixed Bangla/English.
                   </div>
                 </div>
               </div>
@@ -928,31 +896,10 @@ export default function SettingsModal({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Globe size={16} color="#f59e0b" />
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                      Custom STT (OpenAI-Compatible / Remote Endpoint)
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleTestTranscriptionEngine('openai_compatible', customModel || 'whisper-1')}
-                      disabled={testStatus.stt?.loading || !customBaseUrl.trim()}
-                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    >
-                      {testStatus.stt?.loading && sttProvider === 'openai_compatible' ? 'Testing...' : 'Test STT'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveTranscriptionModel('openai_compatible', customModel || 'whisper-1')}
-                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#f59e0b', borderColor: '#f59e0b' }}
-                    >
-                      {sttProvider === 'openai_compatible' ? '✓ Selected' : 'Use Custom STT'}
-                    </button>
-                  </div>
+                  <EngineTitle icon={Globe} color="#f59e0b" title="Custom STT (OpenAI-Compatible / Remote Endpoint)" />
+                  <EngineActions color="#f59e0b" onTest={() => handleTestTranscriptionEngine('openai_compatible', customModel || 'whisper-1')} testDisabled={testStatus.stt?.loading || !customBaseUrl.trim()}
+                    testing={testStatus.stt?.loading && sttProvider === 'openai_compatible'} testLabel="Test STT"
+                    onUse={() => handleSaveTranscriptionModel('openai_compatible', customModel || 'whisper-1')} selected={sttProvider === 'openai_compatible'} useLabel="Use Custom STT" />
                 </div>
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                   Connects to external audio endpoints (Groq Whisper, self-hosted faster-whisper server, or cloud transcription proxies).
@@ -960,24 +907,7 @@ export default function SettingsModal({
               </div>
 
               {/* STT Status & Feedback banner */}
-              {(sttFeedback || testStatus.stt?.message) && (
-                <div style={{
-                  marginTop: '10px',
-                  padding: '8px 12px',
-                  borderRadius: '6px',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  background: (sttFeedback || testStatus.stt?.success) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                  color: (sttFeedback || testStatus.stt?.success) ? '#10b981' : '#ef4444',
-                  border: (sttFeedback || testStatus.stt?.success) ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}>
-                  {(sttFeedback || testStatus.stt?.success) ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-                  <span>{sttFeedback || testStatus.stt?.message}</span>
-                </div>
-              )}
+              <StatusBanner ok={Boolean(sttFeedback || testStatus.stt?.success)} text={sttFeedback || testStatus.stt?.message} />
             </div>
 
             {/* ========================================================
@@ -985,24 +915,8 @@ export default function SettingsModal({
                 Under this heading: Gemini, Local LLM (llama.cpp / Vulkan), and Custom LLM
                 ======================================================== */}
             <div style={{ marginBottom: '32px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', borderBottom: '2px solid var(--border-color)', paddingBottom: '8px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <div style={{ background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed', padding: '6px', borderRadius: '8px', display: 'flex' }}>
-                    <Sparkles size={18} />
-                  </div>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '1.08rem', fontWeight: 800, color: 'var(--text-primary)', letterSpacing: '0.01em' }}>
-                      Summarization Model (Meeting Minutes & Reports)
-                    </h3>
-                    <span style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
-                      Select AI engine for structuring transcripts into executive minutes and custom templates.
-                    </span>
-                  </div>
-                </div>
-                <span style={{ fontSize: '0.72rem', padding: '3px 8px', borderRadius: '12px', background: 'rgba(124, 58, 237, 0.15)', color: '#7c3aed', fontWeight: 700 }}>
-                  Active LLM: {llmProvider === 'gemini' ? `Gemini (${geminiLlmModel})` : (llmProvider === 'local' || llmProvider === 'local_whisper') ? `Local (${localLlmModel})` : `Custom (${customModel || 'OpenAI-compatible'})`}
-                </span>
-              </div>
+              <SectionHeader icon={Sparkles} tint="rgba(124, 58, 237, 0.15)" color="#7c3aed" title="Summarization Model (Meeting Minutes & Reports)"
+                subtitle="Select AI engine for structuring transcripts into executive minutes and custom templates." badge={<>Active LLM: {llmProvider === 'gemini' ? `Gemini (${geminiLlmModel})` : (llmProvider === 'local' || llmProvider === 'local_whisper') ? `Local (${localLlmModel})` : `Custom (${customModel || 'OpenAI-compatible'})`}</>} />
 
               {/* 2.A: Gemini LLM */}
               <div
@@ -1015,31 +929,10 @@ export default function SettingsModal({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Cpu size={16} color="var(--accent-color)" />
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                      Gemini (Cloud Executive Synthesis)
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleTestSummarizationEngine('gemini', geminiLlmModel)}
-                      disabled={testStatus.llm?.loading || !geminiKeyInput.trim()}
-                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    >
-                      {testStatus.llm?.loading && llmProvider === 'gemini' ? 'Testing...' : 'Test Gemini'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveSummarizationModel('gemini', geminiLlmModel)}
-                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700 }}
-                    >
-                      {llmProvider === 'gemini' ? '✓ Selected' : 'Use Gemini LLM'}
-                    </button>
-                  </div>
+                  <EngineTitle icon={Cpu} color="var(--accent-color)" title="Gemini (Cloud Executive Synthesis)" />
+                  <EngineActions onTest={() => handleTestSummarizationEngine('gemini', geminiLlmModel)} testDisabled={testStatus.llm?.loading || !geminiKeyInput.trim()}
+                    testing={testStatus.llm?.loading && llmProvider === 'gemini'} testLabel="Test Gemini"
+                    onUse={() => handleSaveSummarizationModel('gemini', geminiLlmModel)} selected={llmProvider === 'gemini'} useLabel="Use Gemini LLM" />
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '10px' }}>
@@ -1082,34 +975,10 @@ export default function SettingsModal({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Server size={16} color="#10b981" />
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                      Local LLM (llama.cpp with Vulkan GPU Auto-Acceleration)
-                    </span>
-                    <span style={{ fontSize: '0.7rem', padding: '1px 6px', borderRadius: '4px', background: 'rgba(16, 185, 129, 0.15)', color: '#10b981', fontWeight: 600 }}>
-                      100% Offline
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleTestSummarizationEngine('local', localLlmModel)}
-                      disabled={testStatus.llm?.loading}
-                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    >
-                      {testStatus.llm?.loading && (llmProvider === 'local' || llmProvider === 'local_whisper') ? 'Testing...' : 'Test Local LLM'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveSummarizationModel('local', localLlmModel)}
-                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#10b981', borderColor: '#10b981' }}
-                    >
-                      {(llmProvider === 'local' || llmProvider === 'local_whisper') ? '✓ Selected' : 'Use Local LLM'}
-                    </button>
-                  </div>
+                  <EngineTitle icon={Server} color="#10b981" title="Local LLM (llama.cpp with Vulkan GPU Auto-Acceleration)" badge="100% Offline" />
+                  <EngineActions color="#10b981" onTest={() => handleTestSummarizationEngine('local', localLlmModel)} testDisabled={testStatus.llm?.loading}
+                    testing={testStatus.llm?.loading && (llmProvider === 'local' || llmProvider === 'local_whisper')} testLabel="Test Local LLM"
+                    onUse={() => handleSaveSummarizationModel('local', localLlmModel)} selected={(llmProvider === 'local' || llmProvider === 'local_whisper')} useLabel="Use Local LLM" />
                 </div>
 
                 <div style={{ background: 'rgba(16, 185, 129, 0.06)', border: '1px solid rgba(16, 185, 129, 0.25)', borderRadius: '6px', padding: '8px 12px', marginBottom: '10px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
@@ -1132,9 +1001,7 @@ export default function SettingsModal({
                     }}
                     style={{ fontSize: '0.84rem', padding: '7px 10px', background: 'var(--bg-primary)', color: 'var(--text-primary)' }}
                   >
-                    <option value="qwen2.5-1.5b">Qwen2.5-1.5B-Instruct (~1.0 GB GGUF, High accuracy for meeting minutes & tables)</option>
-                    <option value="qwen2.5-0.5b">Qwen2.5-0.5B-Instruct (~0.4 GB GGUF, Ultra-lightweight for very low RAM)</option>
-                    <option value="gemma-2-2b">Gemma-2-2B-IT (~1.6 GB GGUF, Google family local instruction model)</option>
+                    <option value="gemma-4-e2b">Gemma 4 E2B (~2.8 GB, Google Gemma 4, good Bangla; TurboQuant llama.cpp)</option>
                   </select>
                 </div>
               </div>
@@ -1149,31 +1016,10 @@ export default function SettingsModal({
                 }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '6px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <Globe size={16} color="#f59e0b" />
-                    <span style={{ fontWeight: 700, fontSize: '0.92rem', color: 'var(--text-primary)' }}>
-                      Custom / Other LLM (OpenRouter, DeepSeek, Ollama, LM Studio)
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <button
-                      type="button"
-                      className="btn btn-secondary btn-sm"
-                      onClick={() => handleTestSummarizationEngine('openai_compatible', customModel)}
-                      disabled={testStatus.llm?.loading || !customBaseUrl.trim()}
-                      style={{ fontSize: '0.75rem', padding: '4px 10px' }}
-                    >
-                      {testStatus.llm?.loading && llmProvider === 'openai_compatible' ? 'Testing...' : 'Test Connection'}
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-primary btn-sm"
-                      onClick={() => handleSaveSummarizationModel('openai_compatible', customModel)}
-                      style={{ fontSize: '0.75rem', padding: '4px 12px', fontWeight: 700, background: '#f59e0b', borderColor: '#f59e0b' }}
-                    >
-                      {llmProvider === 'openai_compatible' ? '✓ Selected' : 'Use Custom LLM'}
-                    </button>
-                  </div>
+                  <EngineTitle icon={Globe} color="#f59e0b" title="Custom / Other LLM (OpenRouter, DeepSeek, Ollama, LM Studio)" />
+                  <EngineActions color="#f59e0b" onTest={() => handleTestSummarizationEngine('openai_compatible', customModel)} testDisabled={testStatus.llm?.loading || !customBaseUrl.trim()}
+                    testing={testStatus.llm?.loading && llmProvider === 'openai_compatible'} testLabel="Test Connection"
+                    onUse={() => handleSaveSummarizationModel('openai_compatible', customModel)} selected={llmProvider === 'openai_compatible'} useLabel="Use Custom LLM" />
                 </div>
 
                 <div role="group" aria-label="Custom API presets" style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
@@ -1225,46 +1071,14 @@ export default function SettingsModal({
                     API Key (Optional for local Ollama / LM Studio):
                   </label>
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                    <input
-                      type={showCustomKey ? 'text' : 'password'}
-                      className="form-control"
-                      placeholder="Paste Custom API Key (optional)"
-                      value={customKeyInput}
-                      onChange={(e) => setCustomKeyInput(e.target.value)}
-                      style={{ flex: 1, fontFamily: 'monospace', fontSize: '0.84rem', padding: '7px 10px' }}
-                    />
-                    <button
-                      type="button"
-                      className="btn btn-secondary"
-                      onClick={() => setShowCustomKey(!showCustomKey)}
-                      title={showCustomKey ? 'Hide key' : 'Show key'}
-                      style={{ padding: '7px 10px' }}
-                    >
-                      {showCustomKey ? <EyeOff size={14} /> : <Eye size={14} />}
-                    </button>
+                    <SecretKeyInput placeholder="Paste Custom API Key (optional)" value={customKeyInput} onChange={setCustomKeyInput}
+                      shown={showCustomKey} onToggle={() => setShowCustomKey(!showCustomKey)} />
                   </div>
                 </div>
               </div>
 
               {/* LLM Status & Feedback banner */}
-              {(llmFeedback || testStatus.llm?.message) && (
-                <div style={{
-                  marginTop: '10px',
-                  padding: '8px 12px',
-                  borderRadius: '6px',
-                  fontSize: '0.8rem',
-                  fontWeight: 600,
-                  background: (llmFeedback || testStatus.llm?.success) ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)',
-                  color: (llmFeedback || testStatus.llm?.success) ? '#10b981' : '#ef4444',
-                  border: (llmFeedback || testStatus.llm?.success) ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(239, 68, 68, 0.3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px'
-                }}>
-                  {(llmFeedback || testStatus.llm?.success) ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-                  <span>{llmFeedback || testStatus.llm?.message}</span>
-                </div>
-              )}
+              <StatusBanner ok={Boolean(llmFeedback || testStatus.llm?.success)} text={llmFeedback || testStatus.llm?.message} />
             </div>
 
             {/* ========================================================

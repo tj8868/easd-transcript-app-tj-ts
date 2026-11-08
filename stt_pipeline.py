@@ -225,6 +225,7 @@ def _response_diag(resp: Any) -> str:
 def _lines_from_transcribe_response(resp: Any) -> List[str]:
     lines: List[str] = []
     speaker_map: Dict[str, int] = {}
+    last_sec = 0.0  # utterances without word timings inherit the previous time, never [00:00]
     cands = getattr(resp, "candidates", None) or []
     if not cands or not getattr(cands[0], "content", None):
         return lines
@@ -241,7 +242,10 @@ def _lines_from_transcribe_response(resp: Any) -> List[str]:
             words = getattr(at, "words", None) or []
             if words:
                 sec = _parse_offset_seconds(getattr(words[0], "start_offset", None))
-            lines.append(f"{format_ts(sec or 0)} Speaker {speaker_map[label]}: {txt}")
+            if sec is None or sec < last_sec:
+                sec = last_sec
+            last_sec = sec
+            lines.append(f"{format_ts(sec)} Speaker {speaker_map[label]}: {txt}")
         elif getattr(p, "text", None) and not getattr(p, "thought", False):
             lines.extend(_normalise_prompt_lines(p.text))
     return lines
@@ -259,6 +263,8 @@ def _normalise_prompt_lines(text: str) -> List[str]:
         elif out:
             out[-1] = f"{out[-1]} {s}"  # continuation of previous utterance
         else:
+            # Text before the first timestamp really does start at the beginning of this chunk;
+            # the chunk offset is added later by shift_line_timestamp().
             out.append(f"[00:00] Speaker 1: {s}")
     return out
 
@@ -294,6 +300,7 @@ def gemini_transcribe_bytes(audio: bytes, api_key: str, model_name: str = "", mi
     retryable = False
 
     for model, prompt_mode in plan:
+        retryable = False  # never carry the previous model's verdict into this one
         for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
             t0 = time.time()
             with _gemini_semaphore:
@@ -342,8 +349,7 @@ def whisper_status(model_name: str = "") -> Dict[str, Any]:
         import local_whisper_engine as lwe
         name, source = lwe.resolve_whisper_model_choice(model_name)
         path = lwe.get_model_path(name)
-        has = any(lwe._model_has_weights(p) for p in (path, lwe._SMALL_MODEL_DIR, lwe._BASE_MODEL_DIR,
-                                                      lwe._TINY_MODEL_DIR, lwe._MEDIUM_MODEL_DIR))
+        has = lwe._model_has_weights(path)
         return {"available": True, "weights_present": has, "model": name, "model_source": source, "path": path,
                 "load_error": lwe._MODEL_LOAD_ERROR}
     except Exception as e:
@@ -430,6 +436,42 @@ def _detect_lang(text: str) -> str:
     if bn and bn >= la * 0.15:
         return "bn"
     return "en" if la else "auto"
+
+
+def _unify_speakers_across_chunks(results: List[Dict[str, Any]], chunks: List[bytes], mime_type: str) -> None:
+    """
+    Every chunk is diarized on its own, so "Speaker 1" in chunk 2 is not necessarily
+    "Speaker 1" in chunk 1. Match voices across chunks and rewrite r["text"] in place
+    with one consistent numbering. Fails soft (labels stay per-chunk).
+    """
+    ok = [i for i, r in enumerate(results) if r and r.get("status") == "ok" and r.get("text")]
+    if len(ok) < 2:
+        return
+    wavs: List[Optional[str]] = [None] * len(results)
+    t0 = time.time()
+    try:
+        import local_whisper_engine as lwe
+        import speaker_diarization
+        for i in ok:
+            try:
+                wavs[i] = lwe.convert_to_wav_pcm16k(chunks[i], input_hint=lwe._mime_to_hint(mime_type))
+            except Exception as e:
+                log.warning("speaker unification: chunk %d could not be decoded (%s)", i + 1, e)
+        texts = [r.get("text") if (r and r.get("status") == "ok") else None for r in results]
+        durs = [max(1.0, (r["end_sec"] - r["start_sec"])) if r else 1.0 for r in results]
+        unified = speaker_diarization.unify_chunk_speakers(texts, wavs, durs)
+        for i in ok:
+            results[i]["text"] = unified[i] or results[i]["text"]
+        log.info("speaker unification across %d chunks took %.1fs", len(ok), time.time() - t0)
+    except Exception as e:
+        log.warning("speaker unification skipped: %s", describe_exception(e))
+    finally:
+        for w in wavs:
+            if w and os.path.exists(w):
+                try:
+                    os.remove(w)
+                except Exception:
+                    pass
 
 
 def transcribe_chunks(
@@ -545,6 +587,8 @@ def transcribe_chunks(
             lang = max(set(audio_langs), key=audio_langs.count)
         else:
             lang = _detect_lang(ok_text)
+
+    _unify_speakers_across_chunks(results, chunks, mime_type)
 
     out_lines: List[str] = []
     missing, errors = [], []

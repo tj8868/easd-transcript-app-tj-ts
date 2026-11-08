@@ -10,11 +10,9 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   },
   local_whisper: {
     stt: [
-      { value: 'auto', label: 'auto (Hardware Adaptive: Auto-sizes based on system RAM)' },
-      { value: 'whisper-small', label: 'whisper-small (Standard Balance - 8-16 GB RAM)' },
-      { value: 'whisper-medium', label: 'whisper-medium (Highest Precision - 16+ GB RAM)' },
-      { value: 'whisper-base', label: 'whisper-base (Fast Lightweight - 4-8 GB RAM)' },
-      { value: 'whisper-tiny', label: 'whisper-tiny (Ultra-Fast Minimal - <= 4 GB RAM)' }
+      { value: 'auto', label: 'Automatic (BengaliAI Bangla model; large-v3-turbo on NVIDIA GPU)' },
+      { value: 'whisper-bengaliai', label: 'BengaliAI Whisper (Bangla, Bengali script)' },
+      { value: 'whisper-large-v3-turbo', label: 'whisper-large-v3-turbo (NVIDIA GPU)' }
     ],
     llm: [
       { value: 'local_synthesis', label: 'Deep Semantic Synthesis (100% Offline Built-in Engine)' }

@@ -950,6 +950,27 @@ def analyze_and_generalize_docx(docx_bytes: bytes, filename: str, doc_type: str 
 
     return generalized_template
 
+def _safe_docx_name(name: Any) -> str:
+    """Returns `name` only if it is a plain file name of an existing .docx inside CUSTOM_DOCX_DIR,
+    otherwise ''. Blocks absolute paths and ../ (a client-supplied docx_filename must never point
+    outside the template store)."""
+    if not isinstance(name, str) or not name.strip():
+        return ""
+    base = os.path.basename(name.replace("\\", "/").strip())
+    if base != name.strip() or not base.lower().endswith(".docx"):
+        return ""
+    root = os.path.realpath(CUSTOM_DOCX_DIR)
+    path = os.path.realpath(os.path.join(root, base))
+    if not path.startswith(root + os.sep) or not os.path.isfile(path):
+        return ""
+    return base
+
+
+def _safe_docx_path(name: Any) -> Optional[str]:
+    base = _safe_docx_name(name)
+    return os.path.join(CUSTOM_DOCX_DIR, base) if base else None
+
+
 def save_custom_template(template_data: Dict[str, Any], save_as_new: bool = False) -> Dict[str, Any]:
     """Saves or updates a template schema in the templates store.
     Built-in templates are strictly protected and will always be saved as a new custom template."""
@@ -957,6 +978,8 @@ def save_custom_template(template_data: Dict[str, Any], save_as_new: bool = Fals
     builtin_ids = {d["id"] for d in DEFAULT_TEMPLATES}
     
     t_id = template_data.get("id")
+    # Only accept a docx_filename that names an existing file inside the template store.
+    template_data["docx_filename"] = _safe_docx_name(template_data.get("docx_filename"))
     is_target_builtin = t_id in builtin_ids or template_data.get("is_builtin", False)
     
     # Ensure json_schema and json_example are fresh and accurate
@@ -1007,14 +1030,15 @@ def delete_custom_template(template_id: str) -> bool:
     if target:
         all_t = [t for t in all_t if t.get("id") != template_id]
         save_templates_to_disk(all_t)
-        docx_fn = target.get("docx_filename")
-        if docx_fn:
-            docx_path = os.path.join(CUSTOM_DOCX_DIR, docx_fn)
-            if os.path.exists(docx_path):
-                try:
-                    os.remove(docx_path)
-                except Exception:
-                    pass
+        docx_fn = _safe_docx_name(target.get("docx_filename"))
+        # Delete only a generated custom_tpl_*.docx that no remaining template still uses
+        # (save-as-new copies share the source template's file).
+        still_used = any(_safe_docx_name(t.get("docx_filename")) == docx_fn for t in all_t)
+        if docx_fn and docx_fn.startswith("custom_tpl_") and not still_used:
+            try:
+                os.remove(os.path.join(CUSTOM_DOCX_DIR, docx_fn))
+            except Exception:
+                pass
         return True
     return False
 
@@ -1025,8 +1049,7 @@ def generate_custom_template_docx_bytes(template_info: Dict[str, Any], data: Dic
     logos, tables, and replaces placeholders / inserts sections directly into it.
     """
     doc_type = template_info.get("doc_type") or "custom"
-    docx_fn = template_info.get("docx_filename")
-    custom_docx_path = os.path.join(CUSTOM_DOCX_DIR, docx_fn) if docx_fn else None
+    custom_docx_path = _safe_docx_path(template_info.get("docx_filename"))
     
     # 1. Fill uploaded source DOCX template if available
     if custom_docx_path and os.path.exists(custom_docx_path):
