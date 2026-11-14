@@ -79,11 +79,11 @@ TEMPLATE_PATH = os.path.join(BASE_DIR, "EASD Meeting minutes - Template.docx")
 FRONTEND_DIST = os.path.join(BASE_DIR, "frontend", "dist")
 STATIC_LEGACY = os.path.join(BASE_DIR, "static")
 
-MAX_UPLOAD_SIZE = 1024 * 1024 * 1024  # 1024 MB (1 GB) for high-resolution HEVC/H.265 videos
+MAX_UPLOAD_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB for long recordings and high-resolution HEVC/H.265 videos
 
 
 def _save_upload_limited(uploaded: "UploadFile", suffix: str) -> str:
-    """Stream an upload to a temp file, aborting as soon as it exceeds MAX_UPLOAD_SIZE (1 GB)."""
+    """Stream an upload to a temp file, aborting as soon as it exceeds MAX_UPLOAD_SIZE (2 GB)."""
     written = 0
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     try:
@@ -96,7 +96,7 @@ def _save_upload_limited(uploaded: "UploadFile", suffix: str) -> str:
                 tmp.close()
                 os.remove(tmp.name)
                 raise HTTPException(status_code=413, detail=(
-                    f"File {os.path.basename(uploaded.filename or '')} is larger than the 1 GB limit."))
+                    f"File {os.path.basename(uploaded.filename or '')} is larger than the 2 GB limit."))
             tmp.write(block)
     finally:
         if not tmp.closed:
@@ -697,6 +697,7 @@ async def transcribe_and_summarize(
                 if chunks:
                     audio_segments.append({"name": clean_filename, "chunks": chunks,
                                            "durations": proc_res.get("chunk_durations"),
+                                           "time_map": proc_res.get("time_map"),
                                            "mime_type": proc_res.get("mime_type", "audio/mp3")})
 
         if ingest_errors and not audio_segments and not text_content.strip() and not media_bytes:
@@ -1150,7 +1151,7 @@ async def transcribe_take_endpoint(
     job_id: Optional[str] = Form(None)
 ):
     """
-    Transcribe one recorded take or uploaded media file (up to 1 GB).
+    Transcribe one recorded take or uploaded media file (up to 2 GB).
     Pipeline: stream to disk -> FFmpeg 16 kHz mono MP3 -> 10-min chunks -> STT per chunk.
 
     Response (always JSON):
@@ -1287,7 +1288,7 @@ async def transcribe_take_endpoint(
             mime_type=proc_res.get("mime_type", "audio/mp3"),
             segment_time_sec=proc_res.get("chunk_duration_sec", 600),
             chunk_durations=proc_res.get("chunk_durations"), label=f"job {_job}",
-            on_progress=_on_chunk_progress
+            on_progress=_on_chunk_progress, time_map=proc_res.get("time_map")
         )
         transcript = res.get("transcript", "")
         _tlog.log(20 if res["status"] == "success" else 40,

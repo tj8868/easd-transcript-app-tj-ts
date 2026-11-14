@@ -109,8 +109,28 @@ def _mfcc_embedding(samples: np.ndarray) -> Optional[np.ndarray]:
 # ---------------------------------------------------------------------------
 # Neural speaker embedding (WeSpeaker ResNet34, ONNX)
 # ---------------------------------------------------------------------------
+def _kaldi_mel_filterbank(n_filters: int = 80, n_fft: int = 512,
+                          sr: int = SAMPLE_RATE) -> np.ndarray:
+    """Kaldi mel triangles at FFT frequencies, with a 20 Hz lower cutoff.
+
+    Kaldi evaluates triangle slopes in mel space without rounding their edges
+    to FFT bins, and excludes the Nyquist bin from the filterbank.
+    """
+    mel_low = 1127.0 * np.log1p(20.0 / 700.0)
+    mel_high = 1127.0 * np.log1p((sr / 2) / 700.0)
+    edges = np.linspace(mel_low, mel_high, n_filters + 2)
+    fft_mels = 1127.0 * np.log1p(np.arange(n_fft // 2 + 1) * (sr / n_fft) / 700.0)
+    left, centre, right = edges[:-2, None], edges[1:-1, None], edges[2:, None]
+    rising = (fft_mels[None, :] - left) / (centre - left)
+    falling = (right - fft_mels[None, :]) / (right - centre)
+    bank = np.maximum(0.0, np.minimum(rising, falling)).astype(np.float32)
+    bank[:, -1] = 0.0
+    return bank
+
+
 _neural_state: Dict[str, Any] = {"session": None, "failed": False}
-_FB80 = _mel_filterbank(n_filters=80, n_fft=512)
+_FB80 = _kaldi_mel_filterbank()
+_NEURAL_WINDOW = np.hamming(400).astype(np.float32)
 
 
 def _ensure_neural_model() -> Optional[str]:
@@ -216,7 +236,12 @@ def _neural_session():
 
 
 def _kaldi_fbank(samples: np.ndarray) -> Optional[np.ndarray]:
-    """80-dim log-mel filterbank (Kaldi-style, as WeSpeaker was trained on), mean-normalised."""
+    """WeSpeaker's 80-bin Kaldi fbank, with utterance mean normalisation.
+
+    Uses 16 kHz PCM scaling, 25 ms frames / 10 ms hops, snipped edges,
+    per-frame DC removal, 0.97 pre-emphasis, a Hamming window, 512-point
+    power spectra, and no inference-time dithering or energy coefficient.
+    """
     x = samples.astype(np.float32) * 32768.0
     frame, hop = 400, 160
     n_frames = 1 + (len(x) - frame) // hop
@@ -225,9 +250,9 @@ def _kaldi_fbank(samples: np.ndarray) -> Optional[np.ndarray]:
     idx = np.arange(frame)[None, :] + hop * np.arange(n_frames)[:, None]
     frames = x[idx]
     frames = frames - frames.mean(axis=1, keepdims=True)
-    frames = np.concatenate([frames[:, :1] * (1 - 0.97), frames[:, 1:] - 0.97 * frames[:, :-1]], axis=1)
-    win = (0.5 - 0.5 * np.cos(2 * np.pi * np.arange(frame) / (frame - 1))) ** 0.85   # povey window
-    power = np.abs(np.fft.rfft(frames * win, n=512)) ** 2
+    previous = np.concatenate([frames[:, :1], frames[:, :-1]], axis=1)
+    frames = frames - 0.97 * previous
+    power = np.abs(np.fft.rfft(frames * _NEURAL_WINDOW, n=512)) ** 2
     feats = np.log(np.maximum(power @ _FB80.T, 1.1920929e-07))
     return (feats - feats.mean(axis=0)).astype(np.float32)
 

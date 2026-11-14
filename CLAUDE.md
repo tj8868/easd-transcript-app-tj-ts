@@ -24,6 +24,9 @@ large-v3-turbo auto on NVIDIA). LLM `models/gemma-4-E2B-it-Q4_0.gguf` via `bin/l
 TheTom's TurboQuant fork (`scripts/build_llama_server.sh|.bat [vulkan|cuda|cpu]`), KV cache turbo4
 (fork auto-upgrades K to q8_0 on Gemma 4). This PC's bin/ is a CPU build; the i3-1315U needs a vulkan build.
 Language detection is restricted to bn/en; Bengali loop cut-off is compression 3.0 (2.4 dropped real speech).
+v9.0 Bangla/English switching (design `docs/designs/bilingual_local_transcription.md`): with `EASD_CODE_SWITCH=1`,
+English speech stretches decode on `models/whisper-small.en` and a detector (`EASD_CS_DETECTOR`: tiny/base/bengaliai)
+tags each stretch; Phase 1 code is in, default OFF until `scripts/measure_language_id.py` passes on a labelled meeting excerpt.
 On this 8 GB PC, parallel downloads/builds/transcriptions get OOM-killed: run them one at a time.
 
 ## Layout

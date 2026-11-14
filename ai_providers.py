@@ -475,6 +475,13 @@ def build_template_system_prompt(
     if custom_skills and custom_skills.strip():
         prompt += f"\n\nACTIVE CUSTOM DIRECTIVES:\n{custom_skills.strip()}"
 
+    # v9.0: the audio pipeline cuts long silences before transcription; tell the model why timestamps jump.
+    try:
+        import silence_trimmer
+        if silence_trimmer.TRIM_ENABLED:
+            prompt += "\n\n" + silence_trimmer.LLM_TRANSCRIPT_NOTE
+    except Exception:
+        pass
     return prompt
 
 def process_extracted_payload(
@@ -1093,7 +1100,8 @@ def live_transcribe_audio_chunk(
                 lines = g["text"].splitlines()
         if not lines:
             w = stt_pipeline.whisper_transcribe_bytes(audio, language or "auto", "audio/wav", ctx="[live]",
-                                                      model_name=_requested_whisper_model(prov, model_name))
+                                                      model_name=_requested_whisper_model(prov, model_name),
+                                                      code_switch=False)  # preview stays light (v9.0 design CUJ 4)
             if w.get("ok"):
                 lines = w["text"].splitlines()
         span = total_sec - start
@@ -1202,7 +1210,8 @@ def transcribe_audio_chunks_detailed(
     chunk_durations: Optional[List[float]] = None,
     base_offset_sec: float = 0.0,
     label: str = "",
-    on_progress: Optional[Any] = None
+    on_progress: Optional[Any] = None,
+    time_map: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
     """
     Multi-chunk STT with per-chunk status, word timestamps and diarization.
@@ -1222,7 +1231,7 @@ def transcribe_audio_chunks_detailed(
         chunks=chunks, chunk_durations=chunk_durations, provider=prov, api_key=target_key,
         model_name=target_model, language=language or "auto", mime_type=mime_type or "audio/mp3",
         segment_time_sec=segment_time_sec, base_offset_sec=base_offset_sec, label=label,
-        on_progress=on_progress, whisper_model=_requested_whisper_model(prov, model_name)
+        on_progress=on_progress, whisper_model=_requested_whisper_model(prov, model_name), time_map=time_map
     )
 
 
@@ -1699,7 +1708,8 @@ def process_ai_request(
                 res = transcribe_audio_chunks_detailed(
                     chunks=seg_chunks, provider=stt_prov, api_key=stt_key, model_name=stt_model,
                     language="auto", mime_type=seg.get("mime_type") or mime_type or "audio/mp3",
-                    segment_time_sec=600.0, chunk_durations=seg.get("durations"), label=seg.get("name", "")
+                    segment_time_sec=600.0, chunk_durations=seg.get("durations"), label=seg.get("name", ""),
+                    time_map=seg.get("time_map")
                 )
                 statuses.append(res["status"])
                 multi = len(segments) > 1 and seg.get("name")

@@ -368,7 +368,7 @@ def _process_uploaded_media_impl(
     Universal media processor:
     Accepts ANY file payload (HEVC/H.265 video, Apple iPhone MOV / ProRes / M4A / AAC / ALAC / CAF,
     H.264, MP4, MKV, WebM, TS, FLAC, AMR, DOCX, SRT, VTT, TXT, MD, etc.).
-    Supports streaming file_path on disk to handle large files up to 1 GB without RAM exhaustion.
+    Supports streaming file_path on disk to handle large files up to 2 GB without RAM exhaustion.
     
     Returns:
     {
@@ -547,6 +547,20 @@ def _process_uploaded_media_impl(
                     "audio_bytes": None, "mime_type": "", "audio_chunks": [], "chunk_durations": [],
                     "chunk_duration_sec": SEGMENT_SECONDS}
 
+        # v9.0: cut long silences so every chunk the STT model gets is mostly speech. trim_info["time_map"]
+        # lets stt_pipeline map transcript timestamps back to the original recording.
+        trim_info = None
+        try:
+            import silence_trimmer
+            trimmed_path = os.path.join(temp_dir, "speech_trimmed.mp3")
+            trim_info = silence_trimmer.trim_silence(temp_output, trimmed_path, ffmpeg_bin)
+            if trim_info:
+                temp_output = trimmed_path
+                total_dur = probe_duration_sec(temp_output)
+        except Exception as e:
+            _log.warning("silence trimming unavailable (%s) - sending untrimmed audio", e)
+            trim_info = None
+
         chunk_paths = [temp_output]
         if total_dur > SEGMENT_SECONDS + 60 or (total_dur < 0 and os.path.getsize(temp_output) > CHUNK_SPLIT_THRESHOLD_BYTES):
             chunk_paths = split_audio_into_chunks(temp_output, ffmpeg_bin, segment_time_seconds=SEGMENT_SECONDS)
@@ -569,8 +583,10 @@ def _process_uploaded_media_impl(
             "mime_type": "audio/mp3",
             "audio_chunks": chunks_bytes,
             "chunk_durations": durations,
-            "total_duration_sec": total_dur,
-            "chunk_duration_sec": SEGMENT_SECONDS
+            "total_duration_sec": trim_info["original_sec"] if trim_info else total_dur,
+            "chunk_duration_sec": SEGMENT_SECONDS,
+            "time_map": trim_info["time_map"] if trim_info else None,
+            "silence_removed_sec": trim_info["removed_sec"] if trim_info else 0.0
         }
 
 def process_uploaded_media(

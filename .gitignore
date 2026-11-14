@@ -67,3 +67,7 @@ llama_server.log
 Transcription Module/custom_api_config.json
 Transcription Module/temp_uploads/
 models/.ov_cache/
+
+# docker/llama/build.sh source snapshot (deleted after each build)
+docker/llama/llama-src.tar.gz
+docker/llama/BUILD_COMMIT

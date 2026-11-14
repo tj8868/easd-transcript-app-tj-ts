@@ -85,6 +85,20 @@ _TURBO_REPO = "deepdml/faster-whisper-large-v3-turbo"
 
 _DEFAULT_MODEL_DIR = _BENGALIAI_MODEL_DIR
 
+# v9.0 Bangla/English switching (docs/designs/bilingual_local_transcription.md). whisper-bengaliai
+# only writes Bangla, so English speech stretches go to small.en, and a detector model tags each
+# stretch Bangla or English. Each model is downloaded once into models/ (never a per-user cache).
+#   kind -> (folder, Hugging Face repo)
+_AUX_MODELS: Dict[str, Tuple[str, str]] = {
+    "en": (os.path.join(_BASE_DIR, "models", "whisper-small.en"), "Systran/faster-whisper-small.en"),
+    "tiny": (os.path.join(_BASE_DIR, "models", "whisper-tiny"), "Systran/faster-whisper-tiny"),
+    "base": (os.path.join(_BASE_DIR, "models", "whisper-base"), "Systran/faster-whisper-base"),
+}
+_CS_DETECTORS = ("bengaliai", "tiny", "base")
+_AUX_DOWNLOAD_FAILED: Dict[str, str] = {}  # kind -> reason; not retried until the app restarts
+_AUX_DOWNLOAD_LOCK = threading.Lock()
+_EN_PROMPT = "Meeting discussion and proceedings in English verbatim. Agenda, budget, review, action items."
+
 _LOCAL_MODELS: Dict[str, Any] = {}
 _LOCAL_MODEL = None
 _MODEL_LOCK = threading.Lock()
@@ -221,6 +235,14 @@ def detect_audio_language(
     d = detect_audio_language_detail(model, audio_input)
     return (d["language"] or "auto"), float(d["confidence"])
 
+def _bn_en_scores(probs: Dict[str, float], candidates: Any) -> Dict[str, float]:
+    """Scores for the candidate languages. Bengali absorbs its confusables (hi/ne/ur/as) so a
+    Bangla window or stretch is never decoded as Hindi."""
+    return {cand: probs.get(cand, 0.0) + (sum(probs.get(c, 0.0) for c in _BN_CONFUSABLE_LANGS)
+                                          if cand == "bn" else 0.0)
+            for cand in candidates}
+
+
 def _resolve_window_language(model: Any, audio_window: Any, candidates: List[str], ctx: str = "") -> str:
     """
     Picks which of the chunk's candidate languages dominates one ~30s window.
@@ -235,12 +257,7 @@ def _resolve_window_language(model: Any, audio_window: Any, candidates: List[str
     except Exception as e:
         logger.warning(f"{ctx} window language detection failed ({type(e).__name__}: {e}); using {candidates[0]}")
         return candidates[0]
-    probs = dict(all_probs or [])
-    # Bengali absorbs its confusables so a Bangla window is never decoded as Hindi.
-    scores = {}
-    for cand in candidates:
-        scores[cand] = probs.get(cand, 0.0) + (sum(probs.get(c, 0.0) for c in _BN_CONFUSABLE_LANGS)
-                                               if cand == "bn" else 0.0)
+    scores = _bn_en_scores(dict(all_probs or []), candidates)
     chosen = max(scores, key=scores.get)
     logger.info(f"{ctx} window language -> {chosen} scores={ {k: round(v, 3) for k, v in scores.items()} }")
     return chosen
@@ -575,6 +592,12 @@ def warm_up_local_whisper_in_background():
             logger.warning(f"Background warm-up encountered: {err}")
         finally:
             _IS_WARMING_UP = False
+        # One-time download of the Bangla/English switching models (no-op when already in models/).
+        if code_switch_enabled():
+            try:
+                ensure_code_switch_models()
+            except Exception as err:
+                logger.warning(f"Bangla/English switching models not prepared: {err}")
 
     t = threading.Thread(target=_worker, daemon=True, name="whisper-warmup-thread")
     t.start()
@@ -611,7 +634,8 @@ def get_engine_status() -> Dict[str, Any]:
         "device": _MODEL_DEVICE.get(model_dir, "not loaded"),
         "cuda_devices": _cuda_device_count(),
         "compute_type": "int8" if _MODEL_DEVICE.get(model_dir, "cpu") == "cpu" else "float16",
-        "threads": get_optimal_cpu_threads()
+        "threads": get_optimal_cpu_threads(),
+        "code_switch": code_switch_status(),
     }
 
 
@@ -881,6 +905,236 @@ def _finalize_result(segments_data: List[Dict[str, Any]], raw_text_parts: List[s
     }
 
 
+# ---------------------------------------------------------------------------
+# v9.0 Bangla/English switching for whisper-bengaliai
+# (docs/designs/bilingual_local_transcription.md)
+#
+# Each 3-minute slice is split at pauses into speech stretches, a detector tags each stretch
+# Bangla or English, and the resulting language runs go to whisper-bengaliai (Bangla) or
+# small.en (English). Every failure falls back to today's Bangla-only decoding.
+# Settings are read at call time so tests and scripts/measure_language_id.py can change them.
+# ---------------------------------------------------------------------------
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def code_switch_enabled() -> bool:
+    """EASD_CODE_SWITCH: master switch (default off until measured on real meetings)."""
+    return os.environ.get("EASD_CODE_SWITCH", "0").strip().lower() in ("1", "true", "on", "yes")
+
+
+def code_switch_detector() -> str:
+    """EASD_CS_DETECTOR: 'bengaliai' (the loaded Bangla model), 'tiny' or 'base' (default 'tiny')."""
+    det = os.environ.get("EASD_CS_DETECTOR", "tiny").strip().lower()
+    return det if det in _CS_DETECTORS else "tiny"
+
+
+def ensure_aux_model(kind: str) -> bool:
+    """Makes sure a switching model ('en', 'tiny', 'base') is in models/. Downloads it once if it
+    is missing: into '<folder>.partial', renamed only when complete, so a broken download never
+    counts as installed (the next attempt resumes it). No network call when already installed.
+    A failed download is not retried until the app restarts. Never raises."""
+    if kind not in _AUX_MODELS:
+        return False
+    final_dir, repo = _AUX_MODELS[kind]
+    if _model_has_weights(final_dir):
+        return True
+    if kind in _AUX_DOWNLOAD_FAILED:
+        return False
+    with _AUX_DOWNLOAD_LOCK:
+        if _model_has_weights(final_dir):
+            return True
+        if kind in _AUX_DOWNLOAD_FAILED:
+            return False
+        partial_dir = final_dir + ".partial"
+        t0 = time.time()
+        try:
+            logger.info(f"Downloading {repo} (one time) to '{partial_dir}'...")
+            from huggingface_hub import snapshot_download
+            snapshot_download(repo, local_dir=partial_dir)
+            if not _model_has_weights(partial_dir):
+                raise RuntimeError("download finished without model weights")
+            if os.path.isdir(final_dir):
+                import shutil
+                shutil.rmtree(final_dir)
+            os.replace(partial_dir, final_dir)
+            logger.info(f"Installed {repo} in '{final_dir}' ({time.time() - t0:.0f}s)")
+            return True
+        except Exception as e:
+            _AUX_DOWNLOAD_FAILED[kind] = f"{type(e).__name__}: {e}"[:300]
+            logger.warning(f"Download of {repo} failed ({_AUX_DOWNLOAD_FAILED[kind]}); "
+                           f"Bangla/English switching stays off until the next app start")
+            return False
+
+
+def ensure_code_switch_models() -> Dict[str, bool]:
+    """One-time download of the English model and the configured detector."""
+    result = {"en": ensure_aux_model("en")}
+    det = code_switch_detector()
+    if det != "bengaliai":
+        result[det] = ensure_aux_model(det)
+    return result
+
+
+def _load_aux_model(kind: str):
+    """Loaded WhisperModel for a switching model, or None (missing weights / load error).
+    Never downloads. Cached in _LOCAL_MODELS like the main model."""
+    final_dir = _AUX_MODELS[kind][0]
+    if final_dir in _LOCAL_MODELS:
+        return _LOCAL_MODELS[final_dir]
+    if not _model_has_weights(final_dir):
+        return None
+    with _MODEL_LOCK:
+        if final_dir in _LOCAL_MODELS:
+            return _LOCAL_MODELS[final_dir]
+        t0 = time.time()
+        try:
+            from faster_whisper import WhisperModel
+            model = WhisperModel(final_dir, device="cpu", compute_type="int8",
+                                 cpu_threads=get_optimal_cpu_threads(), local_files_only=True)
+        except Exception as e:
+            logger.warning(f"Could not load {os.path.basename(final_dir)} ({type(e).__name__}: {e})")
+            return None
+        _LOCAL_MODELS[final_dir] = model
+        _MODEL_DEVICE[final_dir] = "cpu"
+        logger.info(f"Loaded {os.path.basename(final_dir)} (cpu, int8) in {time.time() - t0:.1f}s")
+        return model
+
+
+def _code_switch_ready() -> Tuple[bool, str]:
+    """(True, '') when switching can run now; otherwise (False, reason for the log)."""
+    if not code_switch_enabled():
+        return False, "EASD_CODE_SWITCH is off"
+    det = code_switch_detector()
+    needed = ["en"] + ([det] if det != "bengaliai" else [])
+    for kind in needed:
+        folder = _AUX_MODELS[kind][0]
+        if not _model_has_weights(folder):
+            why = f"{os.path.basename(folder)} is not installed"
+            if kind in _AUX_DOWNLOAD_FAILED:
+                why += f" (download failed: {_AUX_DOWNLOAD_FAILED[kind]})"
+            return False, why
+    if all(_AUX_MODELS[k][0] in _LOCAL_MODELS for k in needed):
+        return True, ""
+    min_free_mb = _env_float("EASD_CS_MIN_FREE_MB", 1200.0)
+    free_mb = float(get_system_ram_specs().get("available_ram_gb", 0.0)) * 1024
+    if free_mb < min_free_mb:
+        return False, f"only {free_mb:.0f} MB RAM free (< {min_free_mb:.0f} MB) to load the extra models"
+    return True, ""
+
+
+def code_switch_status() -> Dict[str, Any]:
+    """Switching readiness for get_engine_status() / /api/system_audit."""
+    def _info(kind: str) -> Dict[str, Any]:
+        folder = _AUX_MODELS[kind][0]
+        return {"folder": os.path.basename(folder), "installed": _model_has_weights(folder),
+                "loaded": folder in _LOCAL_MODELS, "download_error": _AUX_DOWNLOAD_FAILED.get(kind)}
+    det = code_switch_detector()
+    return {"enabled": code_switch_enabled(), "detector": det, "english_model": _info("en"),
+            "detector_model": _info(det) if det != "bengaliai" else {"folder": "whisper-bengaliai", "shared": True}}
+
+
+def _split_speech_stretches(audio: Any, sr: int = 16000) -> List[Tuple[float, float]]:
+    """Speech stretches (start_sec, end_sec): a new stretch at every pause of at least
+    EASD_CS_MIN_PAUSE_SEC; stretches longer than EASD_CS_MAX_STRETCH_SEC are cut at their
+    quietest 100 ms. Silero runs on 30 s blocks (its state saturates on long noise, see
+    _vad_is_reliable_for); spans split only by a block edge are joined again."""
+    import numpy as np
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    min_pause = max(0.1, _env_float("EASD_CS_MIN_PAUSE_SEC", 0.6))
+    max_len = max(5.0, _env_float("EASD_CS_MAX_STRETCH_SEC", 30.0))
+    opts = VadOptions(threshold=WHISPER_VAD_PARAMETERS["threshold"], min_speech_duration_ms=250,
+                      min_silence_duration_ms=int(min_pause * 1000), speech_pad_ms=150)
+    block = 30 * sr
+    spans: List[List[float]] = []
+    for off in range(0, len(audio), block):
+        edge = off / sr
+        for ts in get_speech_timestamps(audio[off:off + block], vad_options=opts, sampling_rate=sr):
+            s, e = (off + int(ts["start"])) / sr, (off + int(ts["end"])) / sr
+            # Silero restarts at each block and needs ~0.5-1 s to pick speech up again, so a span
+            # that reaches the block edge and one starting within 1 s after it are one stretch.
+            split_by_edge = bool(spans) and edge > 0 and spans[-1][1] >= edge - 0.05 and edge <= s <= edge + 1.0
+            if spans and (s - spans[-1][1] < min_pause or split_by_edge):
+                spans[-1][1] = max(spans[-1][1], e)
+            else:
+                spans.append([s, e])
+
+    frame = int(0.1 * sr)
+    out: List[Tuple[float, float]] = []
+    for s, e in spans:
+        while e - s > max_len:
+            # quietest 100 ms frame in the second half of the allowed length
+            lo, hi = int((s + max_len / 2) * sr), int((s + max_len) * sr)
+            seg = audio[lo:hi]
+            n = len(seg) // frame
+            if n < 1:
+                break
+            energy = np.square(seg[:n * frame].astype("float32")).reshape(n, frame).mean(axis=1)
+            cut = (lo + int(np.argmin(energy)) * frame + frame // 2) / sr
+            out.append((s, cut))
+            s = cut
+        out.append((s, e))
+    return out
+
+
+def _stretch_language(detector: Any, samples: Any) -> Tuple[str, float]:
+    """('en' | 'bn', p_en). English only when the normalised English score reaches
+    EASD_CS_EN_THRESHOLD (default 0.6): a Bangla stretch sent to small.en would be a new error,
+    an English stretch kept in Bangla is today's behaviour."""
+    _, _, all_probs = detector.detect_language(samples)
+    scores = _bn_en_scores(dict(all_probs or []), ("bn", "en"))
+    total = scores["bn"] + scores["en"]
+    p_en = scores["en"] / total if total > 0 else 0.0
+    return ("en" if p_en >= _env_float("EASD_CS_EN_THRESHOLD", 0.6) else "bn"), p_en
+
+
+def _plan_bilingual_runs(detector: Any, slice_wav_path: str, slice_duration_sec: float,
+                         ctx: str = "") -> List[Tuple[float, float, Optional[str]]]:
+    """Language runs [(offset_sec, duration_sec, 'bn'|'en')] covering the whole slice, in the
+    shape the decode loop already uses. Raises on VAD/detector errors (caller falls back)."""
+    import faster_whisper
+    sr = 16000
+    t0 = time.time()
+    audio = faster_whisper.decode_audio(slice_wav_path)
+    stretches = _split_speech_stretches(audio, sr)
+    if not stretches:
+        return [(0.0, slice_duration_sec, "bn")]
+
+    min_lid = _env_float("EASD_CS_MIN_LID_SEC", 2.0)
+    tags: List[List[Any]] = []  # [start, end, lang or None]
+    for s, e in stretches:
+        lang = None
+        if e - s >= min_lid:
+            lang, _ = _stretch_language(detector, audio[int(s * sr):int(e * sr)])
+        tags.append([s, e, lang])
+    # Short stretches take the previous stretch's language, else the next tagged one, else Bangla.
+    for i, t in enumerate(tags):
+        if t[2] is None:
+            nxt = next((u[2] for u in tags[i + 1:] if u[2] is not None), None)
+            t[2] = tags[i - 1][2] if i > 0 else (nxt or "bn")
+
+    runs: List[List[Any]] = []
+    for s, e, lang in tags:
+        if runs and runs[-1][2] == lang:
+            runs[-1][1] = e
+        else:
+            runs.append([s, e, lang])
+    for a, b in zip(runs, runs[1:]):  # boundary in the middle of the pause between languages
+        a[1] = b[0] = (a[1] + b[0]) / 2
+    runs[0][0], runs[-1][1] = 0.0, slice_duration_sec
+
+    n_en = sum(1 for t in tags if t[2] == "en")
+    logger.info(f"{ctx} Bangla/English: {len(tags)} stretch(es), {n_en} English -> {len(runs)} run(s): "
+                + ", ".join(f"{s:.0f}s+{e - s:.0f}s={lang}" for s, e, lang in runs)
+                + f" (planned in {time.time() - t0:.1f}s)")
+    return [(s, e - s, lang) for s, e, lang in runs]
+
+
 def _transcribe_local_audio_openvino(media_input, language: Optional[str], prompt: Optional[str],
                                      mime_type: str) -> Optional[Dict[str, Any]]:
     """
@@ -949,11 +1203,16 @@ def transcribe_local_audio(
     temperature: float = 0.0,
     mime_type: str = "audio/webm",
     model_name: Optional[str] = None,
-    _is_fallback_retry: bool = False
+    _is_fallback_retry: bool = False,
+    code_switch: bool = True
 ) -> Dict[str, Any]:
     """
     Transcribe audio using the embedded local faster-whisper model.
-    
+
+    code_switch: allow Bangla/English switching for whisper-bengaliai (v9.0). It runs only when
+    this is True, EASD_CODE_SWITCH is on, no language was forced by the caller, and the switching
+    models are installed. The live preview passes False.
+
     Args:
         media_input: Raw audio bytes, BytesIO buffer, or path to audio file.
         language: Language code ('bn', 'en') or None/'auto' for unforced auto-detection.
@@ -1027,11 +1286,27 @@ def transcribe_local_audio(
 
     # Check if a specific language was explicitly requested
     explicit_lang = normalize_language_code(language)
+    caller_forced_lang = explicit_lang is not None
     is_banglish = effective_model == "bengaliai"
     if is_banglish:
         # Fine-tuned on Bangla only: decode with the Bangla token and no prompt (tested v8.9 on a
         # real EASD meeting; it writes Bengali script).
         explicit_lang, prompt = "bn", None
+
+    # v9.0 Bangla/English switching: English stretches go to small.en (see _plan_bilingual_runs).
+    cs_active, en_model, cs_detector = False, None, None
+    if is_banglish and code_switch and not caller_forced_lang and code_switch_enabled():
+        ready, why = _code_switch_ready()
+        if ready:
+            det_name = code_switch_detector()
+            en_model = _load_aux_model("en")
+            cs_detector = model if det_name == "bengaliai" else _load_aux_model(det_name)
+            cs_active = en_model is not None and cs_detector is not None
+            why = "" if cs_active else "could not load the switching models"
+        if cs_active:
+            logger.info(f"Bangla/English switching ON (detector={code_switch_detector()}, English=small.en)")
+        else:
+            logger.info(f"Bangla/English switching skipped: {why} - decoding as Bangla only")
 
     # Whole-file detection is only a PRIOR (it picks the initial_prompt). Each slice below
     # gets its own detection so one early guess can't force the whole file into one language.
@@ -1041,7 +1316,10 @@ def transcribe_local_audio(
         target_language = prior.get("language")
     else:
         target_language = explicit_lang
-        logger.info(f"Language forced by caller: '{explicit_lang}' (per-slice detection disabled)")
+        if cs_active:
+            logger.info("Bangla model with per-stretch Bangla/English switching (English stretches -> small.en)")
+        else:
+            logger.info(f"Language forced by caller: '{explicit_lang}' (per-slice detection disabled)")
 
     if is_banglish:
         init_prompt = None
@@ -1053,7 +1331,7 @@ def transcribe_local_audio(
         # Bengali script: a romanized prompt makes Whisper write Bangla in Latin letters.
         init_prompt = "আজকের মিটিংয়ের আলোচনা এবং কার্যবিবরণী। এজেন্ডা, বাজেট, পর্যালোচনা, সিদ্ধান্ত।"
     elif target_language == "en":
-        init_prompt = "Meeting discussion and proceedings in English verbatim. Agenda, budget, review, action items."
+        init_prompt = _EN_PROMPT
     else:
         init_prompt = "Verbatim speech transcription with timestamps and speaker tags."
 
@@ -1092,6 +1370,7 @@ def transcribe_local_audio(
         detected_whisper_lang = target_language
         detected_whisper_prob = 1.0
         slice_languages: List[str] = []
+        used_en_model = False  # any run decoded by small.en (v9.0 switching)
 
         for slice_idx, (chunk_start_sec, chunk_dur_sec) in enumerate(chunk_slices):
             chunk_temp_wav = None
@@ -1111,7 +1390,15 @@ def transcribe_local_audio(
             run_temp_files: List[str] = []
             try:
                 # 1. Decide the language(s) for this slice
-                if explicit_lang is not None:
+                if cs_active:
+                    try:
+                        with _TRANSCRIBE_LOCK:  # the detector may be the shared Bangla model
+                            runs = _plan_bilingual_runs(cs_detector, input_to_transcribe, chunk_dur_sec, slice_ctx)
+                    except Exception as cs_err:
+                        logger.warning(f"{slice_ctx} Bangla/English split failed ({type(cs_err).__name__}: "
+                                       f"{cs_err}) - decoding this slice as Bangla")
+                        runs = [(0.0, chunk_dur_sec, "bn")]
+                elif explicit_lang is not None:
                     runs = [(0.0, chunk_dur_sec, explicit_lang)]
                 else:
                     det = prior if len(chunk_slices) == 1 else detect_audio_language_detail(
@@ -1139,22 +1426,36 @@ def transcribe_local_audio(
                     # Hold the lock while decoding: model.transcribe() returns a lazy generator, so the
                     # real work happens while iterating. Without list() two chunks decoded at once
                     # (double RAM on 8 GB PCs) even though this lock looked like it serialised them.
-                    with _TRANSCRIBE_LOCK:
-                        segments, info = model.transcribe(
-                            run_input,
-                            task="transcribe",
-                            beam_size=beam_size or 1,
-                            best_of=1,
-                            temperature=0.0,
-                            initial_prompt=init_prompt,
-                            language=run_lang,
-                            condition_on_previous_text=False,
-                            vad_filter=use_vad,
-                            vad_parameters=WHISPER_VAD_PARAMETERS if use_vad else None,
-                            no_speech_threshold=0.6,
-                            compression_ratio_threshold=_max_compression(run_lang)
-                        )
-                        segments = list(segments)
+                    def _decode(dec_model, dec_lang, dec_prompt):
+                        with _TRANSCRIBE_LOCK:
+                            segs, inf = dec_model.transcribe(
+                                run_input,
+                                task="transcribe",
+                                beam_size=beam_size or 1,
+                                best_of=1,
+                                temperature=0.0,
+                                initial_prompt=dec_prompt,
+                                language=dec_lang,
+                                condition_on_previous_text=False,
+                                vad_filter=use_vad,
+                                vad_parameters=WHISPER_VAD_PARAMETERS if use_vad else None,
+                                no_speech_threshold=0.6,
+                                compression_ratio_threshold=_max_compression(dec_lang)
+                            )
+                            return list(segs), inf
+
+                    if cs_active and run_lang == "en":
+                        # English run -> small.en; on any error re-decode the run the old way (Bangla).
+                        try:
+                            segments, info = _decode(en_model, "en", _EN_PROMPT)
+                            used_en_model = True
+                        except Exception as en_err:
+                            logger.warning(f"{slice_ctx} small.en failed on run @{run_off:.0f}s "
+                                           f"({type(en_err).__name__}: {en_err}) - decoding it as Bangla")
+                            run_lang = "bn"
+                            segments, info = _decode(model, "bn", init_prompt)
+                    else:
+                        segments, info = _decode(model, run_lang, init_prompt)
 
                     if detected_whisper_lang is None and hasattr(info, "language"):
                         detected_whisper_lang = info.language
@@ -1242,7 +1543,8 @@ def transcribe_local_audio(
                 temperature=temperature,
                 mime_type=mime_type,
                 model_name=model_name,
-                _is_fallback_retry=True
+                _is_fallback_retry=True,
+                code_switch=code_switch
             )
 
         elapsed = round(time.time() - t_start, 2)
@@ -1250,7 +1552,8 @@ def transcribe_local_audio(
                     f"(RTF={elapsed / total_duration_sec if total_duration_sec else 0:.2f})")
         return _finalize_result(segments_data, raw_text_parts, temp_audio_file,
                                 target_language or explicit_lang or detected_whisper_lang,
-                                loaded_model_name, slice_languages, total_duration_sec, elapsed)
+                                loaded_model_name + ("+small.en" if used_en_model else ""),
+                                slice_languages, total_duration_sec, elapsed)
 
     except Exception as e:
         logger.error(f"Error during local whisper transcription after {time.time() - t_start:.1f}s: "

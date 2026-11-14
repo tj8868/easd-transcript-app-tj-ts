@@ -274,12 +274,21 @@ def _normalise_prompt_lines(text: str) -> List[str]:
     return out
 
 
-def _gemini_call_once(client, model: str, audio: bytes, mime: str, prompt_mode: bool):
+def _transcribe_prompt(silence_trimmed: bool) -> str:
+    """The prompt-mode instructions; says so when long silences were cut out of the audio (v9.0)."""
+    if not silence_trimmed:
+        return _PROMPT_TRANSCRIBE
+    import silence_trimmer
+    return _PROMPT_TRANSCRIBE + "\n" + silence_trimmer.STT_PROMPT_NOTE.format(min_sil=silence_trimmer.TRIM_MIN_SILENCE_SEC)
+
+
+def _gemini_call_once(client, model: str, audio: bytes, mime: str, prompt_mode: bool, silence_trimmed: bool = False):
     from google.genai import types
     part = types.Part.from_bytes(data=audio, mime_type=mime)
     if prompt_mode:
         cfg = types.GenerateContentConfig(temperature=0.0, max_output_tokens=65536)
-        return client.models.generate_content(model=model, contents=[_PROMPT_TRANSCRIBE, part], config=cfg)
+        return client.models.generate_content(model=model, contents=[_transcribe_prompt(silence_trimmed), part],
+                                              config=cfg)
     cfg = types.GenerateContentConfig(
         audio_transcription_config=types.AudioTranscriptionConfig(mode="VERBATIM", diarization=True, word_timestamp=True)
     )
@@ -287,7 +296,7 @@ def _gemini_call_once(client, model: str, audio: bytes, mime: str, prompt_mode: 
 
 
 def gemini_transcribe_bytes(audio: bytes, api_key: str, model_name: str = "", mime_type: str = "audio/mp3",
-                            ctx: str = "[gemini]") -> Dict[str, Any]:
+                            ctx: str = "[gemini]", silence_trimmed: bool = False) -> Dict[str, Any]:
     """Returns {ok, text, provider, model, attempts, error}. Never raises."""
     attempts: List[str] = []
     if not api_key:
@@ -310,7 +319,7 @@ def gemini_transcribe_bytes(audio: bytes, api_key: str, model_name: str = "", mi
             t0 = time.time()
             with _gemini_semaphore:
                 try:
-                    resp = _gemini_call_once(client, model, audio, mime_type, prompt_mode)
+                    resp = _gemini_call_once(client, model, audio, mime_type, prompt_mode, silence_trimmed)
                     lines = _lines_from_transcribe_response(resp) if not prompt_mode else \
                         _normalise_prompt_lines(getattr(resp, "text", "") or "")
                     if lines:
@@ -370,10 +379,12 @@ _whisper_download_failed: Dict[str, str] = {}
 
 
 def whisper_transcribe_bytes(audio: bytes, language: str = "auto", mime_type: str = "audio/mp3",
-                             ctx: str = "[whisper]", model_name: str = "") -> Dict[str, Any]:
+                             ctx: str = "[whisper]", model_name: str = "",
+                             code_switch: bool = True) -> Dict[str, Any]:
     """
     Returns {ok, text, provider, model, error, language}. Never raises.
     model_name: explicit Whisper size ('small', 'medium', ...) or ''/'auto' for automatic selection.
+    code_switch: allow Bangla/English switching (v9.0; also needs EASD_CODE_SWITCH). Live preview: False.
     """
     st = whisper_status(model_name)
     if not st.get("available"):
@@ -387,7 +398,8 @@ def whisper_transcribe_bytes(audio: bytes, language: str = "auto", mime_type: st
         import local_whisper_engine as lwe
         lang = None if language in ("auto", "detect", "", None) else language
         res = lwe.transcribe_local_audio(media_input=audio, language=lang, model_name=st.get("model"),
-                                         mime_type=mime_type, beam_size=1, temperature=0.0)
+                                         mime_type=mime_type, beam_size=1, temperature=0.0,
+                                         code_switch=code_switch)
         text = (res.get("raw_transcript") or "").strip()
         if res.get("status") == "error":
             log.error("%s Local Whisper returned error status: %s", ctx, res.get("detail"))
@@ -396,9 +408,9 @@ def whisper_transcribe_bytes(audio: bytes, language: str = "auto", mime_type: st
         if not text:
             return {"ok": False, "text": "", "provider": "local_whisper",
                     "error": f"Local Whisper found no speech ({res.get('segments_count', 0)} segments kept)"}
-        log.info("%s Local Whisper OK in %.1fs (%d chars) model=%s (%s) lang=%s slices=%s", ctx, time.time() - t0,
-                 len(text), res.get("model"), st.get("model_source"), res.get("detected_language"),
-                 res.get("slice_languages"))
+        log.info("%s Local Whisper OK in %.1fs (%d chars) model=%s (%s) lang=%s slices=%s code_switch=%s", ctx,
+                 time.time() - t0, len(text), res.get("model"), st.get("model_source"), res.get("detected_language"),
+                 res.get("slice_languages"), code_switch)
         return {"ok": True, "text": text, "provider": "local_whisper", "model": res.get("model") or st.get("model"), "error": "",
                 "language": res.get("detected_language")}
     except Exception as e:
@@ -495,7 +507,10 @@ def transcribe_chunks(
     label: str = "",
     on_progress: Optional[Any] = None,
     whisper_model: str = "",
+    time_map: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
+    """time_map (v9.0): set when silence_trimmer cut long silences out of the audio. Chunk timings below are
+    on the trimmed audio; every timestamp in the result is mapped back to the original recording."""
     t_all = time.time()
     prov = (provider or "gemini").lower()
     use_local_only = prov in ("local_whisper", "local", "whisper_local", "whisper")
@@ -554,7 +569,7 @@ def transcribe_chunks(
             if not use_local_only and gemini_fatal:
                 info["errors"].append(f"Gemini: {gemini_fatal['reason']}")
             elif not use_local_only:
-                g = gemini_transcribe_bytes(audio, api_key, model_name, mime_type, ctx)
+                g = gemini_transcribe_bytes(audio, api_key, model_name, mime_type, ctx, silence_trimmed=bool(time_map))
                 if g["ok"]:
                     info.update(status="ok", provider="gemini", text=g["text"], model=g.get("model"))
                 else:
@@ -630,12 +645,20 @@ def transcribe_chunks(
 
     out_lines: List[str] = []
     missing, errors = [], []
+    if time_map:
+        import silence_trimmer
     for r in results:
         if r["status"] == "ok":
             chunk_len = max(1.0, r["end_sec"] - r["start_sec"])
             for line in _sanitize_lines(r["text"], lang):
-                out_lines.append(shift_line_timestamp(clamp_line_timestamp(line, chunk_len), r["start_sec"]))
-        else:
+                line = shift_line_timestamp(clamp_line_timestamp(line, chunk_len), r["start_sec"])
+                out_lines.append(silence_trimmer.remap_line_timestamp(line, time_map) if time_map else line)
+        if time_map:  # from here on, chunk ranges are reported on the original recording's timeline
+            r["trimmed_start_sec"], r["trimmed_end_sec"] = r["start_sec"], r["end_sec"]
+            r["start_sec"] = round(silence_trimmer.remap_seconds(r["trimmed_start_sec"], time_map), 1)
+            r["end_sec"] = round(silence_trimmer.remap_seconds(r["trimmed_end_sec"], time_map), 1)
+            r["range"] = f"{fmt_ts(r['start_sec'])}-{fmt_ts(r['end_sec'])}"
+        if r["status"] != "ok":
             reason = "; ".join(r["errors"]) or "unknown error"
             missing.append({"index": r["index"], "range": r["range"], "start_sec": r["start_sec"],
                             "end_sec": r["end_sec"], "reason": reason})

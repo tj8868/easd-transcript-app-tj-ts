@@ -80,6 +80,8 @@ def get_model_path(model_key: Optional[str] = None) -> str:
 
 
 def is_local_llm_available(model_key: Optional[str] = None) -> bool:
+    if docker_mode():
+        return True  # the container downloads the model itself on first start
     try:
         import llama_cpp  # noqa: F401
     except ImportError:
@@ -597,6 +599,73 @@ def _openvino_pipeline():
 _SERVER: Dict[str, Any] = {"proc": None, "port": None, "key": None, "gpu": None}
 
 
+# ---------------------------------------------------------------------------
+# v9.0: llama-server in Docker (docker/llama/). When a container named EASD_LLAMA_DOCKER (default
+# "easd-llama") exists and this user can run `docker`, the app uses it instead of bin/llama-server.
+# The container tunes its own flags to the hardware (docker/llama/entrypoint.sh). The app starts it
+# before a local request and stops it to free RAM for Whisper, exactly like the bin/ server.
+# ---------------------------------------------------------------------------
+_DOCKER_NAME = os.environ.get("EASD_LLAMA_DOCKER", "easd-llama").strip()
+_DOCKER_URL = os.environ.get("EASD_LLAMA_SERVER_URL", "http://127.0.0.1:8081").strip().rstrip("/")
+_docker_probe: Dict[str, Any] = {"at": 0.0, "ok": False}
+
+
+def _docker_cmd(*args: str, timeout: int = 60):
+    import subprocess
+    return subprocess.run(["docker", *args], capture_output=True, text=True, timeout=timeout,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def docker_mode() -> bool:
+    """True when the easd-llama container exists and is usable (result cached for 60 s)."""
+    import shutil
+    if not _DOCKER_NAME or _DOCKER_NAME.lower() in ("0", "off", "none") or not shutil.which("docker"):
+        return False
+    if time.time() - _docker_probe["at"] < 60:
+        return _docker_probe["ok"]
+    try:
+        ok = _docker_cmd("inspect", "-f", "{{.Name}}", _DOCKER_NAME, timeout=15).returncode == 0
+    except Exception:
+        ok = False
+    _docker_probe.update(at=time.time(), ok=ok)
+    return ok
+
+
+def _docker_healthy(timeout: float = 2.0) -> bool:
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{_DOCKER_URL}/health", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def _ensure_docker_server(key: str) -> str:
+    """Starts the container if needed and waits until llama-server answers. Returns its base URL."""
+    if _docker_healthy():
+        return _DOCKER_URL
+    t0 = time.time()
+    log.info("starting Docker llama-server container %r", _DOCKER_NAME)
+    res = _docker_cmd("start", _DOCKER_NAME)
+    if res.returncode != 0:
+        raise LocalLLMUnavailable(f"docker start {_DOCKER_NAME} failed: {(res.stderr or res.stdout).strip()[:300]}")
+    # The first start on new hardware downloads the model and benchmarks it, so allow a long wait.
+    limit = float(os.environ.get("EASD_LLAMA_DOCKER_START_TIMEOUT", "1800"))
+    while time.time() - t0 < limit:
+        if _docker_healthy():
+            _backend_state.update(active_backend="llama-server-docker", model_key=key, loaded=True,
+                                  load_time=round(time.time() - t0, 2))
+            log.info("Docker llama-server ready in %.1fs at %s", time.time() - t0, _DOCKER_URL)
+            return _DOCKER_URL
+        state = _docker_cmd("inspect", "-f", "{{.State.Running}}", _DOCKER_NAME, timeout=15).stdout.strip()
+        if state != "true":
+            tail = _docker_cmd("logs", "--tail", "20", _DOCKER_NAME).stdout
+            raise LocalLLMUnavailable(f"Docker llama-server stopped during start-up:\n{tail[-800:]}")
+        time.sleep(2)
+    raise LocalLLMUnavailable(f"Docker llama-server did not become ready within {limit:.0f}s "
+                              f"(see: docker logs {_DOCKER_NAME})")
+
+
 def _server_binary() -> Optional[str]:
     exe = "llama-server.exe" if sys.platform == "win32" else "llama-server"
     path = os.environ.get("EASD_LLAMA_SERVER") or os.path.join(BASE_DIR, "bin", exe)
@@ -794,6 +863,13 @@ def start_server_in_background(model_key: Optional[str] = None) -> bool:
         return False
     _kill_leftover_server()
     key = model_key or DEFAULT_MODEL_KEY
+    if docker_mode():
+        free_mb = _available_ram_mb()
+        if free_mb is not None and free_mb < _PRELOAD_MIN_FREE_MB:
+            log.info("Docker llama-server preload skipped: %d MB RAM free (< %d MB)", free_mb, _PRELOAD_MIN_FREE_MB)
+            return False
+        threading.Thread(target=lambda: _safe_preload_docker(key), name="llama-docker-preload", daemon=True).start()
+        return True
     if not _server_binary() or not os.path.isfile(get_model_path(key)):
         log.info("llama-server preload skipped: binary or model file not found")
         return False
@@ -813,9 +889,25 @@ def start_server_in_background(model_key: Optional[str] = None) -> bool:
     return True
 
 
+def _safe_preload_docker(key: str) -> None:
+    try:
+        _ensure_docker_server(key)
+    except Exception as e:
+        log.warning("Docker llama-server preload failed (will retry on first Generate): %s", e)
+
+
 def stop_server() -> None:
     """Stops this app's background llama-server (app shutdown, or to free RAM for Whisper).
     It is started again automatically by the next local Generate."""
+    if docker_mode():
+        try:
+            if _docker_cmd("inspect", "-f", "{{.State.Running}}", _DOCKER_NAME, timeout=15).stdout.strip() == "true":
+                _docker_cmd("stop", "-t", "10", _DOCKER_NAME)
+                log.info("stopped Docker llama-server container %r", _DOCKER_NAME)
+        except Exception as e:
+            log.warning("could not stop Docker llama-server: %s", e)
+        _backend_state["loaded"] = False
+        return
     with _cache_lock:
         proc = _SERVER.get("proc")
         if proc is not None and proc.poll() is None:
@@ -842,8 +934,14 @@ _KEEP_DURING_STT_MIN_FREE_MB = int(os.environ.get("EASD_LOCAL_LLM_KEEP_MIN_FREE_
 def release_for_transcription() -> bool:
     """Called before local Whisper transcribes: stops the idle llama-server when free RAM is below
     EASD_LOCAL_LLM_KEEP_MIN_FREE_MB, so the two models never compete for memory. Returns True if stopped."""
-    proc = _SERVER.get("proc")
-    if proc is None or proc.poll() is not None or _SERVER.get("busy", 0) > 0:
+    if _SERVER.get("busy", 0) > 0:
+        return False
+    if docker_mode():
+        running = _docker_healthy(timeout=1.0)
+    else:
+        proc = _SERVER.get("proc")
+        running = proc is not None and proc.poll() is None
+    if not running:
         return False
     free_mb = _available_ram_mb()
     if free_mb is not None and free_mb < _KEEP_DURING_STT_MIN_FREE_MB:
@@ -936,12 +1034,12 @@ def _server_chat(system: str, user: str, key: str, max_tokens: int, temperature:
 def _server_chat_once(system: str, user: str, key: str, max_tokens: int, temperature: float, json_mode: bool) -> str:
     import json as _json
     import urllib.request
-    port = _start_server(key)
+    base = _ensure_docker_server(key) if docker_mode() else f"http://127.0.0.1:{_start_server(key)}"
     body = {"messages": _messages(system, user, key), "temperature": temperature, "max_tokens": max_tokens,
             "chat_template_kwargs": {"enable_thinking": False}}
     if json_mode:
         body["response_format"] = {"type": "json_object"}
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=_json.dumps(body).encode(),
+    req = urllib.request.Request(f"{base}/v1/chat/completions", data=_json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=3600) as r:
         data = _json.loads(r.read())
@@ -961,10 +1059,10 @@ def chat(system: str, user: str, model_key: Optional[str] = None, max_tokens: in
     Raises LocalLLMUnavailable if no backend can run."""
     t0 = time.time()
     try:
-        if _server_binary():
+        if docker_mode() or _server_binary():
             key = model_key or DEFAULT_MODEL_KEY
             text = _server_chat(system, user, key, max_tokens, temperature, json_mode)
-            label = f"{key}@llama-server"  # GPU use depends on the build (see llama_server.log)
+            label = f"{key}@llama-server{'-docker' if docker_mode() else ''}"  # GPU use depends on the build (see llama_server.log)
         elif _openvino_llm_preferred():
             import openvino_genai
             pipe = _openvino_pipeline()

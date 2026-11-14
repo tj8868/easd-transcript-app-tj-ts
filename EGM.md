@@ -21,7 +21,7 @@ There is **no SQL database**: state lives in JSON files and browser `localStorag
 - `[app.py]` 37 `@app.get/post` decorators over 29 unique `/api/*` paths (`/api/verify_key` and `/api/verify_api_key` share one handler) plus `WS /ws/live_transcribe`; Pydantic payloads `MeetingDocPayload`, `ApiSettingsPayload`, `SaveTemplatePayload`, `SaveSkillPayload`, `TranslatePayload`, `CloudImportPayload`, and others; helpers `find_available_port`, `is_server_already_running`, `open_native_app_window`.
 - `[ai_providers.py:process_ai_request]` orchestration entry; `detect_text_language`, `transcribe_audio_chunks_detailed`, `live_transcribe_audio_chunk`, `summarize_text_gemini`, `summarize_text_openai_compatible`, `fill_template_locally`, `match_attendance_list`, `verify_ai_api_key`, `load_api_settings_from_disk` / `save_api_settings_to_disk`, `get_default_api_key_from_disk`.
 - `[stt_pipeline.py]` `transcribe_chunks`, `gemini_transcribe_bytes`, `whisper_transcribe_bytes`, `format_ts`, `shift_line_timestamp`, `clamp_line_timestamp`.
-- `[local_whisper_engine.py]` `transcribe_local_audio`, `get_local_whisper_model`, `detect_audio_language(_detail)` (alias `detect_bilingual_audio_language`), `convert_to_wav_pcm16k`, `get_engine_status`.
+- `[local_whisper_engine.py]` `transcribe_local_audio` (keyword `code_switch`), `get_local_whisper_model`, `detect_audio_language(_detail)` (alias `detect_bilingual_audio_language`), `convert_to_wav_pcm16k`, `get_engine_status`; v9.0 Bangla/English switching: `code_switch_enabled`, `code_switch_detector`, `ensure_aux_model`, `ensure_code_switch_models`, `code_switch_status` (design: [docs/designs/bilingual_local_transcription.md](./docs/designs/bilingual_local_transcription.md)).
 - `[openvino_whisper_engine.py]` `should_use`, `transcribe_samples`, `available_devices`, `status`.
 - `[speaker_diarization.py]` `diarize_wav_segments`, `unify_chunk_speakers`, `cluster_embeddings`, `active_backend`.
 - `[transcript_translator.py:translate_transcript]`.
@@ -41,18 +41,20 @@ There is **no SQL database**: state lives in JSON files and browser `localStorag
   | Keys | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `CUSTOM_API_KEY`, `CUSTOM_API_BASE_URL`, `CUSTOM_API_MODEL` | `app.py`, `ai_providers.py` |
   | Gemini STT | `EASD_GEMINI_STT_MODEL` (gemini-3.5-transcribe), `EASD_GEMINI_STT_FALLBACK_MODELS` (gemini-2.5-flash), `EASD_GEMINI_MAX_PARALLEL` (2), `EASD_GEMINI_STAGGER_SEC` (1.5), `EASD_GEMINI_MAX_ATTEMPTS` (4), `EASD_GEMINI_BACKOFF_BASE_SEC` (4), `EASD_GEMINI_BACKOFF_MAX_SEC` (60), `EASD_GEMINI_HTTP_TIMEOUT_MS` (600000), `EASD_GEMINI_INLINE_MAX_BYTES` (14 MiB) | `stt_pipeline.py:47-56` |
   | Whisper | `EASD_WHISPER_BACKEND` (auto), `EASD_WHISPER_DEVICE` (auto), `EASD_WHISPER_EN_CONFIDENCE` (0.5), `EASD_WHISPER_GPU_TURBO` (1), `EASD_DEBUG_SAVE_TRANSCRIPT`, `EASD_OV_WHISPER_MODEL`, `EASD_OV_DEVICE` | `local_whisper_engine.py`, `openvino_whisper_engine.py` |
+  | Bangla/English switching | `EASD_CODE_SWITCH` (0 = off until measured), `EASD_CS_DETECTOR` (tiny; bengaliai / tiny / base), `EASD_CS_MIN_PAUSE_SEC` (0.6), `EASD_CS_MAX_STRETCH_SEC` (30), `EASD_CS_MIN_LID_SEC` (2.0), `EASD_CS_EN_THRESHOLD` (0.6), `EASD_CS_MIN_FREE_MB` (1200); all read at call time | `local_whisper_engine.py` |
   | Diarization | `EASD_DIARIZATION` (on), `EASD_DIARIZATION_THRESHOLD`, `EASD_DIARIZATION_MAX_SPEAKERS` (10), `EASD_DIARIZATION_DEVICE`, `EASD_DIARIZATION_NO_DOWNLOAD` | `speaker_diarization.py` |
   | Local LLM | `EASD_LOCAL_LLM_MODEL` (gemma-4-e2b), `EASD_LOCAL_LLM_DIR`, `EASD_LOCAL_LLM_BACKEND`, `EASD_LOCAL_LLM_GPU_LAYERS` (99), `EASD_LOCAL_LLM_KV_CACHE` (`""` in-process at `local_llm_engine.py:424`; `turbo4` for `bin/llama-server` at `:620`), `EASD_LLM_BACKEND`, `EASD_OV_LLM_MODEL`, `EASD_LLAMA_SERVER` | `local_llm_engine.py` |
   | Logging | `EASD_LOG_FILE` (`app_service.log`), `EASD_LOG_LEVEL` (INFO) | `diag_logging.py` |
 - Legacy standalone scripts: `default_whisper_transcribe.py`, `diag_long_audio_repro.py`.
 
 **Invariants**
-- `[app.py:_save_upload_limited]` uploads are rejected once they exceed `MAX_UPLOAD_SIZE` (1 GB). `frontend/src/components/LiveRecordStudio.jsx:MAX_UPLOAD_BYTES` must match.
+- `[app.py:_save_upload_limited]` uploads are rejected once they exceed `MAX_UPLOAD_SIZE` (2 GB). `frontend/src/components/LiveRecordStudio.jsx:MAX_UPLOAD_BYTES` must match.
 - `[app.py:_extra_origins]` CORS allows only localhost / 127.0.0.1 / [::1] plus `EASD_ALLOWED_ORIGINS`.
 - `[stt_pipeline.py:_TS_RE]`, `[transcript_translator.py:_PREFIX_RE]` keep the `[MM:SS] Speaker N:` prefix; it is never sent to a translation model.
 - `[stt_pipeline.py:transcribe_chunks]` if Gemini fails for a chunk, that chunk falls back to local Whisper. Retries are capped by `EASD_GEMINI_MAX_ATTEMPTS` (4), and parallel Gemini calls by `EASD_GEMINI_MAX_PARALLEL` (2). A second cap, `ai_providers.MAX_CONCURRENT_CHUNKS` (5, `ai_providers.py:1153`), limits async chunk transcription.
 - `[local_whisper_engine.py:detect_audio_language_detail]` picks only `bn` or `en` (en when p(en) ≥ `EASD_WHISPER_EN_CONFIDENCE`). If detection fails it returns no language and Whisper auto-detects (`local_whisper_engine.py:116-135`). `_max_compression` is 3.0 for bn and 2.4 for other languages.
 - `[speaker_diarization.py:_THRESHOLDS]` defaults: neural 0.55, MFCC 0.9.
+- `[local_whisper_engine.py:_plan_bilingual_runs]` with switching on, Bangla runs always decode on `whisper-bengaliai` with `bn` and no prompt; a stretch goes to `small.en` only when p(en) >= `EASD_CS_EN_THRESHOLD`. Missing models, low RAM, a planner error or a `small.en` error all fall back to Bangla-only decoding. The live preview (`ai_providers.live_transcribe_audio_chunk`) and a caller-forced language never switch.
 - `[template_engine.py:delete_custom_template]`, `[skills_engine.py:delete_custom_skill]` refuse to delete built-in records. Custom ids are `custom_tpl_<8hex>` and `custom_<8hex>`.
 - `[ai_providers.py:get_default_api_key_from_disk]` key order: `api_settings.json`, then `GeminiAPI.txt`, then `GEMINI_API_KEY`, then `GOOGLE_API_KEY`.
 
@@ -75,7 +77,7 @@ There is **no SQL database**: state lives in JSON files and browser `localStorag
 ## Global Side Effects
 
 - Disk writes: `api_settings.json`, `.env`, `GeminiAPI.txt` (`ai_providers.save_api_settings_to_disk`), `templates_store/*`, `skills_store/skills.json`, `app_service.log`, `llama_server.log`, `models/.ov_cache`, and temp WAV files.
-- Network: Google GenAI (STT, LLM, Live); OpenAI-compatible endpoints; Google Drive API (`gdrive_service`); Drive/OneDrive downloads (`app.py:import_cloud_file`); Hugging Face model downloads (Whisper, WeSpeaker, GGUF, OpenVINO).
+- Network: Google GenAI (STT, LLM, Live); OpenAI-compatible endpoints; Google Drive API (`gdrive_service`); Drive/OneDrive downloads (`app.py:import_cloud_file`); Hugging Face model downloads (Whisper, WeSpeaker, GGUF, OpenVINO; with switching on, `Systran/faster-whisper-small.en` and the detector, once each, into `models/` via a `.partial` folder).
 - Subprocesses: ffmpeg/ffprobe, tesseract, `bin/llama-server` (local HTTP on 127.0.0.1), and an Edge/Chrome app window.
 - Process-wide: `os.environ` keys are updated on settings save; `OMP_NUM_THREADS` / `MKL_NUM_THREADS` get a default at import via `os.environ.setdefault`, so a value already set is never overridden (`local_whisper_engine.py:32`).
 

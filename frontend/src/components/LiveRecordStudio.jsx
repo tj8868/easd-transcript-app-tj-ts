@@ -388,7 +388,7 @@ async function requestTakeTranscription({ blob, name, language, provider, apiKey
   }
 }
 
-const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024; // 1 GB, matches the server limit
+export const MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024; // 2 GB, matches the server limit
 
 export default function LiveRecordStudio({
   aiConfig,
@@ -681,7 +681,7 @@ export default function LiveRecordStudio({
         };
 
         if (item.blob && item.blob.size > MAX_UPLOAD_BYTES) {
-          const msg = `${item.name} is ${(item.blob.size / 1073741824).toFixed(2)} GB - the limit is 1 GB.`;
+          const msg = `${item.name} is ${(item.blob.size / 1073741824).toFixed(2)} GB - the limit is 2 GB.`;
           summary.failed += 1;
           summary.issues.push(msg);
           finalizeFallback(msg);

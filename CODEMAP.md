@@ -16,7 +16,7 @@ All persistent state is JSON or files on disk, plus browser `localStorage`.
 | `GeminiAPI.txt` (git-ignored, **key**) | `ai_providers.py:GEMINI_KEY_FILE` → `get_default_api_key_from_disk` | single key string |
 | `.env` (git-ignored) | read by `app.py:get_env_keys_endpoint` | env keys |
 | `EASD Meeting minutes - Template.docx` | `app.py:TEMPLATE_PATH`, `document_engine.generate_meeting_minutes_docx_bytes` | official minutes layout |
-| `models/` | `local_whisper_engine.get_model_path`, `local_llm_engine.get_model_path`, `speaker_diarization._ensure_neural_model` | `whisper-bengaliai/`, `gemma-4-E2B-it-Q4_0.gguf`, `wespeaker_resnet34_LM.onnx` |
+| `models/` | `local_whisper_engine.get_model_path`, `local_llm_engine.get_model_path`, `speaker_diarization._ensure_neural_model` | `whisper-bengaliai/`, `gemma-4-E2B-it-Q4_0.gguf`, `wespeaker_resnet34_LM.onnx`; v9.0 switching (when `EASD_CODE_SWITCH=1`): `whisper-small.en/`, `whisper-tiny/` or `whisper-base/` (`local_whisper_engine.ensure_aux_model`) |
 | `temp_outputs/`, `*.log` | runtime scratch / `diag_logging.setup_logging` | disposable |
 | in-memory job progress | `app.py:get_transcribe_progress_endpoint` | keyed by `job_id` (`diag_logging.new_job_id`); lost on restart |
 
@@ -75,7 +75,7 @@ App lifecycle: `_lifespan`, `app_startup_warmup` (→ `warm_up_local_whisper_in_
 
 - **`ai_providers.py`**: orchestration hub. Entry `process_ai_request`. STT: `transcribe_audio_gemini`, `transcribe_single_chunk`, `transcribe_chunks_parallel`, `transcribe_audio_chunks_detailed`, `transcribe_normalized_audio_chunks` (→ `stt_pipeline.transcribe_chunks`), `live_transcribe_audio_chunk`. Fill: `summarize_text_gemini`, `summarize_text_openai_compatible`, `transcribe_and_summarize_gemini`, `fill_template_locally` (→ `local_llm_engine.generate_template_fill`), `build_template_system_prompt`, `deep_semantic_synthesis`, `process_extracted_payload`, `extract_and_repair_json`. Attendance: `match_attendance_list`. Keys/settings: `get_default_api_key_from_disk`, `load_api_settings_from_disk`, `save_api_settings_to_disk`, `verify_ai_api_key`, `ping_openai_compatible`, `is_fatal_auth_error`. Tests: `test_transcription_engine`, `test_summarization_engine`, `generate_synthetic_test_wav`.
 - **`stt_pipeline.py`**: `transcribe_chunks` (Gemini → fallback → Whisper), `gemini_transcribe_bytes`, `whisper_transcribe_bytes`, `whisper_status`, `_unify_speakers_across_chunks` (→ `speaker_diarization`), timestamp helpers `format_ts`, `shift_line_timestamp`, `clamp_line_timestamp`; retry `_is_retryable`, `_retry_delay_hint`.
-- **`local_whisper_engine.py`**: `transcribe_local_audio`, `get_local_whisper_model`, `warm_up_local_whisper_in_background`, `detect_audio_language(_detail)`, `resolve_whisper_model_choice`, `select_optimal_model_name`, `get_engine_status`, `convert_to_wav_pcm16k`, `slice_wav_pcm16k`, `sanitize_whisper_text`, `_transcribe_local_audio_openvino`, `test_local_engine`.
+- **`local_whisper_engine.py`**: `transcribe_local_audio`, `get_local_whisper_model`, `warm_up_local_whisper_in_background`, `detect_audio_language(_detail)`, `resolve_whisper_model_choice`, `select_optimal_model_name`, `get_engine_status`, `convert_to_wav_pcm16k`, `slice_wav_pcm16k`, `sanitize_whisper_text`, `_transcribe_local_audio_openvino`, `test_local_engine`. Bangla/English switching (v9.0): `code_switch_enabled`, `code_switch_detector`, `ensure_aux_model`, `ensure_code_switch_models`, `code_switch_status`, `_split_speech_stretches`, `_stretch_language`, `_plan_bilingual_runs`, `_load_aux_model`, `_code_switch_ready`.
 - **`openvino_whisper_engine.py`**: `should_use`, `available_devices`, `transcribe_samples`, `status`.
 - **`speaker_diarization.py`**: `diarize_wav_segments`, `unify_chunk_speakers`, `voice_embedding`, `cluster_embeddings`, `speaker_model_status`, `active_backend` (WeSpeaker ONNX, MFCC fallback; threshold `EASD_DIARIZATION_THRESHOLD`).
 - **`transcript_translator.py`**: `translate_transcript` with callers `_gemini_caller`, `_openai_caller`, `_local_caller`; `_split_prefix` keeps `[MM:SS] Speaker N:`.
@@ -98,7 +98,7 @@ App lifecycle: `_lifespan`, `app_startup_warmup` (→ `warm_up_local_whisper_in_
 ## 5. Side effects
 
 - Writes `templates.json`, `skills.json`, `api_settings.json`, `GeminiAPI.txt`, `custom_docx/*.docx`.
-- Outbound HTTP: Google GenAI, OpenAI-compatible endpoints, Google Drive upload, Drive/OneDrive downloads, model downloads (`ensure_model_downloaded`).
+- Outbound HTTP: Google GenAI, OpenAI-compatible endpoints, Google Drive upload, Drive/OneDrive downloads, model downloads (`ensure_model_downloaded`; `local_whisper_engine.ensure_aux_model`, one time, at app start when switching is on).
 - Spawns `bin/llama-server` and ffmpeg subprocesses.
 
 ## 6. Not part of the app

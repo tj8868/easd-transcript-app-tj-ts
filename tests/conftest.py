@@ -17,3 +17,6 @@ _hosts = {h for h in os.environ.get("EASD_ALLOWED_HOSTS", "").split(",") if h}
 os.environ["EASD_ALLOWED_HOSTS"] = ",".join(sorted(_hosts | {"testserver"}))
 # Don't start llama-server from the app's startup hook during tests.
 os.environ.setdefault("EASD_LOCAL_LLM_PRELOAD", "0")
+# Keep Bangla/English switching off unless a test turns it on (test_code_switch.py), so results
+# don't depend on whether this PC has models/whisper-small.en installed.
+os.environ.setdefault("EASD_CODE_SWITCH", "0")

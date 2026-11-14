@@ -14,7 +14,7 @@ import {
 } from 'lucide-react';
 import Header from './components/Header';
 import NavTabs from './components/NavTabs';
-import LiveRecordStudio from './components/LiveRecordStudio';
+import LiveRecordStudio, { MAX_UPLOAD_BYTES } from './components/LiveRecordStudio';
 
 function buildActiveSkillPrompts(activeSkills, customSkillsList) {
   return activeSkills.map((sId) => {
@@ -500,8 +500,8 @@ export default function App() {
       return;
     }
 
-    if (selectedFile && selectedFile.size > 1024 * 1024 * 1024) {
-      showNotice('error', 'File too large', [`${selectedFile.name} is ${(selectedFile.size / 1073741824).toFixed(2)} GB - the limit is 1 GB.`]);
+    if (selectedFile && selectedFile.size > MAX_UPLOAD_BYTES) {
+      showNotice('error', 'File too large', [`${selectedFile.name} is ${(selectedFile.size / 1073741824).toFixed(2)} GB - the limit is 2 GB.`]);
       return;
     }
 

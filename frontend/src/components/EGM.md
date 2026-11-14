@@ -6,7 +6,7 @@ React function components (default exports) that make up the meeting-minutes UI:
 ## Interface
 - Default-exported components: `Attendance`, `AiDirectivesEditor`, `AiSkillsSelector`, `ArticleReportForm`, `CircularProgressSpinner`, `CloudImportModal`, `CollapsibleCard`, `Discussions`, `DocumentPreview`, `GDriveModal`, `GovtReportForm`, `Header`, `LiveRecordStudio`, `MetaAgendas`, `NavTabs`, `ResponsiveDeviceViewer`, `SettingsModal`, `TemplateGenerator`, `Transcripts`
 - Named export: `SettingsModal.jsx:ACCENT_PALETTES` (imported by `../App.jsx`)
-- Module constants: `LiveRecordStudio.jsx:MAX_UPLOAD_BYTES` (1 GB), `AiSkillsSelector.jsx:PRESET_SKILLS`, `CloudImportModal.jsx:PROVIDERS`, `SettingsModal.jsx:BANGLA_FONTS` / `ENGLISH_FONTS` / `PLATFORM_TARGETS`
+- Module constants: `LiveRecordStudio.jsx:MAX_UPLOAD_BYTES` (2 GB), `AiSkillsSelector.jsx:PRESET_SKILLS`, `CloudImportModal.jsx:PROVIDERS`, `SettingsModal.jsx:BANGLA_FONTS` / `ENGLISH_FONTS` / `PLATFORM_TARGETS`
 
 ## Invariants
 - State is owned by the parent (`App`); form components receive value/setter prop pairs, e.g. `MetaAgendas({ meta, setMeta, agendas, setAgendas })`, `Discussions({ discussions, setDiscussions, decisions, setDecisions })`, `Attendance({ attendance, setAttendance })`.

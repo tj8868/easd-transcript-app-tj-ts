@@ -1,0 +1,29 @@
+# Local LLM server for the EASD app (llama.cpp TurboQuant fork, auto-tuned to this PC).
+#
+#   Build once:   docker/llama/build.sh [path-to-llama-cpp-turboquant]   (default ~/llama-cpp-turboquant;
+#                 a plain `compose build` fails: build.sh supplies the source snapshot)
+#   Create:       docker compose -f docker/llama/compose.yml up -d
+#
+# The app finds the container named "easd-llama" by itself, starts it before a local Generate /
+# translation and stops it when Whisper needs the RAM. The model and benchmark results live in the
+# app's models/ folder, so they survive image rebuilds and travel with the app to a new PC.
+services:
+  easd-llama:
+    build:
+      context: .
+      args:
+        JOBS: "2"   # parallel compile jobs; 2 is safe on 8 GB RAM, raise on a bigger PC
+    image: easd-llama:turboquant
+    container_name: easd-llama
+    init: true
+    ports:
+      - "127.0.0.1:8081:8080"   # localhost only
+    volumes:
+      - ../../models:/models
+    environment:
+      # Use the Gemma 4 E2B Q4_0 file already in models/ (hard link from ~/llama-cpp-turboquant/models)
+      # instead of downloading gemma-4-E2B-it-Q4_0.gguf. Remove this line to go back to the download.
+      EASD_LLM_MODEL_FILE: gemma-4-E2B_q4_0-it.gguf
+    devices:
+      - /dev/dri:/dev/dri       # Intel / AMD GPU for Vulkan; the startup benchmark decides whether to use it
+    restart: "no"               # the app starts and stops it as RAM allows
